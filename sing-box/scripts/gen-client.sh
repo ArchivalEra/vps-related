@@ -74,10 +74,10 @@ if [[ ${TEST_MODE:-0} -eq 1 ]]; then
   exit $?
 fi
 
-# ---------- 交互式输入 config.json 路径（不保存） ----------
+# ---------- 交互式输入 config.json 路径（不保存；纯生成器，不假设任何布局） ----------
 if [[ -z "$CONFIG_PATH" ]]; then
-  read -r -p "输入 config.json 路径（回车用 /etc/sing-box/config.gen.json）: " CONFIG_PATH
-  CONFIG_PATH="${CONFIG_PATH:-/etc/sing-box/config.gen.json}"
+  read -r -p "输入 config.json 路径（回车用当前目录 config.gen.json）: " CONFIG_PATH
+  CONFIG_PATH="${CONFIG_PATH:-config.gen.json}"
 fi
 if [[ ! -f "$CONFIG_PATH" ]]; then
   die1 "config.json 不存在: $CONFIG_PATH（参考模板: templates/config.gen.json.example）"

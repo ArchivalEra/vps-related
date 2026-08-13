@@ -21,5 +21,7 @@ sing-box/test-env/secrets/
 # 自签测试证书/私钥（setup.sh 再生）
 sing-box/test-env/server/hy2.crt
 sing-box/test-env/server/hy2.key
+# 测试服务端配置（setup.sh 生成，含本机绝对路径，不入库）
+sing-box/test-env/server/config.json
 # 测试生成物
 sing-box/test-env/client/
