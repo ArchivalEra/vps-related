@@ -11,7 +11,7 @@
 #
 # 参数:
 #   --from-server PATH  服务端 config.json 路径（必填，除非 --test）
-#   --server 域名/IP    客户端连接地址（双栈用域名优先；缺省自动探测公网 IPv4）
+#   --server 域名/IP    客户端连接地址（双栈用域名；缺省交互输入，不主动探测本机 IP）
 #   --insecure          证书为自签时加 insecure:true（真证书不用）
 #   --inbound tun       默认 TUN 全局；--inbound socks:1080 生成 socks5 本地监听（测试用）
 #   --debug             输出诊断（默认完全静默）
@@ -110,10 +110,11 @@ if [[ -n "$SB_BIN" ]]; then
 fi
 
 # ---------- 客户端连接地址 ----------
+# ---------- 客户端连接地址（--server 参数或交互输入；不主动探测本机 IP，域名/IP 都行） ----------
 if [[ -z "$SERVER" ]]; then
-  SERVER=$(curl -4 -s --max-time 6 https://ifconfig.me || curl -4 -s --max-time 6 https://icanhazip.com || true)
-  [[ -n "$SERVER" ]] || die1 "无法探测公网 IP，请用 --server 指定域名/IP"
-  debug "自动探测: $SERVER"
+  read -r -p "输入客户端连接地址（域名双栈 / IPv4 / IPv6 均可）: " SERVER
+  [[ -n "$SERVER" ]] || die1 "必须提供连接地址（--server 参数或交互输入）"
+  debug "交互输入: $SERVER"
 else
   debug "server: $SERVER"
 fi
