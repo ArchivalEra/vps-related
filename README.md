@@ -1,22 +1,24 @@
-# vps-related — VPS 相关项目集
+# vps-related — VPS project collection
 
-VPS 相关的一切（脚本 / 配置 / 部署笔记），按业务分类存放。
+Everything VPS-related (scripts / configs / deployment notes), organized by project.
 
-## 子项目
+## Subprojects
 
-| 目录 | 内容 |
+| Dir | Content |
 |---|---|
-| **`sing-box/`** | sing-box 双节点部署套件：客户端配置生成器 + 服务端模板 + 部署手册 + 协议维护清单 + 测试环境 |
+| **`sing-box/`** | sing-box deployment suite: server-config → client-config converter + deployment runbook + protocol maintenance guide + local test env |
 
-## sing-box 快速开始
+## sing-box quick start
 
 ```bash
-cd sing-box
-cp hosts.conf.example hosts.conf    # 填 VPS 真实 IP（本地生成用）
-./scripts/gen.sh                    # 服务端配置（密钥本地生成，幂等）
-# 客户端配置:
-./scripts/gen-client.sh --config /path/to/config.gen.json
+# Put the two scripts in one dir on any machine (VPS, laptop):
+#   sing-box/scripts/gen-client.sh + sing-box/scripts/protocols.lib.sh
+SB_OUTPUT=~/client.json bash gen-client.sh --from-server /etc/sing-box/config.json --server your.domain
+#   --from-server: server sing-box config.json (single input)
+#   --server: connect address (domain for dual-stack / IPv4 / IPv6); omit to be prompted
+#   --insecure: add when cert is self-signed
+#   --debug: diagnostics (fully silent by default); --test: self-check
 ```
-详见 `sing-box/docs/runbook.md`（部署）+ `sing-box/docs/protocol-maintenance.md`（维护）。
+See `sing-box/docs/runbook.md` (deployment) + `sing-box/docs/protocol-maintenance.md` (maintenance).
 
-> 本地交接手册在 `docs/HANDOFF.md`（被 gitignore，不进仓库，仅本机可见）。
+> Local handoff doc is in `docs/HANDOFF.md` (gitignored, local-only).

@@ -8,8 +8,8 @@
 ## 0. 流程总览
 
 ```
-本地生成 (gen.sh) ──scp──▶ 上传 server.json ──▶ 装二进制 → 生成证书 → systemd 托管 → 验证
-                                                     └────────▶ 客户端导入 singbox-client.json
+服务端 config.json ──▶ gen-client.sh ──▶ client.json（客户端导入）
+     （VPS 上手动维护，含全部协议/密钥/端口）
 ```
 
 ---
@@ -27,39 +27,37 @@
 
 **端口纪律**：443/tcp + 443/udp 是 Reality + Hy2（标准 HTTPS + HTTP/3 组合，真实站点同款）；其余端口每个单一协议，不搞同端口 tcp/udp 双协议。QUIC 线靠协议栈指纹伪装（Hy2 的 Chrome QUIC parrot），不依赖端口号。
 
-> 注：`templates/server.json.tpl`（gen.sh 产物）只含**基础三线**（Reality 443 / Hy2 443 / SS 8388）；ShadowTLS、TUIC、AnyTLS 按第 7 节附录手动补 inbound（VPS 上已是六线全开）。
+> 注：服务端 `config.json` 由 VPS 上手动维护（本仓库 `test-env/server/config.json` 是本地测试样例）；gen-client.sh 只读它生成客户端配置，不负责服务端生成。
 
 ---
 
-## 2. 本地生成（只在本机跑，幂等）
+## 2. 客户端配置生成（服务端 config.json → client.json）
 
 ```bash
-cd sing-box
-cp hosts.conf.example hosts.conf
-# ✏️ 编辑 hosts.conf：把 1.2.3.4 / 5.6.7.8 换成两台 VPS 的真实公网 IP（SNI/端口可按需改）
-./scripts/gen.sh
+# 两个脚本放同一目录（scripts/gen-client.sh + scripts/protocols.lib.sh），任一台机器可跑
+SB_OUTPUT=~/client.json bash gen-client.sh --from-server /etc/sing-box/config.json --server 你的域名
+#   --from-server: 服务端 sing-box config.json（唯一输入，含全部协议/密钥/端口）
+#   --server: 客户端连接地址（域名双栈 / IPv4 / IPv6）；省略则交互输入
+#   --insecure: 证书为自签时加；真证书不用
+#   --debug: 诊断输出（默认完全静默）
+#   --test: 跑自检断言（6 项，不依赖 test-env）
 ```
 
-产物：
+产物：`client.json` —— 官方客户端（SFA/SFI）从文件导入即可。
 
-| 文件 | 用途 |
-|---|---|
-| `out/node-a/server.json` | 上传到节点A VPS |
-| `out/node-b/server.json` | 上传到节点B VPS |
-| `out/singbox-client.json` | 客户端导入 |
-| `out/<节点>/secrets.env` | 密钥存档（重装换机靠它恢复，勿外传） |
-
-> 幂等：重复运行不会轮换密钥。密钥丢了 = 老客户端全部失效，@secrets.env 一定要备份。
+> 零持久化：config 路径、地址、密钥都不落盘；无任何状态文件。
 
 ---
 
 ## 3. 部署节点（两台步骤完全一样，以 node-a 为例）
 
-### 3.1 上传配置
+### 3.1 上传服务端配置
+
+> 服务端 `config.json` 手动维护（含全部协议/密钥/端口），直接写到 VPS：
 
 ```bash
-# 本机执行
-scp out/node-a/server.json root@<node-a-ip>:/etc/sing-box/config.json
+# 本机编辑好后上传（或直接在 VPS 上编辑）
+scp /你的/config.json root@<node-a-ip>:/etc/sing-box/config.json
 ```
 提示目录不存在就先生成：`ssh root@<node-a-ip> 'mkdir -p /etc/sing-box'` 再 scp。
 
@@ -139,7 +137,7 @@ ufw reload
 
 ## 5. 客户端（官方 sing-box）
 
-1. 把 `out/singbox-client.json` 发到手机/电脑（微信/AirDrop/iCloud 随意）
+1. 把 gen-client.sh 生成的 `client.json` 发到手机/电脑（微信/AirDrop/iCloud 随意）
 2. 导入：
    - **iOS**：sing-box (SFA) → 右上角 `+` → 从文件导入
    - **Android**：sing-box 官方应用 → 配置 → 导入文件
@@ -156,18 +154,18 @@ ufw reload
 | 操作 | 命令 / 步骤 |
 |---|---|
 | 看日志 | `journalctl -u sing-box -f` |
-| 升级版本 | 改 `scripts/gen.sh` 顶部 `SINGBOX_VERSION` → 重跑 gen → 服务器重复 3.2 → `systemctl restart sing-box`（配置无需重传） |
-| 换 SNI/端口 | 改 `hosts.conf` → 重跑 gen → 重传对应 `server.json` → `systemctl restart sing-box` |
-| 加第三个节点 | `hosts.conf` 加一行 → 重跑 gen → 新节点按第 3 节部署；客户端配置会自动包含新节点 |
-| 服务器重装 | 重装系统后按第 3 节重来，配置和密钥都在 `out/` 里，不用重新生成 |
-| 换密钥 | 删掉 `out/<节点>/secrets.env` → 重跑 gen → 重传配置重启（老密码全作废） |
+| 升级版本 | 换 sing-box 二进制（3.2）→ 改 `gen-client.sh` 头部 `SINGBOX_VERSION`/`SINGBOX_MAJOR_MINOR`（按维护清单 SOP）→ 重跑 gen-client.sh → `systemctl restart sing-box` |
+| 换 SNI/端口 | 改服务端 `config.json` → `systemctl restart sing-box` → 重跑 gen-client.sh 出新客户端配置 |
+| 加第三个节点 | 服务端 config.json 加对应 inbound → 重跑 gen-client.sh（新线路自动进 auto 组） |
+| 服务器重装 | 重装后按第 3 节重来（配置和密钥手动备份） |
+| 换密钥 | 改服务端 config.json 里的密钥 → 重启 → 重跑 gen-client.sh（老客户端全作废） |
 
 ---
 
 ## 7. 附录：加料（可选）
 
 > 以下都需要往 `/etc/sing-box/config.json` 的 `inbounds` 数组里加一段，然后
-> `systemctl restart sing-box`。密钥用 `out/<节点>/secrets.env` 里的值。
+> `systemctl restart sing-box`。密钥用你自己生成/保存的值（可参考 `test-env/secrets/env.sh` 的结构）。
 
 ### 7.1 TUIC（又一个 QUIC 协议，多一份保险）
 
