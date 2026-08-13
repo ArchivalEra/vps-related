@@ -181,7 +181,7 @@ cat > "$SB_OUTPUT" <<EOF
   ],
   "route": {
     "auto_detect_interface": true,
-    "default_domain_resolver": "remote",
+    "default_domain_resolver": "local",
     "final": "auto",
     "rules": [
       { "ip_cidr": [ "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8" ], "outbound": "direct" }
