@@ -1,64 +1,64 @@
 #!/usr/bin/env bash
-# protocols.lib.sh — sing-box 客户端协议转换库（唯一真源，被 gen-client.sh source）
+# protocols.lib.sh — sing-box client protocol conversion library (single source of truth, sourced by gen-client.sh)
 #
-# 架构: 服务端 config.json → 转换 → 客户端 client.json（单输入单输出，无中间配置文件）
-# 用法: 由 gen-client.sh 解析服务端 config 后，逐 inbound 调 convert_xxx()，再 render_from_server()
+# Architecture: server config.json → conversion → client client.json (single input/output, no intermediate config)
+# Usage: sourced by gen-client.sh; after parsing server config, call convert_xxx() per inbound, then render_from_server()
 #
-# 【升级 sing-box 时的唯一动作】:
-#   1. 在 VERSION_TABLE 加版本行（时间线）
-#   2. 若新版本改了字段：改对应 convert_xxx()（配合 gen-client.sh 版本探测 + check 兜底）
-#   3. 若引入新协议：加 convert_xxx() + 注册进 render_from_server() 的遍历表
-# 完整字段审计 + 变更史 + 升级 SOP 见 docs/protocol-maintenance.md
+# 【When upgrading sing-box】:
+#   1. Add a version row to VERSION_TABLE (timeline)
+#   2. If the new version changed fields: update the corresponding convert_xxx() (gen-client.sh version probe + check are the net)
+#   3. If a new protocol was added: add convert_xxx() + register it in render_from_server()'s dispatch table
+# Full field audit + breaking-change history + upgrade SOP: docs/protocol-maintenance.md
 
-# ---------- 输出分级（ok/warn/err/debug；debug 默认完全静默，--debug 开启） ----------
+# ---------- Output tiers (ok/warn/err/debug; debug is fully silent unless --debug) ----------
 DEBUG="${DEBUG:-0}"
-ok()    { echo "$@"; }                        # 成功/结果行 → stdout
-warn()  { echo "⚠ $@" >&2; }                  # 警告 → stderr
-err()   { echo "✗ $@" >&2; }                  # 错误 → stderr
-die1()  { err "$@"; exit 1; }                 # 错误+退出码 1（参数/依赖错误契约）
-die2()  { err "$@"; exit 2; }                 # 错误+退出码 2（转换/校验失败契约）
-debug() { [[ $DEBUG -eq 1 ]] && echo "[debug] $@" >&2; }   # 仅 --debug 输出
+ok()    { echo "$@"; }                        # success/result line → stdout
+warn()  { echo "⚠ $@" >&2; }                  # warning → stderr
+err()   { echo "✗ $@" >&2; }                  # error → stderr
+die1()  { err "$@"; exit 1; }                 # error + exit 1 (argument/dependency contract)
+die2()  { err "$@"; exit 2; }                 # error + exit 2 (conversion/check contract)
+debug() { [[ $DEBUG -eq 1 ]] && echo "[debug] $@" >&2; }   # only with --debug
 
 # ═══════════════════════════════════════════════════════════════════════
-# 【版本兼容时间线】——自动检测 sing-box 版本，按时间线确认兼容性
-# 格式: "major.minor:状态:说明"
-#   状态: supported=基线版本 / deprecated_ok=格式可解析但字段弃用 / future=需拦截检查新写法
-# 将来升 1.15+: 在这里加行 + 对应 convert_xxx() 按新字段适配，check 是最终裁决
+# 【Version compatibility timeline】— auto-detect sing-box version, confirm compatibility
+# Format: "major.minor:status:note"
+#   status: supported=baseline / deprecated_ok=parseable but deprecated fields / future=intercept new syntax
+# To upgrade to 1.15+: add a row here + adapt convert_xxx() to new fields; check is the final arbiter
 # ═══════════════════════════════════════════════════════════════════════
-SINGBOX_VERSION="1.14.0-beta.14"     # 基线版本
+SINGBOX_VERSION="1.14.0-beta.14"     # baseline version
 SINGBOX_MAJOR_MINOR="1.14"
 VERSION_TABLE=(
-  "1.13:deprecated_ok:legacy DNS address 简写等字段已弃用但可解析，1.14 起移除"
-  "1.14:supported:基线版本 1.14.0-beta.14"
-  "1.15:future:新 transport 写法（xhttp 等）需确认后再生成，见维护清单"
+  "1.13:deprecated_ok:legacy DNS address shorthand etc. deprecated but parseable, removed in 1.14"
+  "1.14:supported:baseline 1.14.0-beta.14"
+  "1.15:future:new transport syntax (xhttp etc.) needs confirmation before generating, see maintenance doc"
 )
 
-# 检查二进制版本 vs 时间线表；$1=版本字符串（如 1.14.0-beta.14）
+# Check binary version against timeline; $1=version string (e.g. 1.14.0-beta.14)
 check_version() {
   local ver="${1:-}" mm status note
   [[ -z "$ver" ]] && return 0
   mm="$(echo "$ver" | grep -oE '^[0-9]+\.[0-9]+')"
-  [[ -z "$mm" ]] && { warn "无法解析 sing-box 版本: $ver"; return 0; }
+  [[ -z "$mm" ]] && { warn "cannot parse sing-box version: $ver"; return 0; }
   for row in "${VERSION_TABLE[@]}"; do
     local m="${row%%:*}" rest="${row#*:}"
     if [[ "$m" == "$mm" ]]; then
       status="${rest%%:*}" note="${rest#*:}"
       case "$status" in
-        supported)  debug "版本兼容: v$ver（基线）"; return 0 ;;
-        deprecated_ok) warn "版本 v$ver: $note"; return 0 ;;
-        future)     warn "版本 v$ver: $note（如有报错按维护清单适配字段）"; return 0 ;;
+        supported)  debug "version compatible: v$ver (baseline)"; return 0 ;;
+        deprecated_ok) warn "version v$ver: $note"; return 0 ;;
+        future)     warn "version v$ver: $note (if errors, adapt fields per maintenance doc)"; return 0 ;;
       esac
     fi
   done
-  warn "版本 v$ver 不在兼容时间线（基线 $SINGBOX_MAJOR_MINOR）——先确认字段再生成"
+  warn "version v$ver not in compatibility timeline (baseline $SINGBOX_MAJOR_MINOR) — confirm fields before generating"
 }
 
-# ---------- X25519 私钥 → 公钥派生（服务端 config 只有 private_key，客户端需 public_key） ----------
-# 输入: URL-safe raw base64 私钥（43 字符）；输出: URL-safe raw base64 公钥
+# ---------- X25519 private → public key derivation (server config only has private_key, client needs public_key) ----------
+# Input: URL-safe raw base64 private key (43 chars); Output: URL-safe raw base64 public key
 derive_pubkey() {
-  local priv="$1" raw hex der
+  local priv="$1"
   [[ -z "$priv" ]] && return 1
-  # 全部在 python 一步完成（bash 变量存二进制会丢 NUL）：解码 → 包 PKCS#8 DER → 写文件
+  # All in one python step (bash vars drop NUL bytes): decode → wrap PKCS#8 DER → write file
   local derfile="${TMPD:-/tmp}/derive-$$.der"
   python3 -c "
 import base64, sys
@@ -68,21 +68,21 @@ assert len(raw)==32, 'privkey len'
 der=bytes.fromhex('302e020100300506032b656e04220420')+raw
 open('$derfile','wb').write(der)
 " 2>/dev/null || return 1
-  # openssl 导出公钥 SPKI → 取尾 32 字节 → URL-safe raw base64
+  # openssl export public key SPKI → tail 32 bytes → URL-safe raw base64
   openssl pkey -inform DER -in "$derfile" -pubout -outform DER 2>/dev/null \
     | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '='
   rm -f "$derfile"
 }
 
-# ---------- 转换函数区 ----------
-# 每个 convert_xxx() 输入一个 inbound 的提取字段（python 已解析为 bash 变量），
-# 输出追加到 OUTS/TAGS
-# 公共输入变量（gen-client.sh 提供）: SERVER（客户端连接地址）/ INSECURE / TMPD / INB 索引
+# ---------- Conversion functions ----------
+# Each convert_xxx() reads one inbound's fields (parsed by python into bash vars) and
+# appends to OUTS/TAGS.
+# Shared input vars (provided by gen-client.sh): SERVER (client connect address) / INSECURE / TMPD / inbound index
 OUTS=""; TAGS=""
 
-# 取第 $1 个 inbound 的字段（$2=点分路径）；输出到 stdout
-# 路径规则: dict 按 key 取；list 若下一段是数字按下标取、否则取首元素（如 short_id 数组）
-inb_field() { # $1=inbound 索引  $2=点分字段路径
+# Get field of inbound $1 by dotted path $2; output to stdout
+# Path rules: dict → by key; list → numeric segment indexes, else first element (e.g. short_id array)
+inb_field() { # $1=inbound index  $2=dotted field path
   local f="${TMPD:-/tmp}/inbounds.json"
   python3 - "$f" "$1" "$2" <<'PY'
 import json, sys
@@ -103,29 +103,29 @@ print(v, end='')
 PY
 }
 
-convert_vless() { # $1=inbound 索引 —— 服务端 vless → 客户端 vless（reality 或 ws 传输变体）
+convert_vless() { # $1=inbound index — server vless → client vless (reality or ws transport variant)
   local i="$1" uuid flow sni priv short pub port
   uuid="$(inb_field $i 'users.0.uuid')"
   flow="$(inb_field $i 'users.0.flow')"
   sni="$(inb_field $i 'tls.server_name')"
   priv="$(inb_field $i 'tls.reality.private_key')"
   port="$(inb_field $i 'listen_port')"
-  [[ -z "$port" || "$port" == "0" ]] && { warn "vless inbound[$i] 缺 listen_port，跳过"; return; }
-  # 分支 A: reality（有 private_key）
+  [[ -z "$port" || "$port" == "0" ]] && { warn "vless inbound[$i] missing listen_port, skip"; return; }
+  # Branch A: reality (has private_key)
   if [[ -n "$priv" ]]; then
     short="$(inb_field $i 'tls.reality.short_id.0')"
     [[ -z "$short" ]] && short="$(inb_field $i 'tls.reality.short_id')"
     local pub
-    pub="$(derive_pubkey "$priv")" || { warn "vless inbound[$i] 私钥派生公钥失败，跳过"; return; }
+    pub="$(derive_pubkey "$priv")" || { warn "vless inbound[$i] pubkey derivation failed, skip"; return; }
     OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"reality\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"flow\": \"$flow\", \"packet_encoding\": \"xudp\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" }, \"reality\": { \"enabled\": true, \"public_key\": \"$pub\", \"short_id\": \"$short\" } } }"
     TAGS+="${TAGS:+, }\"reality\""
     debug "vless[reality] ← inbound[$i] port=$port sni=$sni"
     return
   fi
-  # 分支 B: ws 传输（vless+ws，TLS 自签/真证书）
+  # Branch B: ws transport (vless+ws, self-signed or real cert)
   local ttype ws_path ws_host ins
   ttype="$(inb_field $i 'transport.type')"
-  [[ "$ttype" == "ws" ]] || { warn "vless inbound[$i] 无 reality 且 transport.type=$ttype（仅支持 ws），跳过"; return; }
+  [[ "$ttype" == "ws" ]] || { warn "vless inbound[$i] no reality and transport.type=$ttype (only ws supported), skip"; return; }
   ws_path="$(inb_field $i 'transport.path')"
   [[ -z "$ws_path" ]] && ws_path="/ws"
   ws_host="$(inb_field $i 'transport.headers.Host')"
@@ -137,22 +137,7 @@ convert_vless() { # $1=inbound 索引 —— 服务端 vless → 客户端 vless
   debug "vless[ws] ← inbound[$i] port=$port path=$ws_path host=$ws_host"
 }
 
-convert_naive() { # $1=inbound 索引 —— 服务端 naive → 客户端 naive（无 insecure，用 certificate_path 固定自签）
-  local i="$1" user pass cert sni
-  user="$(inb_field $i 'users.0.username')"
-  pass="$(inb_field $i 'users.0.password')"
-  sni="$(inb_field $i 'tls.server_name')"
-  cert="$(inb_field $i 'tls.certificate_path')"
-  local port; port="$(inb_field $i 'listen_port')"
-  [[ -z "$port" || "$port" == "0" ]] && { warn "naive inbound[$i] 缺 listen_port，跳过"; return; }
-  local cert_json=""
-  [[ -n "$cert" ]] && cert_json=", \"certificate_path\": \"$cert\""
-  OUTS+="${OUTS:+, }{ \"type\": \"naive\", \"tag\": \"naive\", \"server\": \"$SERVER\", \"server_port\": $port, \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$cert_json } }"
-  TAGS+="${TAGS:+, }\"naive\""
-  debug "naive ← inbound[$i] port=$port user=$user"
-}
-
-convert_hy2() { # $1=inbound 索引 —— 服务端 hysteria2 → 客户端 hysteria2
+convert_hy2() { # $1=inbound index — server hysteria2 → client hysteria2
   local i="$1" pass obfs_type obfs_pass
   pass="$(inb_field $i 'users.0.password')"
   obfs_type="$(inb_field $i 'obfs.type')"
@@ -167,7 +152,7 @@ convert_hy2() { # $1=inbound 索引 —— 服务端 hysteria2 → 客户端 hys
   debug "hy2 ← inbound[$i] port=$port obfs=$obfs_type"
 }
 
-convert_shadowtls() { # $1=inbound 索引 —— 服务端 shadowtls(链式→ss) → 客户端 shadowtls + ss(detour)
+convert_shadowtls() { # $1=inbound index — server shadowtls (chain→ss) → client shadowtls + ss(detour)
   local i="$1" pass ver handshake_sni detour_tag ss_in
   pass="$(inb_field $i 'users.0.password')"
   ver="$(inb_field $i 'version')"
@@ -176,7 +161,7 @@ convert_shadowtls() { # $1=inbound 索引 —— 服务端 shadowtls(链式→ss
   local port; port="$(inb_field $i 'listen_port')"
   OUTS+="${OUTS:+, }{ \"type\": \"shadowtls\", \"tag\": \"shadowtls\", \"server\": \"$SERVER\", \"server_port\": $port, \"version\": $ver, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$handshake_sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" } } }"
   TAGS+="${TAGS:+, }\"shadowtls\""
-  # 链式: 找 detour 指向的 ss inbound，生成 ss(detour→shadowtls)
+  # Chain: find the ss inbound referenced by detour, emit ss(detour→shadowtls)
   detour_tag="$(inb_field $i 'detour')"
   local n ss_method ss_pass ss_port
   n="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
@@ -194,13 +179,13 @@ convert_shadowtls() { # $1=inbound 索引 —— 服务端 shadowtls(链式→ss
     ss_port="$(inb_field $ss_in 'listen_port')"
     OUTS+=", { \"type\": \"shadowsocks\", \"tag\": \"ss-over-st\", \"server\": \"$SERVER\", \"server_port\": $ss_port, \"method\": \"$ss_method\", \"password\": \"$ss_pass\", \"detour\": \"shadowtls\" }"
     TAGS+=", \"ss-over-st\""
-    debug "shadowtls ← inbound[$i] + ss链 inbound[$ss_in]"
+    debug "shadowtls ← inbound[$i] + ss chain inbound[$ss_in]"
   else
-    warn "shadowtls inbound[$i] 无对应 ss inbound（detour=$detour_tag），只生成了 shadowtls"
+    warn "shadowtls inbound[$i] has no matching ss inbound (detour=$detour_tag), only shadowtls emitted"
   fi
 }
 
-convert_tuic() { # $1=inbound 索引 —— 服务端 tuic → 客户端 tuic
+convert_tuic() { # $1=inbound index — server tuic → client tuic
   local i="$1" uuid pass cc
   uuid="$(inb_field $i 'users.0.uuid')"
   pass="$(inb_field $i 'users.0.password')"
@@ -214,7 +199,7 @@ convert_tuic() { # $1=inbound 索引 —— 服务端 tuic → 客户端 tuic
   debug "tuic ← inbound[$i] port=$port"
 }
 
-convert_anytls() { # $1=inbound 索引 —— 服务端 anytls → 客户端 anytls
+convert_anytls() { # $1=inbound index — server anytls → client anytls
   local i="$1" pass
   pass="$(inb_field $i 'users.0.password')"
   local ins=""
@@ -225,11 +210,11 @@ convert_anytls() { # $1=inbound 索引 —— 服务端 anytls → 客户端 any
   debug "anytls ← inbound[$i] port=$port"
 }
 
-convert_ss() { # $1=inbound 索引 —— 直连 shadowsocks → 客户端 ss（被 shadowtls 链消费的跳过）
+convert_ss() { # $1=inbound index — direct shadowsocks → client ss (skip ss consumed by shadowtls chain)
   local i="$1" method pass tag
   tag="$(inb_field $i 'tag')"
   if [[ " ${CONSUMED_SS_TAGS:-} " == *" $tag "* ]]; then
-    debug "ss inbound[$i]($tag) 已被 shadowtls 链消费，跳过直连转换"
+    debug "ss inbound[$i]($tag) consumed by shadowtls chain, skip direct conversion"
     return
   fi
   method="$(inb_field $i 'method')"
@@ -240,14 +225,29 @@ convert_ss() { # $1=inbound 索引 —— 直连 shadowsocks → 客户端 ss（
   debug "ss ← inbound[$i] port=$port"
 }
 
-# ---------- 总入口：遍历服务端 inbounds，按类型转换 ----------
-# 输入: $TMPD/inbounds.json（服务端 config 的 inbounds 数组）
-# 输出: OUTS/TAGS（客户端 outbounds 片段）
+convert_naive() { # $1=inbound index — server naive → client naive (no insecure; self-signed via certificate_path)
+  local i="$1" user pass cert sni
+  user="$(inb_field $i 'users.0.username')"
+  pass="$(inb_field $i 'users.0.password')"
+  sni="$(inb_field $i 'tls.server_name')"
+  cert="$(inb_field $i 'tls.certificate_path')"
+  local port; port="$(inb_field $i 'listen_port')"
+  [[ -z "$port" || "$port" == "0" ]] && { warn "naive inbound[$i] missing listen_port, skip"; return; }
+  local cert_json=""
+  [[ -n "$cert" ]] && cert_json=", \"certificate_path\": \"$cert\""
+  OUTS+="${OUTS:+, }{ \"type\": \"naive\", \"tag\": \"naive\", \"server\": \"$SERVER\", \"server_port\": $port, \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$cert_json } }"
+  TAGS+="${TAGS:+, }\"naive\""
+  debug "naive ← inbound[$i] port=$port user=$user"
+}
+
+# ---------- Entry: iterate server inbounds, convert by type ----------
+# Input: $TMPD/inbounds.json (server config's inbounds array)
+# Output: OUTS/TAGS (client outbounds fragments)
 render_from_server() {
   OUTS=""; TAGS=""
   local ni t j det i
   ni="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
-  # 预扫：收集被 shadowtls 链引用的 ss tag（避免被重复转成直连线）
+  # Pre-scan: collect ss tags referenced by shadowtls chains (avoid duplicate direct conversion)
   CONSUMED_SS_TAGS=""
   for ((j=0; j<ni; j++)); do
     t="$(inb_field $j 'type')"
@@ -256,7 +256,7 @@ render_from_server() {
       [[ -n "$det" ]] && CONSUMED_SS_TAGS+=" $det"
     fi
   done
-  debug "服务端 inbounds 共 $ni 个（被链消费的 ss tag:$CONSUMED_SS_TAGS）"
+  debug "server inbounds: $ni (ss consumed by chains:$CONSUMED_SS_TAGS)"
   for ((i=0; i<ni; i++)); do
     t="$(inb_field $i 'type')"
     case "$t" in
@@ -267,16 +267,16 @@ render_from_server() {
       anytls)        convert_anytls "$i" ;;
       shadowsocks)   convert_ss "$i" ;;
       naive)         convert_naive "$i" ;;
-      *)             warn "inbound[$i] 类型 '$t' 未支持（1.14 客户端转换表），跳过" ;;
+      *)             warn "inbound[$i] type '$t' unsupported (1.14 client conversion table), skip" ;;
     esac
   done
-  [[ -n "$OUTS" ]] || die2 "服务端 config 没有可转换的 inbound（无 vless/hysteria2/shadowtls/tuic/anytls/shadowsocks）"
+  [[ -n "$OUTS" ]] || die2 "server config has no convertible inbounds (none of vless/hysteria2/shadowtls/tuic/anytls/shadowsocks)"
 }
 
 # ═══════════════════════════════════════════════════════════════════════
-# 【自检】assert_gen — 转换行为断言（gen-client.sh --test 调用）
-# 用 test-env 的服务端 config（setup.sh 生成）直接转 client.json，断言结构。
-# 不依赖任何中间配置（config.gen.json/env 已废弃）。
+# 【Self-check】assert_gen — conversion behavior assertions (invoked by gen-client.sh --test)
+# Uses test-env server config (setup.sh) to convert to client.json, asserts structure.
+# No intermediate config dependency (config.gen.json/env removed).
 # ═══════════════════════════════════════════════════════════════════════
 assert_gen() {
   local LIB_DIR ROOT TEST BIN GEN PASS FAIL code M1 M2 TMPD2 SRVCFG
@@ -286,58 +286,57 @@ assert_gen() {
   BIN="${SB_BIN:-/tmp/sing-box-1.14.0-beta.14-linux-amd64/sing-box}"
   GEN="$ROOT/scripts/gen-client.sh"
   SRVCFG="$TEST/server/config.json"
-  [[ -x "$BIN" ]] || { err "缺测试二进制: $BIN"; return 1; }
+  [[ -x "$BIN" ]] || { err "missing test binary: $BIN"; return 1; }
   if [[ ! -f "$SRVCFG" ]]; then
-    warn "缺 test-env/server/config.json，先跑 bash test-env/setup.sh"
-    ( cd "$TEST" && bash setup.sh >/dev/null 2>&1 ) || { err "setup.sh 失败"; return 1; }
+    warn "missing test-env/server/config.json, running bash test-env/setup.sh first"
+    ( cd "$TEST" && bash setup.sh >/dev/null 2>&1 ) || { err "setup.sh failed"; return 1; }
   fi
-  TMPD2="$(mktemp -d)" || die1 "无法创建临时目录"
+  TMPD2="$(mktemp -d)" || die1 "cannot create temp dir"
   trap '[[ -n "${TMPD2:-}" ]] && rm -rf "$TMPD2"' EXIT
   PASS=0; FAIL=0
   debug "assert_gen: TMPD=$TMPD2 SRVCFG=$SRVCFG"
 
-  check() { if [[ "$3" -eq "$2" ]]; then echo "  ✔ $1"; PASS=$((PASS+1)); else echo "  ✗ $1（期望退出 $2，实际 $3）${4:-}"; FAIL=$((FAIL+1)); fi; }
-  run_gen() { # $1=server config  $2=额外参数 → 输出退出码
+  check() { if [[ "$3" -eq "$2" ]]; then echo "  ✔ $1"; PASS=$((PASS+1)); else echo "  ✗ $1 (expected exit $2, got $3) ${4:-}"; FAIL=$((FAIL+1)); fi; }
+  run_gen() { # $1=server config  $2=extra args → exit code to stdout
     SB_OUTPUT="$TMPD2/out.json" SB_BIN="$BIN" bash "$GEN" --from-server "$1" --server 127.0.0.1 --insecure ${2:-} >"$TMPD2/log.txt" 2>&1
     echo "$?"
   }
 
-  echo "=== A. 参数/依赖错误（退出码 1） ==="
-  code=$(run_gen /nonexistent.json);         check "server config 不存在 → 1" 1 "$code"
-  echo "=== B. 转换失败（退出码 2） ==="
+  echo "=== A. argument/dependency errors (exit 1) ==="
+  code=$(run_gen /nonexistent.json);         check "server config missing → 1" 1 "$code"
+  echo "=== B. conversion failure (exit 2) ==="
   python3 -c "import json;json.dump({'inbounds':[]},open('$TMPD2/empty.json','w'))"
-  code=$(run_gen "$TMPD2/empty.json");       check "空 inbounds → 2" 2 "$code"
-  echo "=== C. 六线转换结构断言（退出码 0 + 结构） ==="
-  code=$(run_gen "$SRVCFG");                 check "六线转换 → 0" 0 "$code"
+  code=$(run_gen "$TMPD2/empty.json");       check "empty inbounds → 2" 2 "$code"
+  echo "=== C. 8-line conversion structure (exit 0 + structure) ==="
+  code=$(run_gen "$SRVCFG");                 check "8-line conversion → 0" 0 "$code"
   python3 - "$TMPD2/out.json" <<'PY'
 import json, sys
 c = json.load(open(sys.argv[1]))
 errs = []
 tags = {o["tag"] for o in c["outbounds"]}
 expect = {"reality","hy2","shadowtls","ss-over-st","tuic","anytls","vless-ws","naive","auto","manual","direct","block"}
-if tags != expect: errs.append(f"生成集不对: {sorted(tags)} 期望 {sorted(expect)}")
+if tags != expect: errs.append(f"tag set mismatch: {sorted(tags)} expected {sorted(expect)}")
 auto = next(o for o in c["outbounds"] if o["tag"]=="auto")["outbounds"]
 manual = next(o for o in c["outbounds"] if o["tag"]=="manual")["outbounds"]
-if set(auto) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","naive"}: errs.append(f"auto 引用集不对: {auto}")
-if manual[0] != "auto" or set(manual[1:]) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","naive"}: errs.append(f"manual 引用集不对: {manual}")
-if c["route"]["final"] != "auto": errs.append("route.final 不是 auto")
-if c["dns"]["servers"][0].get("detour") != "reality": errs.append("DNS detour 不是 reality")
-# reality 公钥已从私钥派生（非空）
+if set(auto) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","naive"}: errs.append(f"auto ref set mismatch: {auto}")
+if manual[0] != "auto" or set(manual[1:]) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","naive"}: errs.append(f"manual ref set mismatch: {manual}")
+if c["route"]["final"] != "auto": errs.append("route.final not auto")
+if c["dns"]["servers"][0].get("detour") != "reality": errs.append("DNS detour not reality")
 rv = next(o for o in c["outbounds"] if o["tag"]=="reality")
-if not rv["tls"]["reality"].get("public_key"): errs.append("reality 公钥未派生")
+if not rv["tls"]["reality"].get("public_key"): errs.append("reality pubkey not derived")
 if errs:
     print("  ✗ " + "; ".join(errs)); sys.exit(1)
-print("  ✔ 八线转换结构通过")
+print("  ✔ 8-line conversion structure OK")
 PY
   [[ $? -eq 0 ]] || FAIL=$((FAIL+1))
-  echo "=== D. 幂等 ==="
-  code=$(run_gen "$SRVCFG"); check "幂等第一次 → 0" 0 "$code"
+  echo "=== D. idempotency ==="
+  code=$(run_gen "$SRVCFG"); check "idempotent run 1 → 0" 0 "$code"
   M1=$(md5sum "$TMPD2/out.json" | cut -d' ' -f1)
-  code=$(run_gen "$SRVCFG"); check "幂等第二次 → 0" 0 "$code"
+  code=$(run_gen "$SRVCFG"); check "idempotent run 2 → 0" 0 "$code"
   M2=$(md5sum "$TMPD2/out.json" | cut -d' ' -f1)
-  if [[ "$M1" == "$M2" ]]; then echo "  ✔ 两次输出一致"; PASS=$((PASS+1)); else echo "  ✗ 幂等失败"; FAIL=$((FAIL+1)); fi
+  if [[ "$M1" == "$M2" ]]; then echo "  ✔ both runs identical"; PASS=$((PASS+1)); else echo "  ✗ idempotency failed"; FAIL=$((FAIL+1)); fi
 
   echo
-  echo "=== 结果: 通过 $PASS / $((PASS+FAIL)) ==="
+  echo "=== Result: passed $PASS / $((PASS+FAIL)) ==="
   [[ $FAIL -eq 0 ]]
 }

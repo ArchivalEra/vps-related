@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
-# gen-client.sh — 服务端 config.json → 客户端 client.json 转换器
+# gen-client.sh — server config.json → client client.json converter
 #
-# 用法:
-#   bash gen-client.sh --from-server /path/config.json [--server 域名] [--insecure] [--inbound tun|socks[:port]] [--debug]
-#   bash gen-client.sh --test                                    # 跑自检断言
+# Usage:
+#   bash gen-client.sh --from-server /path/config.json [--server host] [--insecure] [--inbound tun|socks[:port]] [--debug]
+#   bash gen-client.sh --test                                    # run self-check assertions
 #
-# 输入: 服务端 sing-box config.json（唯一输入；含全部协议/密钥/端口）
-# 输出: 客户端 client.json（官方 SFA/SFI 从文件导入）
-# 无任何中间配置文件（config.gen.json / secrets.env 全部废弃）。
+# Input: server sing-box config.json (single input; contains all protocols/keys/ports)
+# Output: client client.json (import into official SFA/SFI from file)
+# No intermediate config file (config.gen.json / secrets.env removed).
 #
-# 参数:
-#   --from-server PATH  服务端 config.json 路径（必填，除非 --test）
-#   --server 域名/IP    客户端连接地址（双栈用域名；缺省交互输入，不主动探测本机 IP）
-#   --insecure          证书为自签时加 insecure:true（真证书不用）
-#   --inbound tun       默认 TUN 全局；--inbound socks:1080 生成 socks5 本地监听（测试用）
-#   --debug             输出诊断（默认完全静默）
-#   --test              跑 assert_gen 自检后退出
+# Args:
+#   --from-server PATH  server config.json path (required unless --test)
+#   --server host/IP    client connect address (domain for dual-stack; default prompts interactively, never probes local IP)
+#   --insecure          add insecure:true when cert is self-signed (omit with real cert)
+#   --inbound tun       default TUN global; --inbound socks:1080 generates socks5 local listener (testing)
+#   --debug             diagnostic output (fully silent by default)
+#   --test              run assert_gen self-check then exit
 #
-# 环境变量: SB_BIN / SB_OUTPUT（默认 /etc/sing-box/client.json）/ DEBUG
-# 退出码: 0=成功  1=参数/依赖错误  2=转换/校验失败（契约，assert_gen 依赖）
+# Env: SB_BIN / SB_OUTPUT (default /etc/sing-box/client.json) / DEBUG
+# Exit codes: 0=ok  1=argument/dependency  2=conversion/check failure (contract, assert_gen depends on it)
 #
 # ═══════════════════════════════════════════════════════════════════════
-# 【版本策略】——自动检测 sing-box 二进制版本，按时间线确认兼容
-# 基线 1.14.0-beta.14；时间线表在 protocols.lib.sh 的 VERSION_TABLE。
-# 将来升 1.15+: 改 VERSION_TABLE 加行 + 按维护清单适配 convert_xxx()，check 兜底。
-# 完整字段审计 + 变更史 + 升级 SOP: docs/protocol-maintenance.md
+# 【Version policy】— auto-detect sing-box binary version, confirm compatibility via timeline
+# Baseline 1.14.0-beta.14; timeline table in protocols.lib.sh VERSION_TABLE.
+# To upgrade to 1.15+: add a row to VERSION_TABLE + adapt convert_xxx() per maintenance doc; check is the net.
+# Full field audit + breaking-change history + upgrade SOP: docs/protocol-maintenance.md
 # ═══════════════════════════════════════════════════════════════════════
 
 set -uo pipefail
 
-# ---------- 默认值 ----------
+# ---------- Defaults ----------
 OUTPUT_DEFAULT="/etc/sing-box/client.json"
 INSECURE=0
 INBOUND_TYPE="tun"
@@ -40,7 +40,7 @@ ARG_INSECURE=0
 TEST_MODE=0
 DEBUG="${DEBUG:-0}"
 
-# ---------- 解析参数 ----------
+# ---------- Parse args ----------
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-server) shift; CONFIG_PATH="${1:-}" ;;
@@ -53,36 +53,36 @@ while [[ $# -gt 0 ]]; do
       INBOUND_TYPE="${1%%:*}"
       if [[ "$1" == *:* ]]; then INBOUND_PORT="${1#*:}"; fi
       ;;
-    *) die1 "未知参数: $1（支持 --from-server / --server / --insecure / --debug / --inbound / --test）" ;;
+    *) die1 "unknown argument: $1 (supported: --from-server / --server / --insecure / --debug / --inbound / --test)" ;;
   esac
   shift
 done
 
-# ---------- source 协议转换库（含输出函数/版本表/assert_gen） ----------
+# ---------- Source conversion library (output tiers / version table / assert_gen) ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/protocols.lib.sh"
 
-# ---------- 临时目录 ----------
-TMPD="$(mktemp -d)" || die1 "无法创建临时目录"
+# ---------- Temp dir ----------
+TMPD="$(mktemp -d)" || die1 "cannot create temp dir"
 trap 'rm -rf "$TMPD"' EXIT
-debug "临时目录: $TMPD"
+debug "temp dir: $TMPD"
 
-# ---------- --test：自检后退出 ----------
+# ---------- --test: self-check then exit ----------
 if [[ $TEST_MODE -eq 1 ]]; then
-  ok "== 运行 gen-client.sh 自检（assert_gen）=="
+  ok "== running gen-client.sh self-check (assert_gen) =="
   assert_gen
   exit $?
 fi
 
-# ---------- 输入检查 ----------
-[[ -n "$CONFIG_PATH" ]] || die1 "必须 --from-server 指定服务端 config.json"
-[[ -f "$CONFIG_PATH" ]] || die1 "服务端 config.json 不存在: $CONFIG_PATH"
-[[ -r "$CONFIG_PATH" ]] || die1 "服务端 config.json 无法读取（权限不足）: $CONFIG_PATH（加 --debug 看详情）"
-debug "服务端 config: $CONFIG_PATH"
+# ---------- Input checks ----------
+[[ -n "$CONFIG_PATH" ]] || die1 "must specify server config.json via --from-server"
+[[ -f "$CONFIG_PATH" ]] || die1 "server config.json not found: $CONFIG_PATH"
+[[ -r "$CONFIG_PATH" ]] || die1 "server config.json unreadable (permission): $CONFIG_PATH (add --debug for details)"
+debug "server config: $CONFIG_PATH"
 
-# ---------- 解析服务端 config（python3 只解析，转换在 bash） ----------
-command -v python3 >/dev/null 2>&1 || die1 "需要 python3 解析 config.json"
+# ---------- Parse server config (python3 parses, bash converts) ----------
+command -v python3 >/dev/null 2>&1 || die1 "python3 required to parse config.json"
 if ! python3 - "$CONFIG_PATH" "$TMPD" <<'PY'
 import json, sys, os
 c = json.load(open(sys.argv[1]))
@@ -91,37 +91,36 @@ if not isinstance(ibs, list): ibs = []
 json.dump(ibs, open(os.path.join(sys.argv[2], "inbounds.json"), "w"))
 PY
 then
-  die1 "服务端 config.json 解析失败（JSON 损坏或不可读）: $CONFIG_PATH（加 --debug 看详情）"
+  die1 "failed to parse server config.json (corrupt JSON or unreadable): $CONFIG_PATH (add --debug for details)"
 fi
 INBOUND_COUNT="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
 if [[ -z "$INBOUND_COUNT" ]]; then
-  die1 "服务端 config.json 解析失败（未生成 inbounds 索引）: $CONFIG_PATH（加 --debug 看详情）"
+  die1 "failed to parse server config.json (no inbounds index produced): $CONFIG_PATH (add --debug for details)"
 fi
 if [[ "$INBOUND_COUNT" -eq 0 ]]; then
-  die2 "服务端 config 没有 inbounds"
+  die2 "server config has no inbounds"
 fi
-debug "inbounds 共 $INBOUND_COUNT 个"
+debug "inbounds: $INBOUND_COUNT"
 
-# ---------- 版本检测（时间线兼容） ----------
+# ---------- Version detection (timeline compatibility) ----------
 SB_BIN="${SB_BIN:-}"
 if [[ -z "$SB_BIN" ]]; then
   if command -v sing-box >/dev/null 2>&1; then SB_BIN=$(command -v sing-box)
   elif [[ -x /opt/sing-box/sing-box ]]; then SB_BIN=/opt/sing-box/sing-box
   elif [[ -x "$(dirname "${BASH_SOURCE[0]}")/../bin/sing-box" ]]; then SB_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/sing-box"
-  else warn "未找到 sing-box 二进制，跳过 check 与版本检测"; fi
+  else warn "sing-box binary not found, skipping check and version detection"; fi
 fi
 if [[ -n "$SB_BIN" ]]; then
   DETECTED="$(timeout 5 "$SB_BIN" version 2>/dev/null | head -1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -1 | tr -d 'v')"
   check_version "$DETECTED"
-  debug "sing-box: $SB_BIN (v${DETECTED:-未知})"
+  debug "sing-box: $SB_BIN (v${DETECTED:-unknown})"
 fi
 
-# ---------- 客户端连接地址 ----------
-# ---------- 客户端连接地址（--server 参数或交互输入；不主动探测本机 IP，域名/IP 都行） ----------
+# ---------- Client connect address (--server or interactive; never probes local IP; domain/IPv4/IPv6 all accepted) ----------
 if [[ -z "$SERVER" ]]; then
-  read -r -p "输入客户端连接地址（域名双栈 / IPv4 / IPv6 均可）: " SERVER
-  [[ -n "$SERVER" ]] || die1 "必须提供连接地址（--server 参数或交互输入）"
-  debug "交互输入: $SERVER"
+  read -r -p "Enter client connect address (domain dual-stack / IPv4 / IPv6): " SERVER
+  [[ -n "$SERVER" ]] || die1 "must provide connect address (--server arg or interactive input)"
+  debug "interactive input: $SERVER"
 else
   debug "server: $SERVER"
 fi
@@ -129,22 +128,22 @@ fi
 # ---------- insecure ----------
 [[ $ARG_INSECURE -eq 1 ]] && INSECURE=1
 
-# ---------- TLS 后缀与 SNI（供转换库使用） ----------
+# ---------- TLS suffix & SNI (for conversion library) ----------
 TLS_SUFFIX=""
 [[ $INSECURE -eq 1 ]] && TLS_SUFFIX=', "insecure": true'
 
-# ---------- 转换：服务端 inbounds → 客户端 outbounds ----------
+# ---------- Convert: server inbounds → client outbounds ----------
 render_from_server
 
-# ---------- 校对: 至少一条线 ----------
-[[ -n "$OUTS" ]] || die2 "未转换出任何线路"
+# ---------- Validate: at least one line ----------
+[[ -n "$OUTS" ]] || die2 "no lines converted"
 
-# ---------- 校对: 重复 tag ----------
+# ---------- Validate: duplicate tags ----------
 if [[ $(echo "$TAGS" | tr ',' '\n' | sort | uniq -d | wc -l) -gt 0 ]]; then
-  die2 "重复 tag: $(echo "$TAGS" | tr ',' '\n' | sort | uniq -d | tr '\n' ' ')"
+  die2 "duplicate tags: $(echo "$TAGS" | tr ',' '\n' | sort | uniq -d | tr '\n' ' ')"
 fi
 
-# ---------- 组装 outbounds ----------
+# ---------- Assemble outbounds ----------
 AUTO_REFS="$TAGS"
 MANUAL_REFS="\"auto\"${TAGS:+, $TAGS}"
 OUTBOUNDS_ALL="${OUTS:+$OUTS, }"
@@ -161,13 +160,13 @@ if [[ "$INBOUND_TYPE" == "tun" ]]; then
 elif [[ "$INBOUND_TYPE" == "socks" ]]; then
   INBOUND_BLOCK="{ \"type\": \"socks\", \"tag\": \"socks-in\", \"listen\": \"127.0.0.1\", \"listen_port\": $INBOUND_PORT }"
 else
-  die1 "不支持的 --inbound: $INBOUND_TYPE（tun 或 socks[:port]）"
+  die1 "unsupported --inbound: $INBOUND_TYPE (tun or socks[:port])"
 fi
 
-# ---------- 渲染 ----------
+# ---------- Render ----------
 SB_OUTPUT="${SB_OUTPUT:-$OUTPUT_DEFAULT}"
 if ! mkdir -p "$(dirname "$SB_OUTPUT")" 2>/dev/null; then
-  die1 "无法写入输出目录（权限不足?）: $(dirname "$SB_OUTPUT")（加 --debug 看详情）"
+  die1 "cannot write output dir (permission?): $(dirname "$SB_OUTPUT") (add --debug for details)"
 fi
 if ! cat > "$SB_OUTPUT" <<EOF
 {
@@ -197,26 +196,26 @@ if ! cat > "$SB_OUTPUT" <<EOF
 }
 EOF
 then
-  die1 "无法写入输出文件（权限不足?）: $SB_OUTPUT（加 --debug 看详情）"
+  die1 "cannot write output file (permission?): $SB_OUTPUT (add --debug for details)"
 fi
 if [[ ! -s "$SB_OUTPUT" ]]; then
-  die1 "输出文件写入后为空（磁盘满?）: $SB_OUTPUT（加 --debug 看详情）"
+  die1 "output file empty after write (disk full?): $SB_OUTPUT (add --debug for details)"
 fi
-debug "输出已写入: $SB_OUTPUT"
+debug "output written: $SB_OUTPUT"
 
-# ---------- sing-box check（语法兜底：版本破坏性变更的最终防线） ----------
+# ---------- sing-box check (syntax net: final arbiter for breaking changes) ----------
 if [[ -n "$SB_BIN" ]]; then
   if timeout 15 "$SB_BIN" check -c "$SB_OUTPUT" 2>"$TMPD/check.err"; then
-    ok "已生成并通过 sing-box 校验: $SB_OUTPUT"
+    ok "generated and passed sing-box check: $SB_OUTPUT"
   else
-    err "配置校验失败:"; cat "$TMPD/check.err" >&2
+    err "config check failed:"; cat "$TMPD/check.err" >&2
     exit 2
   fi
 else
-  warn "已生成但未校验（无 sing-box 二进制）: $SB_OUTPUT"
+  warn "generated but not checked (no sing-box binary): $SB_OUTPUT"
 fi
 
-ok "服务端: $CONFIG_PATH → 客户端: $SB_OUTPUT"
-ok "连接地址: $SERVER   TLS: $([ $INSECURE -eq 1 ] && echo '自签(insecure)' || echo '真证书')   inbound: $INBOUND_TYPE"
-ok "已启用线路: ${TAGS}"
-ok "导入: 官方客户端（SFA/SFI）→ 从文件导入此 JSON"
+ok "server: $CONFIG_PATH → client: $SB_OUTPUT"
+ok "connect address: $SERVER   TLS: $([ $INSECURE -eq 1 ] && echo 'self-signed(insecure)' || echo 'real cert')   inbound: $INBOUND_TYPE"
+ok "lines enabled: ${TAGS}"
+ok "import: official client (SFA/SFI) → import from file"

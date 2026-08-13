@@ -1,18 +1,18 @@
-# 主机清单模板：cp hosts.conf.example hosts.conf 后编辑（hosts.conf 不进 git）
+# Host list template: cp hosts.conf.example hosts.conf then edit (hosts.conf stays out of git)
 #
-# 格式（| 分隔，一行一节点）:
+# Format (| separated, one node per line):
 #   name|address|reality_sni|reality_dest|reality_port|hy2_port|ss_port
 #
-#   - name        : 节点标识（小写字母/数字/连字符），同时是 out/ 下目录名
-#   - address     : VPS 公网 IP
-#   - reality_sni : Reality 伪装域名（客户端 TLS 的 server_name，须为真实存在的站点）
-#   - reality_dest: 回落目标（无有效客户端时 443 端口展示的站点），一般与 sni 相同
-#   - reality_port: VLESS+Reality 监听端口（TCP）
-#   - hy2_port    : Hysteria2 监听端口（UDP）；与 reality_port 同为 443 不冲突（不同协议栈）
-#   - ss_port     : Shadowsocks 2022 监听端口（TCP+UDP）
+#   - name        : node id (lowercase letters/digits/hyphens), also out/ dir name
+#   - address     : VPS public IP
+#   - reality_sni : Reality masquerade domain (client TLS server_name, must be a real site)
+#   - reality_dest: fallback target (shown on port 443 with no valid client), usually same as sni
+#   - reality_port: VLESS+Reality listen port (TCP)
+#   - hy2_port    : Hysteria2 listen port (UDP); same 443 as reality_port is fine (different stacks)
+#   - ss_port     : Shadowsocks 2022 listen port (TCP+UDP)
 #
-# 建议两个节点用不同的 SNI（如 microsoft / apple），增加抗封锁多样性。
-# 改端口或 SNI 后重跑 ./scripts/gen.sh，重新上传对应 server.json 并重启服务即可。
+# Tip: use different SNI per node (e.g. microsoft / apple) for anti-censorship diversity.
+# After changing ports/SNI re-run ./scripts/gen.sh, re-upload server.json and restart the service.
 
 node-a|1.2.3.4|www.microsoft.com|www.microsoft.com|443|443|8388
 node-b|5.6.7.8|www.apple.com|www.apple.com|443|443|8388

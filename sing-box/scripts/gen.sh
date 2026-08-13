@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# gen.sh — 本地生成整个套件的全部配置（不上服务器执行）
+# gen.sh — generate the whole suite locally (never run on the server)
 #
-# 用法: ./scripts/gen.sh
+# Usage: ./scripts/gen.sh
 #
-# 依赖: bash、openssl(>=1.1.1)、uuidgen(可选，缺失时用 openssl 兜底)
+# Deps: bash, openssl(>=1.1.1), uuidgen(optional, falls back to openssl)
 #
-# 输入: hosts.conf  —— 主机清单（cp hosts.conf.example hosts.conf 后填真实 IP）
-# 产物 (out/ 已被 .gitignore 排除，含服务端私钥，切勿提交/外传):
-#   out/<name>/server.json       → 上传到对应 VPS 使用
-#   out/<name>/secrets.env       → 该节点全部密钥存档（重装/换机靠它恢复）
-#   out/singbox-client.json      → 官方客户端导入（m×2 条线路 + urltest 自动选择）
+# Input: hosts.conf — host list (cp hosts.conf.example hosts.conf, fill real IPs)
+# Outputs (out/ is .gitignore-excluded, contains server private keys, never commit/leak):
+#   out/<name>/server.json       → upload to the VPS
+#   out/<name>/secrets.env       → full key archive for that node (recover after reinstall)
+#   out/singbox-client.json      → import into official client (m×2 lines + urltest auto-select)
 #
-# 幂等: 已存在的节点密钥会被复用，重复运行不会轮换密钥。
+# Idempotent: existing node keys are reused; re-runs do not rotate keys.
 #
 set -euo pipefail
 
@@ -21,10 +21,10 @@ HOSTS_FILE="${ROOT}/hosts.conf"
 SERVER_TPL="${ROOT}/templates/server.json.tpl"
 OUT_DIR="${ROOT}/out"
 
-# ---------- 版本（升级 sing-box 时只改这里；与 docs/runbook.md 保持一致） ----------
+# ---------- Version (only change here on upgrade; keep in sync with docs/runbook.md) ----------
 SINGBOX_VERSION="1.14.0-beta.14"
 
-# ---------- 工具函数 ----------
+# ---------- Helpers ----------
 
 gen_uuid() {
   if command -v uuidgen >/dev/null 2>&1; then
@@ -36,11 +36,11 @@ gen_uuid() {
   fi
 }
 
-# Reality X25519 密钥对：输出两行（私钥\n公钥），URL-safe raw base64
-# 注意：全部 openssl 都显式 </dev/null——本函数可能被 while read 循环调用，
-# 若继承循环 stdin（即 hosts.conf 的文件流）会把清单行当输入吞掉，导致导出错乱。
-# 格式：sing-box 1.14 的 Reality 密钥要求 URL-safe raw base64（官方 reality-keypair
-# 输出格式，含 -/_ 且无 = padding）；openssl 默认给的是标准 base64 带 padding，必须转换。
+# Reality X25519 keypair: prints two lines (priv\npub), URL-safe raw base64
+# Note: all openssl calls use explicit </dev/null — this fn may run inside a while read loop,
+# inheriting the loop stdin (hosts.conf file stream) would swallow lines and corrupt output.
+# Format: sing-box 1.14 Reality keys require URL-safe raw base64 (official reality-keypair
+# output: -/_ and no = padding); openssl emits standard base64 with padding, must convert.
 gen_reality_keys() {
   local pem priv pub
   pem="$(mktemp)"
@@ -53,38 +53,38 @@ gen_reality_keys() {
   printf '%s\n%s\n' "$priv" "$pub"
 }
 
-# sed 替换值专用转义（防 & | \ 破坏替换式）
+# sed replacement-value escaping (prevent & | \ breaking the expression)
 sed_escape() { printf '%s' "$1" | sed 's/[&|\\]/\\&/g'; }
 
-# ---------- 主流程 ----------
+# ---------- Main ----------
 
 [[ -f "$HOSTS_FILE" ]] || {
-  echo "缺少 $HOSTS_FILE：先执行 cp hosts.conf.example hosts.conf 并填入 VPS 真实 IP"
+  echo "missing $HOSTS_FILE: run cp hosts.conf.example hosts.conf and fill in the real VPS IPs"
   exit 1
 }
 
 mkdir -p "$OUT_DIR"
 
-# 第一遍：读清单 + 生成/复用密钥 + 渲染服务端配置
+# Pass 1: read list + generate/reuse keys + render server config
 declare -a HOST_NAMES=()
 declare -A HOST_ADDR HOST_SNI HOST_RPORT HOST_HPORT
 declare -A CLIENT_UUID CLIENT_PUB CLIENT_SHORT CLIENT_HY2PASS CLIENT_OBFS
 
 while IFS='|' read -r host addr sni dest rport hport sport; do
   [[ -z "$host" || "$host" == \#* ]] && continue
-  [[ "$host" =~ ^[a-z0-9-]+$ ]] || { echo "!! 主机名非法（须小写字母/数字/连字符）: $host"; exit 1; }
+  [[ "$host" =~ ^[a-z0-9-]+$ ]] || { echo "!! invalid host name (lowercase/digits/hyphens): $host"; exit 1; }
 
   dir="$OUT_DIR/$host"
   mkdir -p "$dir"
 
   if [[ -f "$dir/secrets.env" ]]; then
-    echo "==> $host: 复用已有密钥 ($dir/secrets.env)"
+    echo "==> $host: reusing existing keys ($dir/secrets.env)"
     # shellcheck disable=SC1090
     . "$dir/secrets.env"
   else
-    echo "==> $host: 生成新密钥"
+    echo "==> $host: generating new keys"
     SERVER_UUID="$(gen_uuid < /dev/null)"
-    # read 一次只消费一行：必须两条 read，分别取私钥行和公钥行
+    # read consumes one line per call: two reads needed for priv and pub lines
     { read -r REALITY_PRIVATE_KEY; read -r REALITY_PUBLIC_KEY; } <<<"$(gen_reality_keys)"
     REALITY_SHORT_ID="$(openssl rand -hex 4 < /dev/null)"
     HY2_PASSWORD="$(openssl rand -hex 16 < /dev/null)"
@@ -125,13 +125,13 @@ EOF
   CLIENT_SHORT[$host]="$REALITY_SHORT_ID"
   CLIENT_HY2PASS[$host]="$HY2_PASSWORD"
   CLIENT_OBFS[$host]="$HY2_OBFS"
-done < <(cat "$HOSTS_FILE"; printf '\n')   # 末尾补换行，防止最后一行无换行被 read 丢弃
+done < <(cat "$HOSTS_FILE"; printf '\n')   # trailing newline so read never drops the last line
 
-[[ ${#HOST_NAMES[@]} -gt 0 ]] || { echo "!! hosts.conf 里没有有效主机行"; exit 1; }
+[[ ${#HOST_NAMES[@]} -gt 0 ]] || { echo "!! no valid host lines in hosts.conf"; exit 1; }
 
-# 第二遍：渲染客户端配置（每节点 Reality + Hy2，共 2×N 条线路）
+# Pass 2: render client config (Reality + Hy2 per node, 2×N lines)
 CLIENT_OUT="$OUT_DIR/singbox-client.json"
-# DNS 查询固定走第一条节点线路（打破 auto→urltest→测速需解析→又走 DNS 的循环）
+# DNS queries pinned to the first node line (breaks the auto→urltest→resolve→DNS loop)
 DNS_DETOUR="${HOST_NAMES[0]}-reality"
 {
   printf '{\n'
@@ -160,7 +160,7 @@ DNS_DETOUR="${HOST_NAMES[0]}-reality"
   done
   printf ',\n'
 
-  # urltest 自动选优组 + 手动选择组
+  # urltest auto-select group + manual selector group
   tags=""
   for h in "${HOST_NAMES[@]}"; do
     [[ -z "$tags" ]] || tags+=", "
@@ -176,13 +176,13 @@ DNS_DETOUR="${HOST_NAMES[0]}-reality"
 } > "$CLIENT_OUT"
 
 echo
-echo "✔ 全部生成完毕，产物在 $OUT_DIR/:"
+echo "✔ all generated, outputs in $OUT_DIR/:"
 echo
-printf '  %-12s %-18s %s\n' "节点" "地址" "文件"
+printf '  %-12s %-18s %s\n' "node" "address" "file"
 for h in "${HOST_NAMES[@]}"; do
   printf '  %-12s %-18s out/%s/server.json (+ secrets.env)\n' "$h" "${HOST_ADDR[$h]}" "$h"
 done
-echo "  客户端:      out/singbox-client.json（${#HOST_NAMES[@]} 节点 × 2 协议 = $((2 * ${#HOST_NAMES[@]})) 条线路，auto 组自动选优）"
+echo "  client:      out/singbox-client.json (${#HOST_NAMES[@]} nodes × 2 protocols = $((2 * ${#HOST_NAMES[@]})) lines, auto group) "
 echo
-echo "!!! out/ 内含服务端私钥与全部密码，切勿提交 git / 外传 !!!"
-echo "部署步骤见 docs/runbook.md；升级版本改本脚本顶部 SINGBOX_VERSION（当前 $SINGBOX_VERSION）"
+echo "!!! out/ contains server private keys and all passwords, never commit / leak !!!"
+echo "deploy steps: docs/runbook.md; upgrade: change SINGBOX_VERSION at top (current $SINGBOX_VERSION)"

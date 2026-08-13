@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# setup.sh — 本机测试环境搭建：生成模拟 VPS 的 secrets + 六线 server 配置 + 自签证书
-# 用法: bash test-env/setup.sh
-# 产物:
-#   test-env/secrets/env.sh     ← 模拟 VPS 的 /etc/sing-box/secrets.env
-#   test-env/server/config.json ← 六线服务端配置（listen 127.0.0.1 高端口，非 root 可跑）
-#   test-env/server/hy2.{crt,key} ← 自签 ECDSA 证书（模拟 VPS 自签阶段）
+# setup.sh — build local test env: generate mock VPS secrets + server config + self-signed cert
+# Usage: bash test-env/setup.sh
+# Outputs:
+#   test-env/secrets/env.sh      ← mock VPS /etc/sing-box/secrets.env
+#   test-env/server/config.json  ← server config (listen 127.0.0.1 high ports, non-root)
+#   test-env/server/hy2.{crt,key} ← self-signed ECDSA cert (mock VPS self-signed stage)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$ROOT/test-env"
@@ -12,7 +12,7 @@ mkdir -p "$T/secrets" "$T/server" "$T/client"
 
 cd "$T/secrets"
 
-# ---------- 生成密钥（与 VPS 部署流程同构） ----------
+# ---------- Generate keys (same shape as VPS deploy flow) ----------
 SB_UUID=$(cat /proc/sys/kernel/random/uuid)
 openssl genpkey -algorithm X25519 -out /tmp/te-x.pem 2>/dev/null
 SB_PRIV=$(openssl pkey -in /tmp/te-x.pem -outform DER 2>/dev/null | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')
@@ -44,13 +44,13 @@ NAIVE_PASS='$NAIVE_PASS'
 EOF
 chmod 600 env.sh
 
-# ---------- 自签 ECDSA 证书（模拟 VPS hy2.crt/hy2.key；CN 用 your.domain.example 与 naive 的 server_name 匹配） ----------
+# ---------- Self-signed ECDSA cert (mock VPS hy2.crt/hy2.key; CN=your.domain.example matches naive server_name) ----------
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
   -nodes -keyout "$T/server/hy2.key" -out "$T/server/hy2.crt" \
   -days 3650 -subj "/CN=your.domain.example" 2>/dev/null
 chmod 600 "$T/server/hy2.key"
 
-# ---------- 六线 server 配置（127.0.0.1 + 高端口，非 root 可监听） ----------
+# ---------- Server config (127.0.0.1 + high ports, non-root listenable) ----------
 . "$T/secrets/env.sh"
 cat > "$T/server/config.json" <<EOF
 {
@@ -90,7 +90,7 @@ cat > "$T/server/config.json" <<EOF
 }
 EOF
 
-echo "✔ 测试环境就绪:"
+echo "✔ test env ready:"
 echo "  secrets → $T/secrets/env.sh"
 echo "  server  → $T/server/config.json"
-echo "  证书    → $T/server/hy2.{crt,key}"
+echo "  cert    → $T/server/hy2.{crt,key}"
