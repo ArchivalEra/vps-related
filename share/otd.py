@@ -235,6 +235,9 @@ def main():
     ap = argparse.ArgumentParser(description="one-time HTTPS file sharing")
     ap.add_argument("file", help="path to the file to share (e.g. client.json)")
     ap.add_argument("--port", type=int, default=443, help="listen port (default 443)")
+    ap.add_argument("--host", default=None,
+                    help="public address for the link (domain/IP; default: auto-detect public IP, "
+                         "fallback hostname — on a VPS use --host your.domain or the public IP)")
     ap.add_argument("--key", default=None, help="pin a specific 8-char key (default: random)")
     ap.add_argument("--name", default=None, help="download filename (rename; default: original basename)")
     ap.add_argument("--count", type=int, default=1, help="allowed downloads (default 1 = one-time; must be >= 1)")
@@ -254,7 +257,18 @@ def main():
     with tempfile.TemporaryDirectory() as td:
         cert, keyf = os.path.join(td, "crt.pem"), os.path.join(td, "key.pem")
         make_cert(cert, keyf)
-        print(f"one-time download link:  https://{socket.gethostname()}:{args.port}/{key}", flush=True)
+        # link host: --host > public IP detect > hostname (hostname is often useless on a VPS)
+        host = args.host
+        if not host:
+            import urllib.request
+            try:
+                with urllib.request.urlopen("https://ifconfig.me/ip", timeout=5) as r:
+                    host = r.read().decode().strip()
+            except Exception:
+                host = socket.gethostname()
+        if args.host is None and host != socket.gethostname():
+            print(f"  (link host auto-detected: {host} — override with --host if wrong)", flush=True)
+        print(f"one-time download link:  https://{host}:{args.port}/{key}", flush=True)
         print(f"  (file: {f}  rename→: {_OTD['name'] or os.path.basename(f)}  downloads: {args.count}  ttl: 300s)", flush=True)
         if args.port == 443:
             h3 = serve_http3(443, cert, keyf, "0.0.0.0")
@@ -264,7 +278,7 @@ def main():
                 print("  ⚠ aioquic not installed — HTTP/3 skipped; HTTPS (TCP) only", flush=True)
         else:
             print("  (port != 443: HTTP/3 skipped, HTTPS only)", flush=True)
-        print("  client:  curl -kOJ https://<host>:443/<key>   (self-signed → -k)", flush=True)
+        print(f"  client:  curl -kOJ https://{host}:{args.port}/{key}   (self-signed → -k)", flush=True)
         serve_https(args.port, cert, keyf)
 
 
