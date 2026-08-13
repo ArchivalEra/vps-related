@@ -78,18 +78,25 @@ fi
 # ---------- 输入检查 ----------
 [[ -n "$CONFIG_PATH" ]] || die1 "必须 --from-server 指定服务端 config.json"
 [[ -f "$CONFIG_PATH" ]] || die1 "服务端 config.json 不存在: $CONFIG_PATH"
+[[ -r "$CONFIG_PATH" ]] || die1 "服务端 config.json 无法读取（权限不足）: $CONFIG_PATH（加 --debug 看详情）"
 debug "服务端 config: $CONFIG_PATH"
 
 # ---------- 解析服务端 config（python3 只解析，转换在 bash） ----------
 command -v python3 >/dev/null 2>&1 || die1 "需要 python3 解析 config.json"
-python3 - "$CONFIG_PATH" "$TMPD" <<'PY'
+if ! python3 - "$CONFIG_PATH" "$TMPD" <<'PY'
 import json, sys, os
 c = json.load(open(sys.argv[1]))
 ibs = c.get("inbounds", [])
 if not isinstance(ibs, list): ibs = []
 json.dump(ibs, open(os.path.join(sys.argv[2], "inbounds.json"), "w"))
 PY
+then
+  die1 "服务端 config.json 解析失败（JSON 损坏或不可读）: $CONFIG_PATH（加 --debug 看详情）"
+fi
 INBOUND_COUNT="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
+if [[ -z "$INBOUND_COUNT" ]]; then
+  die1 "服务端 config.json 解析失败（未生成 inbounds 索引）: $CONFIG_PATH（加 --debug 看详情）"
+fi
 if [[ "$INBOUND_COUNT" -eq 0 ]]; then
   die2 "服务端 config 没有 inbounds"
 fi
@@ -160,9 +167,9 @@ fi
 # ---------- 渲染 ----------
 SB_OUTPUT="${SB_OUTPUT:-$OUTPUT_DEFAULT}"
 if ! mkdir -p "$(dirname "$SB_OUTPUT")" 2>/dev/null; then
-  die1 "无法写入输出目录: $(dirname "$SB_OUTPUT")（root 或 SB_OUTPUT 指定可写路径）"
+  die1 "无法写入输出目录（权限不足?）: $(dirname "$SB_OUTPUT")（加 --debug 看详情）"
 fi
-cat > "$SB_OUTPUT" <<EOF
+if ! cat > "$SB_OUTPUT" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
   "dns": {
@@ -189,6 +196,13 @@ cat > "$SB_OUTPUT" <<EOF
   }
 }
 EOF
+then
+  die1 "无法写入输出文件（权限不足?）: $SB_OUTPUT（加 --debug 看详情）"
+fi
+if [[ ! -s "$SB_OUTPUT" ]]; then
+  die1 "输出文件写入后为空（磁盘满?）: $SB_OUTPUT（加 --debug 看详情）"
+fi
+debug "输出已写入: $SB_OUTPUT"
 
 # ---------- sing-box check（语法兜底：版本破坏性变更的最终防线） ----------
 if [[ -n "$SB_BIN" ]]; then
