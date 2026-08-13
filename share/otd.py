@@ -6,8 +6,10 @@ Completely independent of gen-client.sh / protocols.lib.sh — its only job is
 to serve one file once via a short-lived HTTPS link.
 
 Usage:
-  # server side (the machine holding the json)
-  python3 otd.py serve ./client.json --port 443 --name client-config.json
+  # server side (the machine holding the json) — one command:
+  ./otd.py ./client.json --port 443 --name client-config.json
+  #   or with python3:  python3 otd.py ./client.json ...
+  #   (legacy `otd.py serve ./client.json ...` also accepted)
       → prints: one-time download link:  https://<host>:443/<8-char-key>
 
   # client side (any device)
@@ -181,15 +183,17 @@ def serve_http3(port, cert, key, host):
 
 
 def main():
+    # one command:  otd.py ./file.json [--port 443] [--key XXX] [--name X.json]
+    # compatible:   otd.py serve ./file.json ...
+    argv = sys.argv[1:]
+    if argv and argv[0] == "serve":
+        argv = argv[1:]
     ap = argparse.ArgumentParser(description="one-time HTTPS file sharing")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    s = sub.add_parser("serve", help="serve one file once")
-    s.add_argument("file", help="path to the file to share (e.g. client.json)")
-    s.add_argument("--port", type=int, default=443, help="listen port (default 443)")
-    s.add_argument("--key", default=None, help="pin a specific 8-char key (default: random)")
-    s.add_argument("--name", default=None, help="download filename (rename; default: original basename)")
-    args = ap.parse_args()
+    ap.add_argument("file", help="path to the file to share (e.g. client.json)")
+    ap.add_argument("--port", type=int, default=443, help="listen port (default 443)")
+    ap.add_argument("--key", default=None, help="pin a specific 8-char key (default: random)")
+    ap.add_argument("--name", default=None, help="download filename (rename; default: original basename)")
+    args = ap.parse_args(argv)
 
     f = os.path.abspath(args.file)
     if not os.path.isfile(f):
