@@ -7,7 +7,7 @@ to serve one file once via a short-lived HTTPS link.
 
 Usage:
   # server side (the machine holding the json) — one command:
-  ./otd.py ./client.json --port 443 --name client-config.json
+  ./otd.py ./client.json --port 443 --name client-config.json [--count N]
   #   or with python3:  python3 otd.py ./client.json ...
   #   (legacy `otd.py serve ./client.json ...` also accepted)
       → prints: one-time download link:  https://<host>:443/<8-char-key>
@@ -18,7 +18,7 @@ Usage:
 
   Security model:
   - 8-char URL-safe key (alphanumeric), generated fresh per serve (or --key to pin).
-  - One-time: the key is served exactly once, then invalidated (in-memory + TTL).
+  - Download count: --count N allows N downloads (default 1 = one-time), then 410.
   - Temporary self-signed cert (openssl-generated, ECDSA P-256), regenerated per run.
   - HTTPS enforced (no plain HTTP); client uses -k for self-signed.
 
@@ -29,10 +29,11 @@ Usage:
   - curl -OJ only honors the ASCII `filename` fallback (known curl limitation),
     so `curl -kOJ <link>` saves as otd-download.json — use a browser for the exact rename.
 
-QUIC/HTTP3:
+  QUIC/HTTP3:
   - Preferred: if `aioquic` is installed, an HTTP/3 server listens on 443/udp.
   - Fallback: standard-library HTTPS on 443/tcp (always available), with a warning.
-  - Self-signed certs are unusual on QUIC in practice; HTTP/3 path is best-effort.
+  - HTTP/3 is experimental/best-effort: aioquic API varies by version and QUIC handshakes
+    are environment-sensitive. HTTPS (TCP) is the dependable path — HTTP/3 never blocks it.
 """
 import argparse
 import http.server
@@ -58,6 +59,39 @@ def gen_key(n=8):
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
+def prepare_download():
+    """One-time download semantics — single source of truth for both transports.
+
+    Streams big files: returns (status, headers, size, fileobj) where fileobj is
+    an open binary file for the caller to stream in chunks (never loads the whole
+    file into memory — supports huge files). On error, fileobj is None and the
+    last element is the error body bytes.
+    """
+    if _OTD["remaining"] <= 0:
+        return 410, [], 0, b"Gone (download count exhausted)"
+    if time.time() > _OTD["expires"]:
+        return 410, [], 0, b"Gone (key expired)"
+    if not os.path.isfile(_OTD["file"]):
+        return 404, [], 0, b"file gone"
+    try:
+        f = open(_OTD["file"], "rb")
+    except OSError:
+        return 500, [], 0, b"read failed"
+    _OTD["remaining"] -= 1  # consume one, after successful open
+    size = os.path.getsize(_OTD["file"])
+    fname = _OTD["name"] or os.path.basename(_OTD["file"])
+    enc = urllib.parse.quote(fname)
+    return 200, [
+        ("Content-Type", "application/octet-stream"),
+        # RFC 5987: ASCII fallback filename + filename* for non-ASCII/space (latin-1 safe)
+        ("Content-Disposition",
+         "attachment; filename=otd-download.json; filename*=UTF-8''" + enc),
+    ], size, f
+
+
+_CHUNK = 64 * 1024  # 64 KiB streaming chunk
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "OTD/1.0"
 
@@ -65,35 +99,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def _serve_once(self):
-        # count gate: remaining downloads
-        if _OTD["remaining"] <= 0:
-            self.send_error(410, "Gone (download count exhausted)")
-            return
-        if time.time() > _OTD["expires"]:
-            self.send_error(410, "Gone (key expired)")
-            return
-        if not os.path.isfile(_OTD["file"]):
-            self.send_error(404, "file gone")
-            return
-        _OTD["remaining"] -= 1  # consume one, before sending
-        try:
-            with open(_OTD["file"], "rb") as f:
-                data = f.read()
-        except OSError:
-            _OTD["remaining"] += 1  # refund the consumed download
-            self.send_error(500, "read failed")
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        # rename: client gets this filename (curl -OJ / browser saves as)
-        fname = _OTD["name"] or os.path.basename(_OTD["file"])
-        # RFC 5987: ASCII fallback filename + filename* for non-ASCII/space (latin-1 safe)
-        enc = urllib.parse.quote(fname)
-        self.send_header("Content-Disposition",
-                         "attachment; filename=otd-download.json; filename*=UTF-8''" + enc)
+        status, headers, size, f = prepare_download()
+        self.send_response(status)
+        for k, v in headers:
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(size))
         self.end_headers()
-        self.wfile.write(data)
+        if f is not None:
+            try:
+                while True:
+                    chunk = f.read(_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            finally:
+                f.close()
+        else:
+            self.wfile.write(size)  # error body
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path.lstrip("/")
@@ -124,18 +146,33 @@ def serve_https(port, cert, key):
 
 
 def serve_http3(port, cert, key, host):
-    """Best-effort HTTP/3 via aioquic; returns True if started."""
+    """Best-effort HTTP/3 via aioquic (optional). Returns True if started.
+
+    Never crashes the tool: any aioquic absence/version/API mismatch or thread
+    error is reported as a warning and HTTPS keeps serving.
+    """
     try:
         import asyncio
         from aioquic.asyncio import serve as aq_serve
+        from aioquic.asyncio.protocol import QuicConnectionProtocol
         from aioquic.quic.configuration import QuicConfiguration
         from aioquic.h3.connection import H3Connection
-        from aioquic.h3.events import H3Event, HeadersReceived, DataReceived
+        from aioquic.h3.events import HeadersReceived
     except ImportError:
         return False
 
-    class H3Proto:
+    # fail fast if the UDP port can't be bound
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind((host, port))
+        s.close()
+    except OSError as e:
+        print(f"  ⚠ HTTP/3 skipped: UDP {port} not bindable ({e})", flush=True)
+        return False
+
+    class H3Proto(QuicConnectionProtocol):
         def __init__(self, *a, **k):
+            super().__init__(*a, **k)
             self.http = None
 
         def quic_event_received(self, event):
@@ -149,43 +186,48 @@ def serve_http3(port, cert, key, host):
         def _on_headers(self, event):
             path = urllib.parse.urlparse(
                 event.headers[b":path"].decode()).path.lstrip("/")
-            if path != _OTD["key"] or _OTD["remaining"] <= 0 or time.time() > _OTD["expires"]:
-                status, body = 404, b"not found"
+            if path != _OTD["key"]:  # routing; semantics come from prepare_download
+                status, headers, size, body = 404, [], 0, b"not found"
             else:
-                _OTD["remaining"] -= 1
+                status, headers, size, f = prepare_download()
+            hdrs = [(b":status", str(status).encode())]
+            hdrs += [(k.encode(), v.encode()) for k, v in headers]
+            self.http.send_headers(event.stream_id, hdrs, end_stream=False)
+            if f is not None:
                 try:
-                    body = open(_OTD["file"], "rb").read()
-                    status = 200
-                except OSError:
-                    _OTD["remaining"] += 1  # refund
-                    body, status = b"read failed", 500
-            fname = _OTD["name"] or os.path.basename(_OTD["file"])
-            enc = urllib.parse.quote(fname)
-            headers = [
-                (b":status", str(status).encode()),
-                (b"content-type", b"application/json"),
-                (b"content-disposition",
-                 ("attachment; filename=otd-download.json; filename*=UTF-8''" + enc).encode()),
-            ]
-            self.http.send_headers(event.stream_id, headers, end_stream=False)
-            self.http.send_data(event.stream_id, body, end_stream=True)
+                    while True:
+                        chunk = f.read(_CHUNK)
+                        if not chunk:
+                            break
+                        self.http.send_data(event.stream_id, chunk, end_stream=False)
+                finally:
+                    f.close()
+                self.http.send_data(event.stream_id, b"", end_stream=True)
+            else:
+                self.http.send_data(event.stream_id, body, end_stream=True)
 
         def quic_event_received_udp(self, event):  # pragma: no cover
             pass
 
     async def _main():
-        cfg = QuicConfiguration(is_client=False)
+        cfg = QuicConfiguration(is_client=False, alpn_protocols=["h3"])
         cfg.load_cert_chain(cert, key)
         await aq_serve(host, port, configuration=cfg,
-                       create_protocol=H3Proto, alpn_protocols=["h3"])
+                       create_protocol=H3Proto)
         await asyncio.Future()
 
-    threading.Thread(target=lambda: asyncio.run(_main()), daemon=True).start()
+    def _run():
+        try:
+            asyncio.run(_main())
+        except Exception as e:  # surface thread errors instead of dying silently
+            print(f"  ⚠ HTTP/3 thread error: {e}", flush=True)
+
+    threading.Thread(target=_run, daemon=True).start()
     return True
 
 
 def main():
-    # one command:  otd.py ./file.json [--port 443] [--key XXX] [--name X.json]
+    # one command:  otd.py ./file.json [--port 443] [--key XXX] [--name X.json] [--count N]
     # compatible:   otd.py serve ./file.json ...
     argv = sys.argv[1:]
     if argv and argv[0] == "serve":
