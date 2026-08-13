@@ -189,8 +189,6 @@ def main():
     s.add_argument("--port", type=int, default=443, help="listen port (default 443)")
     s.add_argument("--key", default=None, help="pin a specific 8-char key (default: random)")
     s.add_argument("--name", default=None, help="download filename (rename; default: original basename)")
-    s.add_argument("--ttl", type=int, default=300, help="key lifetime seconds (default 300)")
-    s.add_argument("--host", default="0.0.0.0", help="bind address")
     args = ap.parse_args()
 
     f = os.path.abspath(args.file)
@@ -200,15 +198,15 @@ def main():
     if not (4 <= len(key) <= 16 and key.isalnum()):
         sys.exit("key must be 4-16 alphanumeric chars")
     _OTD.update(key=key, file=f, name=args.name,
-                expires=time.time() + args.ttl)
+                expires=time.time() + 300)  # 5-min TTL, fixed
 
     with tempfile.TemporaryDirectory() as td:
         cert, keyf = os.path.join(td, "crt.pem"), os.path.join(td, "key.pem")
         make_cert(cert, keyf)
         print(f"one-time download link:  https://{socket.gethostname()}:{args.port}/{key}", flush=True)
-        print(f"  (file: {f}  rename→: {_OTD['name'] or os.path.basename(f)}  ttl: {args.ttl}s)", flush=True)
+        print(f"  (file: {f}  rename→: {_OTD['name'] or os.path.basename(f)}  ttl: 300s)", flush=True)
         if args.port == 443:
-            h3 = serve_http3(443, cert, keyf, args.host)
+            h3 = serve_http3(443, cert, keyf, "0.0.0.0")
             if h3:
                 print("  http/3 (QUIC) enabled on 443/udp", flush=True)
             else:

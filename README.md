@@ -10,12 +10,10 @@ Everything VPS-related (scripts / configs / deployment notes), organized by proj
 
 ## sing-box quick start
 
-All three scripts live together in `sing-box/scripts/` — copy them into one dir on any machine (VPS, laptop):
-
-| Script | Purpose |
-|---|---|
-| `gen-client.sh` + `protocols.lib.sh` | server `config.json` → client `client.json` converter (single input/output, no intermediate config) |
-| `otd.py` | one-time HTTPS file sharing — serve a file once via an 8-char key link (independent of the converter) |
+| Script | Location | Purpose |
+|---|---|---|
+| `gen-client.sh` + `protocols.lib.sh` | `sing-box/scripts/` (same dir) | server `config.json` → client `client.json` converter (single input/output, no intermediate config) |
+| `otd.py` | `share/` (top-level, independent) | one-time HTTPS file sharing — serve a file once via an 8-char key link |
 
 ### 1. Client config converter
 
@@ -33,6 +31,7 @@ SB_OUTPUT=~/client.json bash gen-client.sh --from-server /etc/sing-box/config.js
 
 ```bash
 # server side — serve the generated client json once:
+cd share
 python3 otd.py serve ./config-client.json --port 443 --name client-config.json
 #   → prints: one-time download link:  https://<host>:443/<8-char-key>
 # client side — open the link in a browser (downloads with the given name), or:
