@@ -80,23 +80,25 @@ fi
 [[ -f "$CONFIG_PATH" ]] || die1 "服务端 config.json 不存在: $CONFIG_PATH"
 debug "服务端 config: $CONFIG_PATH"
 
-# ---------- 解析服务端 inbounds（python3 只解析，转换在 bash） ----------
+# ---------- 解析服务端 config（python3 只解析，转换在 bash） ----------
+# 输出 inbounds.json + endpoints.json（1.14 的 wireguard 是 endpoint 形态，在顶层 endpoints 数组）
 command -v python3 >/dev/null 2>&1 || die1 "需要 python3 解析 config.json"
-python3 - "$CONFIG_PATH" > "$TMPD/inbounds.json" <<'PY'
-import json, sys
+python3 - "$CONFIG_PATH" "$TMPD" <<'PY'
+import json, sys, os
 c = json.load(open(sys.argv[1]))
 ibs = c.get("inbounds", [])
-if not isinstance(ibs, list):
-    print("[]")
-else:
-    json.dump(ibs, open(sys.argv[1] + ".ibs", "w"))
-    # 直接输出数组到 stdout（由重定向写入）
+eps = c.get("endpoints", [])
+if not isinstance(ibs, list): ibs = []
+if not isinstance(eps, list): eps = []
+json.dump(ibs, open(os.path.join(sys.argv[2], "inbounds.json"), "w"))
+json.dump(eps, open(os.path.join(sys.argv[2], "endpoints.json"), "w"))
 PY
-# 上一步 python 把数组写进了同路径 .ibs，移回来（兼容 stdin 重定向）
-if [[ -f "$CONFIG_PATH.ibs" ]]; then mv "$CONFIG_PATH.ibs" "$TMPD/inbounds.json"; fi
 INBOUND_COUNT="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
-[[ "$INBOUND_COUNT" -gt 0 ]] || die2 "服务端 config 没有 inbounds"
-debug "inbounds 共 $INBOUND_COUNT 个"
+ENDPOINT_COUNT="$(python3 -c "import json;print(len(json.load(open('$TMPD/endpoints.json'))))")"
+if [[ "$INBOUND_COUNT" -eq 0 && "$ENDPOINT_COUNT" -eq 0 ]]; then
+  die2 "服务端 config 没有 inbounds 或 endpoints"
+fi
+debug "inbounds 共 $INBOUND_COUNT 个，endpoints 共 $ENDPOINT_COUNT 个"
 
 # ---------- 版本检测（时间线兼容） ----------
 SB_BIN="${SB_BIN:-}"

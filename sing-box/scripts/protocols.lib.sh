@@ -80,14 +80,14 @@ open('$derfile','wb').write(der)
 # 公共输入变量（gen-client.sh 提供）: SERVER（客户端连接地址）/ INSECURE / TMPD / INB 索引
 OUTS=""; TAGS=""; EP_S=""
 
-# 取第 $1 个 inbound 的字段；$2=点分路径；输出到 stdout
-# 路径规则: dict 按 key 取；list 若下一段是数字按下标取、否则取首元素（如 short_id 数组）
-inb_field() { # $1=inbound 索引  $2=点分字段路径
-  local f="${TMPD:-/tmp}/inbounds.json"
-  python3 - "$f" "$1" "$2" <<'PY'
+# 取第 $1 个元素的字段（$1=索引，$2=源文件 inbounds|endpoints，$3=点分路径）；输出到 stdout
+# 路径规则: dict 按 key 取；list 若下一段是数字按下标取、否则取首元素（如 short_id 数组 / peers 数组）
+inb_field() { # $1=元素索引  $2=源文件(inbounds|endpoints)  $3=点分字段路径
+  local src="${TMPD:-/tmp}/$2.json"
+  python3 - "$src" "$1" "$3" <<'PY'
 import json, sys
-ibs = json.load(open(sys.argv[1]))
-v = ibs[int(sys.argv[2])]
+arr = json.load(open(sys.argv[1]))
+v = arr[int(sys.argv[2])]
 for k in sys.argv[3].split('.'):
     if isinstance(v, list):
         if k.isdigit():
@@ -105,16 +105,16 @@ PY
 
 convert_vless() { # $1=inbound 索引 —— 服务端 vless(reality) → 客户端 vless(reality)
   local i="$1" uuid flow sni priv short pub
-  uuid="$(inb_field $i 'users.0.uuid')"
-  flow="$(inb_field $i 'users.0.flow')"
-  sni="$(inb_field $i 'tls.server_name')"
-  priv="$(inb_field $i 'tls.reality.private_key')"
-  short="$(inb_field $i 'tls.reality.short_id.0')"
-  [[ -z "$short" ]] && short="$(inb_field $i 'tls.reality.short_id')"
+  uuid="$(inb_field $i inbounds 'users.0.uuid')"
+  flow="$(inb_field $i inbounds 'users.0.flow')"
+  sni="$(inb_field $i inbounds 'tls.server_name')"
+  priv="$(inb_field $i inbounds 'tls.reality.private_key')"
+  short="$(inb_field $i inbounds 'tls.reality.short_id.0')"
+  [[ -z "$short" ]] && short="$(inb_field $i inbounds 'tls.reality.short_id')"
   [[ -z "$priv" ]] && { warn "vless inbound[$i] 缺 reality private_key，跳过"; return; }
   pub="$(derive_pubkey "$priv")" || { warn "vless inbound[$i] 私钥派生公钥失败，跳过"; return; }
   local port
-  port="$(inb_field $i 'listen_port')"
+  port="$(inb_field $i inbounds 'listen_port')"
   [[ -z "$port" || "$port" == "0" ]] && { warn "vless inbound[$i] 缺 listen_port，跳过"; return; }
   OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"reality\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"flow\": \"$flow\", \"packet_encoding\": \"xudp\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" }, \"reality\": { \"enabled\": true, \"public_key\": \"$pub\", \"short_id\": \"$short\" } } }"
   TAGS+="${TAGS:+, }\"reality\""
@@ -123,14 +123,14 @@ convert_vless() { # $1=inbound 索引 —— 服务端 vless(reality) → 客户
 
 convert_hy2() { # $1=inbound 索引 —— 服务端 hysteria2 → 客户端 hysteria2
   local i="$1" pass obfs_type obfs_pass
-  pass="$(inb_field $i 'users.0.password')"
-  obfs_type="$(inb_field $i 'obfs.type')"
-  obfs_pass="$(inb_field $i 'obfs.password')"
+  pass="$(inb_field $i inbounds 'users.0.password')"
+  obfs_type="$(inb_field $i inbounds 'obfs.type')"
+  obfs_pass="$(inb_field $i inbounds 'obfs.password')"
   local obfs_json=""
   [[ -n "$obfs_type" && -n "$obfs_pass" ]] && obfs_json=", \"obfs\": { \"type\": \"$obfs_type\", \"password\": \"$obfs_pass\" }"
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
-  local port; port="$(inb_field $i 'listen_port')"
+  local port; port="$(inb_field $i inbounds 'listen_port')"
   OUTS+="${OUTS:+, }{ \"type\": \"hysteria2\", \"tag\": \"hy2\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\"$obfs_json, \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
   TAGS+="${TAGS:+, }\"hy2\""
   debug "hy2 ← inbound[$i] port=$port obfs=$obfs_type"
@@ -138,29 +138,29 @@ convert_hy2() { # $1=inbound 索引 —— 服务端 hysteria2 → 客户端 hys
 
 convert_shadowtls() { # $1=inbound 索引 —— 服务端 shadowtls(链式→ss) → 客户端 shadowtls + ss(detour)
   local i="$1" pass ver handshake_sni detour_tag ss_in
-  pass="$(inb_field $i 'users.0.password')"
-  ver="$(inb_field $i 'version')"
+  pass="$(inb_field $i inbounds 'users.0.password')"
+  ver="$(inb_field $i inbounds 'version')"
   [[ -z "$ver" || "$ver" == "0" ]] && ver=3
-  handshake_sni="$(inb_field $i 'handshake.server')"
-  local port; port="$(inb_field $i 'listen_port')"
+  handshake_sni="$(inb_field $i inbounds 'handshake.server')"
+  local port; port="$(inb_field $i inbounds 'listen_port')"
   OUTS+="${OUTS:+, }{ \"type\": \"shadowtls\", \"tag\": \"shadowtls\", \"server\": \"$SERVER\", \"server_port\": $port, \"version\": $ver, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$handshake_sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" } } }"
   TAGS+="${TAGS:+, }\"shadowtls\""
   # 链式: 找 detour 指向的 ss inbound，生成 ss(detour→shadowtls)
-  detour_tag="$(inb_field $i 'detour')"
+  detour_tag="$(inb_field $i inbounds 'detour')"
   local n ss_method ss_pass ss_port
   n="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
   ss_in=""
   for ((j=0; j<n; j++)); do
-    local t; t="$(inb_field $j 'type')"
+    local t; t="$(inb_field $j inbounds 'type')"
     if [[ "$t" == "shadowsocks" ]]; then
-      local tag; tag="$(inb_field $j 'tag')"
+      local tag; tag="$(inb_field $j inbounds 'tag')"
       if [[ "$detour_tag" == "$tag" || -z "$detour_tag" ]]; then ss_in=$j; break; fi
     fi
   done
   if [[ -n "$ss_in" ]]; then
-    ss_method="$(inb_field $ss_in 'method')"
-    ss_pass="$(inb_field $ss_in 'password')"
-    ss_port="$(inb_field $ss_in 'listen_port')"
+    ss_method="$(inb_field $ss_in inbounds 'method')"
+    ss_pass="$(inb_field $ss_in inbounds 'password')"
+    ss_port="$(inb_field $ss_in inbounds 'listen_port')"
     OUTS+=", { \"type\": \"shadowsocks\", \"tag\": \"ss-over-st\", \"server\": \"$SERVER\", \"server_port\": $ss_port, \"method\": \"$ss_method\", \"password\": \"$ss_pass\", \"detour\": \"shadowtls\" }"
     TAGS+=", \"ss-over-st\""
     debug "shadowtls ← inbound[$i] + ss链 inbound[$ss_in]"
@@ -171,13 +171,13 @@ convert_shadowtls() { # $1=inbound 索引 —— 服务端 shadowtls(链式→ss
 
 convert_tuic() { # $1=inbound 索引 —— 服务端 tuic → 客户端 tuic
   local i="$1" uuid pass cc
-  uuid="$(inb_field $i 'users.0.uuid')"
-  pass="$(inb_field $i 'users.0.password')"
-  cc="$(inb_field $i 'congestion_control')"
+  uuid="$(inb_field $i inbounds 'users.0.uuid')"
+  pass="$(inb_field $i inbounds 'users.0.password')"
+  cc="$(inb_field $i inbounds 'congestion_control')"
   [[ -z "$cc" ]] && cc="bbr"
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
-  local port; port="$(inb_field $i 'listen_port')"
+  local port; port="$(inb_field $i inbounds 'listen_port')"
   OUTS+="${OUTS:+, }{ \"type\": \"tuic\", \"tag\": \"tuic\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
   TAGS+="${TAGS:+, }\"tuic\""
   debug "tuic ← inbound[$i] port=$port"
@@ -185,10 +185,10 @@ convert_tuic() { # $1=inbound 索引 —— 服务端 tuic → 客户端 tuic
 
 convert_anytls() { # $1=inbound 索引 —— 服务端 anytls → 客户端 anytls
   local i="$1" pass
-  pass="$(inb_field $i 'users.0.password')"
+  pass="$(inb_field $i inbounds 'users.0.password')"
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
-  local port; port="$(inb_field $i 'listen_port')"
+  local port; port="$(inb_field $i inbounds 'listen_port')"
   OUTS+="${OUTS:+, }{ \"type\": \"anytls\", \"tag\": \"anytls\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
   TAGS+="${TAGS:+, }\"anytls\""
   debug "anytls ← inbound[$i] port=$port"
@@ -196,64 +196,79 @@ convert_anytls() { # $1=inbound 索引 —— 服务端 anytls → 客户端 any
 
 convert_ss() { # $1=inbound 索引 —— 直连 shadowsocks → 客户端 ss（被 shadowtls 链消费的跳过）
   local i="$1" method pass tag
-  tag="$(inb_field $i 'tag')"
+  tag="$(inb_field $i inbounds 'tag')"
   if [[ " ${CONSUMED_SS_TAGS:-} " == *" $tag "* ]]; then
     debug "ss inbound[$i]($tag) 已被 shadowtls 链消费，跳过直连转换"
     return
   fi
-  method="$(inb_field $i 'method')"
-  pass="$(inb_field $i 'password')"
-  local port; port="$(inb_field $i 'listen_port')"
+  method="$(inb_field $i inbounds 'method')"
+  pass="$(inb_field $i inbounds 'password')"
+  local port; port="$(inb_field $i inbounds 'listen_port')"
   OUTS+="${OUTS:+, }{ \"type\": \"shadowsocks\", \"tag\": \"ss2022\", \"server\": \"$SERVER\", \"server_port\": $port, \"method\": \"$method\", \"password\": \"$pass\" }"
   TAGS+="${TAGS:+, }\"ss2022\""
   debug "ss ← inbound[$i] port=$port"
 }
 
-convert_wg() { # $1=inbound 索引 —— 服务端 wireguard → 客户端 endpoint（客户端私钥确定性派生，对端公钥从服务端私钥派生）
+convert_wg() { # $1=源文件(endpoints) 索引 —— 服务端 wireguard endpoint → 客户端 endpoint
+  # 1.14 wireguard 是顶层 endpoints 形态。服务端 peers 存的是客户端公钥（用户预配），
+  # 转换器不需要它——服务端公钥从服务端 private_key 派生（X25519），客户端私钥确定性生成。
   local i="$1" srv_priv peer_pub cli_priv
-  srv_priv="$(inb_field $i 'private_key')"
-  peer_pub="$(derive_pubkey "$srv_priv")" || { warn "wireguard inbound[$i] 对端公钥派生失败，跳过"; return; }
-  # ⚠️ wireguard endpoint 密钥用标准 base64（与 reality 的 urlsafe raw 不同）；
-  # derive_pubkey 输出 urlsafe raw → python 统一转标准 base64（正确 padding，防 45 字符陷阱）
+  srv_priv="$(inb_field $i endpoints 'private_key')"
+  [[ -z "$srv_priv" ]] && { warn "wireguard endpoint[$i] 缺 private_key，跳过"; return; }
+  # 服务端公钥（给客户端配 peer）
+  peer_pub="$(derive_pubkey "$srv_priv")" || { warn "wireguard endpoint[$i] 服务端公钥派生失败，跳过"; return; }
+  # ⚠️ wireguard 密钥 = 标准 base64 带 padding（44 字符），实测其它编码全 illegal
   peer_pub="$(python3 -c "
 import base64
 s='''$peer_pub'''
 raw=base64.urlsafe_b64decode(s+'='*((4-len(s)%4)%4))
 print(base64.b64encode(raw).decode())
-")" || { warn "wireguard inbound[$i] 对端公钥编码转换失败，跳过"; return; }
+")" || { warn "wireguard endpoint[$i] 服务端公钥编码转换失败，跳过"; return; }
   # 客户端私钥：HMAC(服务端私钥) 确定性生成 → 同一服务端 config 重跑幂等，服务端 peer 只需配一次公钥
-  # ⚠️ wireguard endpoint 私钥 = 标准 base64 带 padding（44 字符），实测其它编码全 illegal
   cli_priv="$(python3 -c "
 import hmac, hashlib, base64
 seed=hmac.new(b'$srv_priv', b'sing-box-wg-client', hashlib.sha256).digest()
 print(base64.b64encode(seed).decode())
-")" || { warn "wireguard inbound[$i] 客户端密钥派生失败，跳过"; return; }
-  local port; port="$(inb_field $i 'listen_port')"
+")" || { warn "wireguard endpoint[$i] 客户端密钥派生失败，跳过"; return; }
+  local port; port="$(inb_field $i endpoints 'listen_port')"
+  # 客户端公钥（标准 base64，供服务端 peers 预配）：derive_pubkey 期望 urlsafe raw，先转换
+  local cli_pub_ur cli_pub
+  cli_pub_ur="$(echo "$cli_priv" | tr '+/' '-_' | tr -d '=')"
+  cli_pub="$(derive_pubkey "$cli_pub_ur" | python3 -c "
+import base64, sys
+s=sys.stdin.read().strip()
+raw=base64.urlsafe_b64decode(s+'='*((4-len(s)%4)%4))
+print(base64.b64encode(raw).decode())
+")" 2>/dev/null || cli_pub=""
   EP_S+="${EP_S:+, }{ \"type\": \"wireguard\", \"tag\": \"wg\", \"system\": false, \"address\": [ \"${WG_LOCAL_ADDR:-10.0.0.2/32}\" ], \"private_key\": \"$cli_priv\", \"peers\": [ { \"address\": \"$SERVER\", \"port\": $port, \"public_key\": \"$peer_pub\", \"pre_shared_key\": \"\", \"allowed_ips\": [ \"0.0.0.0/0\" ] } ] }"
   TAGS+="${TAGS:+, }\"wg\""
-  warn "wireguard：客户端私钥确定性生成（标准 base64，对端公钥已派生，服务端 peer 配一次即可）"
-  debug "wg ← inbound[$i] 对端公钥已派生"
+  if [[ -n "$cli_pub" ]]; then
+    ok "wireguard 客户端公钥（配服务端 peer）: $cli_pub"
+  fi
+  warn "wireguard：客户端私钥确定性生成（标准 base64，服务端 peer 配一次即可）"
+  debug "wg ← endpoint[$i]"
 }
 
-# ---------- 总入口：遍历服务端 inbounds，按类型转换 ----------
-# 输入: $TMPD/inbounds.json（服务端 config 的 inbounds 数组）
+# ---------- 总入口：遍历服务端 inbounds + endpoints，按类型转换 ----------
+# 输入: $TMPD/inbounds.json + $TMPD/endpoints.json（服务端 config 拆出的两个数组）
 # 输出: OUTS/TAGS（客户端 outbounds 片段）
 render_from_server() {
   OUTS=""; TAGS=""
-  local n t j det
-  n="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
+  local ni ne t j det i
+  ni="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
+  ne="$(python3 -c "import json;print(len(json.load(open('$TMPD/endpoints.json'))))")"
   # 预扫：收集被 shadowtls 链引用的 ss tag（避免被重复转成直连线）
   CONSUMED_SS_TAGS=""
-  for ((j=0; j<n; j++)); do
-    t="$(inb_field $j 'type')"
+  for ((j=0; j<ni; j++)); do
+    t="$(inb_field $j inbounds 'type')"
     if [[ "$t" == "shadowtls" ]]; then
-      det="$(inb_field $j 'detour')"
+      det="$(inb_field $j inbounds 'detour')"
       [[ -n "$det" ]] && CONSUMED_SS_TAGS+=" $det"
     fi
   done
-  debug "服务端 inbounds 共 $n 个（被链消费的 ss tag:$CONSUMED_SS_TAGS）"
-  for ((i=0; i<n; i++)); do
-    t="$(inb_field $i 'type')"
+  debug "服务端 inbounds 共 $ni 个（被链消费的 ss tag:$CONSUMED_SS_TAGS），endpoints 共 $ne 个"
+  for ((i=0; i<ni; i++)); do
+    t="$(inb_field $i inbounds 'type')"
     case "$t" in
       vless)         convert_vless "$i" ;;
       hysteria2)     convert_hy2 "$i" ;;
@@ -261,11 +276,18 @@ render_from_server() {
       tuic)          convert_tuic "$i" ;;
       anytls)        convert_anytls "$i" ;;
       shadowsocks)   convert_ss "$i" ;;
-      wireguard)     convert_wg "$i" ;;
       *)             warn "inbound[$i] 类型 '$t' 未支持（1.14 客户端转换表），跳过" ;;
     esac
   done
-  [[ -n "$OUTS" ]] || die2 "服务端 config 没有可转换的 inbound（无 vless/hysteria2/shadowtls/tuic/anytls/shadowsocks）"
+  # endpoints（1.14 wireguard 是 endpoint 形态，非 inbound）
+  for ((i=0; i<ne; i++)); do
+    t="$(inb_field $i endpoints 'type')"
+    case "$t" in
+      wireguard)   convert_wg "$i" ;;
+      *)           warn "endpoint[$i] 类型 '$t' 未支持，跳过" ;;
+    esac
+  done
+  [[ -n "$OUTS" ]] || die2 "服务端 config 没有可转换的 inbound/endpoint（无 vless/hysteria2/shadowtls/tuic/anytls/shadowsocks/wireguard）"
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -325,19 +347,19 @@ if errs:
 print("  ✔ 六线转换结构通过")
 PY
   [[ $? -eq 0 ]] || FAIL=$((FAIL+1))
-  echo "=== D. wg endpoint 结构（动态加 wg inbound） ==="
+  echo "=== D. wg endpoint 结构（动态加 wireguard endpoint，1.14 endpoint 形态） ==="
   python3 - "$SRVCFG" "$TMPD2/withwg.json" <<'PY'
 import json, sys, base64, os
 c = json.load(open(sys.argv[1]))
-c["inbounds"].append({
-  "type": "wireguard", "tag": "wg-in",
+c["endpoints"] = [{
+  "type": "wireguard", "tag": "wg-endpoint",
   "listen": "::", "listen_port": 51820,
   "address": ["10.0.0.1/32"], "private_key": base64.b64encode(os.urandom(32)).decode(),
   "peers": [{"public_key": base64.b64encode(os.urandom(32)).decode(), "allowed_ips": ["0.0.0.0/0"]}]
-})
+}]
 json.dump(c, open(sys.argv[2], "w"))
 PY
-  code=$(run_gen "$TMPD2/withwg.json");     check "含 wg → 0" 0 "$code"
+  code=$(run_gen "$TMPD2/withwg.json");     check "含 wg endpoint → 0" 0 "$code"
   python3 - "$TMPD2/out.json" <<'PY'
 import json, sys
 c = json.load(open(sys.argv[1]))
