@@ -48,7 +48,8 @@ import time
 import urllib.parse
 
 # ── one-time store ─────────────────────────────────────────────────────
-_OTD = {"key": None, "file": None, "name": None, "used": False, "expires": 0}
+# remaining: downloads still allowed (default 1 = one-time; --count N allows N)
+_OTD = {"key": None, "file": None, "name": None, "remaining": 0, "expires": 0}
 
 
 def gen_key(n=8):
@@ -64,9 +65,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def _serve_once(self):
-        # one-time gate
-        if _OTD["used"]:
-            self.send_error(410, "Gone (key already used)")
+        # count gate: remaining downloads
+        if _OTD["remaining"] <= 0:
+            self.send_error(410, "Gone (download count exhausted)")
             return
         if time.time() > _OTD["expires"]:
             self.send_error(410, "Gone (key expired)")
@@ -74,12 +75,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not os.path.isfile(_OTD["file"]):
             self.send_error(404, "file gone")
             return
-        _OTD["used"] = True  # one-time, before sending
+        _OTD["remaining"] -= 1  # consume one, before sending
         try:
             with open(_OTD["file"], "rb") as f:
                 data = f.read()
         except OSError:
-            _OTD["used"] = False
+            _OTD["remaining"] += 1  # refund the consumed download
             self.send_error(500, "read failed")
             return
         self.send_response(200)
@@ -148,14 +149,15 @@ def serve_http3(port, cert, key, host):
         def _on_headers(self, event):
             path = urllib.parse.urlparse(
                 event.headers[b":path"].decode()).path.lstrip("/")
-            if path != _OTD["key"] or _OTD["used"] or time.time() > _OTD["expires"]:
+            if path != _OTD["key"] or _OTD["remaining"] <= 0 or time.time() > _OTD["expires"]:
                 status, body = 404, b"not found"
             else:
-                _OTD["used"] = True
+                _OTD["remaining"] -= 1
                 try:
                     body = open(_OTD["file"], "rb").read()
                     status = 200
                 except OSError:
+                    _OTD["remaining"] += 1  # refund
                     body, status = b"read failed", 500
             fname = _OTD["name"] or os.path.basename(_OTD["file"])
             enc = urllib.parse.quote(fname)
@@ -193,22 +195,25 @@ def main():
     ap.add_argument("--port", type=int, default=443, help="listen port (default 443)")
     ap.add_argument("--key", default=None, help="pin a specific 8-char key (default: random)")
     ap.add_argument("--name", default=None, help="download filename (rename; default: original basename)")
+    ap.add_argument("--count", type=int, default=1, help="allowed downloads (default 1 = one-time; must be >= 1)")
     args = ap.parse_args(argv)
 
     f = os.path.abspath(args.file)
     if not os.path.isfile(f):
         sys.exit(f"file not found: {f}")
+    if args.count < 1:
+        sys.exit(f"--count must be >= 1 (got {args.count})")
     key = args.key or gen_key()
     if not (4 <= len(key) <= 16 and key.isalnum()):
         sys.exit("key must be 4-16 alphanumeric chars")
-    _OTD.update(key=key, file=f, name=args.name,
+    _OTD.update(key=key, file=f, name=args.name, remaining=args.count,
                 expires=time.time() + 300)  # 5-min TTL, fixed
 
     with tempfile.TemporaryDirectory() as td:
         cert, keyf = os.path.join(td, "crt.pem"), os.path.join(td, "key.pem")
         make_cert(cert, keyf)
         print(f"one-time download link:  https://{socket.gethostname()}:{args.port}/{key}", flush=True)
-        print(f"  (file: {f}  rename→: {_OTD['name'] or os.path.basename(f)}  ttl: 300s)", flush=True)
+        print(f"  (file: {f}  rename→: {_OTD['name'] or os.path.basename(f)}  downloads: {args.count}  ttl: 300s)", flush=True)
         if args.port == 443:
             h3 = serve_http3(443, cert, keyf, "0.0.0.0")
             if h3:
