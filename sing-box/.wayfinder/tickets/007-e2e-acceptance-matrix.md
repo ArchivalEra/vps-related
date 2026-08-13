@@ -9,7 +9,7 @@
 
 `assert_gen` 是结构自检（防线 0），不能证明**真实链路连通**。需要把"真实服务端 config.json → `gen-client.sh --from-server` → client.json → `sing-box check` → 真链路 curl"整条线在 `test-env/` 上做成回归矩阵，作为地图终点前最后一道确认。前置（002/005/006）定案后，checklist 含：
 
-1. **服务端 config 供给**：test-env/setup.sh 生成的 server config 要能覆盖新单输入流（多协议 inbounds 一锅出：reality/hy2/shadowtls+ss 链/tuic/anytls/ss（wg 已移除））
+1. **服务端 config 供给**：test-env/setup.sh 生成的 server config 要能覆盖新单输入流（多协议 inbounds 一锅出：reality/vless-ws/hy2/shadowtls+ss 链/tuic/anytls/ss/naive）
 2. **端到端回归**：`--from-server server/config.json --server 127.0.0.1 --insecure` → 输出过 `sing-box check` → 每线 socks5+curl 204 真链路（沿用 run-test.sh 模式），五线 5/5（wg 已移除）
 3. **异常输入矩阵**：空 inbounds → 2、未支持类型 → 按 002 定案（警告 or 2）、坏 JSON / 缺 python3 / 无二进制降级路径——每条断言退出码
 4. **版本时间线场景**：用假版本字符串驱动 `check_version` 断言 supported/deprecated_ok/future/未知的警告与行为（按 003 定案）

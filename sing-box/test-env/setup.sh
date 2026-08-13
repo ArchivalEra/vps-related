@@ -25,6 +25,8 @@ SS_PASS=$(openssl rand -base64 32)
 ST_PASS=$(openssl rand -hex 16)
 TU_UUID=$(cat /proc/sys/kernel/random/uuid)
 ANY_PASS=$(openssl rand -hex 16)
+NAIVE_USER="sb"
+NAIVE_PASS=$(openssl rand -hex 16)
 
 cat > env.sh <<EOF
 SB_UUID='$SB_UUID'
@@ -37,13 +39,15 @@ SS_PASS='$SS_PASS'
 ST_PASS='$ST_PASS'
 TU_UUID='$TU_UUID'
 ANY_PASS='$ANY_PASS'
+NAIVE_USER='$NAIVE_USER'
+NAIVE_PASS='$NAIVE_PASS'
 EOF
 chmod 600 env.sh
 
-# ---------- 自签 ECDSA 证书（模拟 VPS hy2.crt/hy2.key） ----------
+# ---------- 自签 ECDSA 证书（模拟 VPS hy2.crt/hy2.key；CN 用 your.domain.example 与 naive 的 server_name 匹配） ----------
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
   -nodes -keyout "$T/server/hy2.key" -out "$T/server/hy2.crt" \
-  -days 3650 -subj "/CN=test.local" 2>/dev/null
+  -days 3650 -subj "/CN=your.domain.example" 2>/dev/null
 chmod 600 "$T/server/hy2.key"
 
 # ---------- 六线 server 配置（127.0.0.1 + 高端口，非 root 可监听） ----------
@@ -72,7 +76,14 @@ cat > "$T/server/config.json" <<EOF
       "tls": { "enabled": true, "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } },
     { "type": "anytls", "tag": "anytls-in", "listen": "127.0.0.1", "listen_port": 10006,
       "users": [ { "name": "sb", "password": "$ANY_PASS" } ],
-      "tls": { "enabled": true, "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } }
+      "tls": { "enabled": true, "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } },
+    { "type": "vless", "tag": "vless-ws-in", "listen": "127.0.0.1", "listen_port": 10007,
+      "users": [ { "uuid": "$SB_UUID" } ],
+      "tls": { "enabled": true, "server_name": "your.domain.example", "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" },
+      "transport": { "type": "ws", "path": "/ws" } },
+    { "type": "naive", "tag": "naive-in", "listen": "127.0.0.1", "listen_port": 10008,
+      "users": [ { "username": "$NAIVE_USER", "password": "$NAIVE_PASS" } ],
+      "tls": { "enabled": true, "server_name": "your.domain.example", "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } }
   ],
   "outbounds": [ { "type": "direct", "tag": "direct" } ],
   "route": { "final": "direct" }

@@ -103,22 +103,53 @@ print(v, end='')
 PY
 }
 
-convert_vless() { # $1=inbound 索引 —— 服务端 vless(reality) → 客户端 vless(reality)
-  local i="$1" uuid flow sni priv short pub
+convert_vless() { # $1=inbound 索引 —— 服务端 vless → 客户端 vless（reality 或 ws 传输变体）
+  local i="$1" uuid flow sni priv short pub port
   uuid="$(inb_field $i 'users.0.uuid')"
   flow="$(inb_field $i 'users.0.flow')"
   sni="$(inb_field $i 'tls.server_name')"
   priv="$(inb_field $i 'tls.reality.private_key')"
-  short="$(inb_field $i 'tls.reality.short_id.0')"
-  [[ -z "$short" ]] && short="$(inb_field $i 'tls.reality.short_id')"
-  [[ -z "$priv" ]] && { warn "vless inbound[$i] 缺 reality private_key，跳过"; return; }
-  pub="$(derive_pubkey "$priv")" || { warn "vless inbound[$i] 私钥派生公钥失败，跳过"; return; }
-  local port
   port="$(inb_field $i 'listen_port')"
   [[ -z "$port" || "$port" == "0" ]] && { warn "vless inbound[$i] 缺 listen_port，跳过"; return; }
-  OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"reality\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"flow\": \"$flow\", \"packet_encoding\": \"xudp\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" }, \"reality\": { \"enabled\": true, \"public_key\": \"$pub\", \"short_id\": \"$short\" } } }"
-  TAGS+="${TAGS:+, }\"reality\""
-  debug "vless[reality] ← inbound[$i] port=$port sni=$sni"
+  # 分支 A: reality（有 private_key）
+  if [[ -n "$priv" ]]; then
+    short="$(inb_field $i 'tls.reality.short_id.0')"
+    [[ -z "$short" ]] && short="$(inb_field $i 'tls.reality.short_id')"
+    local pub
+    pub="$(derive_pubkey "$priv")" || { warn "vless inbound[$i] 私钥派生公钥失败，跳过"; return; }
+    OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"reality\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"flow\": \"$flow\", \"packet_encoding\": \"xudp\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" }, \"reality\": { \"enabled\": true, \"public_key\": \"$pub\", \"short_id\": \"$short\" } } }"
+    TAGS+="${TAGS:+, }\"reality\""
+    debug "vless[reality] ← inbound[$i] port=$port sni=$sni"
+    return
+  fi
+  # 分支 B: ws 传输（vless+ws，TLS 自签/真证书）
+  local ttype ws_path ws_host ins
+  ttype="$(inb_field $i 'transport.type')"
+  [[ "$ttype" == "ws" ]] || { warn "vless inbound[$i] 无 reality 且 transport.type=$ttype（仅支持 ws），跳过"; return; }
+  ws_path="$(inb_field $i 'transport.path')"
+  [[ -z "$ws_path" ]] && ws_path="/ws"
+  ws_host="$(inb_field $i 'transport.headers.Host')"
+  [[ -z "$ws_host" ]] && ws_host="$sni"
+  ins=""
+  [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
+  OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"vless-ws\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"ws\", \"path\": \"$ws_path\", \"headers\": { \"Host\": \"$ws_host\" } } }"
+  TAGS+="${TAGS:+, }\"vless-ws\""
+  debug "vless[ws] ← inbound[$i] port=$port path=$ws_path host=$ws_host"
+}
+
+convert_naive() { # $1=inbound 索引 —— 服务端 naive → 客户端 naive（无 insecure，用 certificate_path 固定自签）
+  local i="$1" user pass cert sni
+  user="$(inb_field $i 'users.0.username')"
+  pass="$(inb_field $i 'users.0.password')"
+  sni="$(inb_field $i 'tls.server_name')"
+  cert="$(inb_field $i 'tls.certificate_path')"
+  local port; port="$(inb_field $i 'listen_port')"
+  [[ -z "$port" || "$port" == "0" ]] && { warn "naive inbound[$i] 缺 listen_port，跳过"; return; }
+  local cert_json=""
+  [[ -n "$cert" ]] && cert_json=", \"certificate_path\": \"$cert\""
+  OUTS+="${OUTS:+, }{ \"type\": \"naive\", \"tag\": \"naive\", \"server\": \"$SERVER\", \"server_port\": $port, \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$cert_json } }"
+  TAGS+="${TAGS:+, }\"naive\""
+  debug "naive ← inbound[$i] port=$port user=$user"
 }
 
 convert_hy2() { # $1=inbound 索引 —— 服务端 hysteria2 → 客户端 hysteria2
@@ -235,6 +266,7 @@ render_from_server() {
       tuic)          convert_tuic "$i" ;;
       anytls)        convert_anytls "$i" ;;
       shadowsocks)   convert_ss "$i" ;;
+      naive)         convert_naive "$i" ;;
       *)             warn "inbound[$i] 类型 '$t' 未支持（1.14 客户端转换表），跳过" ;;
     esac
   done
@@ -282,12 +314,12 @@ import json, sys
 c = json.load(open(sys.argv[1]))
 errs = []
 tags = {o["tag"] for o in c["outbounds"]}
-expect = {"reality","hy2","shadowtls","ss-over-st","tuic","anytls","auto","manual","direct","block"}
+expect = {"reality","hy2","shadowtls","ss-over-st","tuic","anytls","vless-ws","naive","auto","manual","direct","block"}
 if tags != expect: errs.append(f"生成集不对: {sorted(tags)} 期望 {sorted(expect)}")
 auto = next(o for o in c["outbounds"] if o["tag"]=="auto")["outbounds"]
 manual = next(o for o in c["outbounds"] if o["tag"]=="manual")["outbounds"]
-if set(auto) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls"}: errs.append(f"auto 引用集不对: {auto}")
-if manual[0] != "auto" or set(manual[1:]) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls"}: errs.append(f"manual 引用集不对: {manual}")
+if set(auto) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","naive"}: errs.append(f"auto 引用集不对: {auto}")
+if manual[0] != "auto" or set(manual[1:]) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","naive"}: errs.append(f"manual 引用集不对: {manual}")
 if c["route"]["final"] != "auto": errs.append("route.final 不是 auto")
 if c["dns"]["servers"][0].get("detour") != "reality": errs.append("DNS detour 不是 reality")
 # reality 公钥已从私钥派生（非空）
@@ -295,7 +327,7 @@ rv = next(o for o in c["outbounds"] if o["tag"]=="reality")
 if not rv["tls"]["reality"].get("public_key"): errs.append("reality 公钥未派生")
 if errs:
     print("  ✗ " + "; ".join(errs)); sys.exit(1)
-print("  ✔ 六线转换结构通过")
+print("  ✔ 八线转换结构通过")
 PY
   [[ $? -eq 0 ]] || FAIL=$((FAIL+1))
   echo "=== D. 幂等 ==="
