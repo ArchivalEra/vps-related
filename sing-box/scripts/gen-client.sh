@@ -2,7 +2,7 @@
 # gen-client.sh — server config.json → client client.json converter
 #
 # Usage:
-#   bash gen-client.sh --from-server /path/config.json [--server host] [--insecure] [--inbound tun|socks[:port]] [--debug]
+#   bash gen-client.sh --from-server /path/config.json [--server host] [--outputname NAME] [--outputpath DIR] [--insecure] [--inbound tun|socks[:port]] [--debug]
 #   bash gen-client.sh --test                                    # run self-check assertions
 #
 # Input: server sing-box config.json (single input; contains all protocols/keys/ports)
@@ -12,12 +12,14 @@
 # Args:
 #   --from-server PATH  server config.json path (required unless --test)
 #   --server host/IP    client connect address (domain for dual-stack; default prompts interactively, never probes local IP)
+#   --outputname NAME   output filename (default config-client.json; spaces/non-ASCII OK, filename only, no path)
+#   --outputpath DIR    output directory (default: this script's own dir)
 #   --insecure          add insecure:true when cert is self-signed (omit with real cert)
 #   --inbound tun       default TUN global; --inbound socks:1080 generates socks5 local listener (testing)
 #   --debug             diagnostic output (fully silent by default)
 #   --test              run assert_gen self-check then exit
 #
-# Env: SB_BIN / SB_OUTPUT (default /etc/sing-box/client.json) / DEBUG
+# Env: SB_BIN / SB_OUTPUT (full output path override) / DEBUG
 # Exit codes: 0=ok  1=argument/dependency  2=conversion/check failure (contract, assert_gen depends on it)
 #
 # ═══════════════════════════════════════════════════════════════════════
@@ -30,7 +32,9 @@
 set -uo pipefail
 
 # ---------- Defaults ----------
-OUTPUT_DEFAULT="/etc/sing-box/client.json"
+OUTPUT_NAME_DEFAULT="config-client.json"
+OUTPUT_NAME=""
+OUTPUT_PATH=""
 INSECURE=0
 INBOUND_TYPE="tun"
 INBOUND_PORT=1080
@@ -45,6 +49,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-server) shift; CONFIG_PATH="${1:-}" ;;
     --server) shift; SERVER="${1:-}" ;;
+    --outputname) shift; OUTPUT_NAME="${1:-}" ;;
+    --outputpath) shift; OUTPUT_PATH="${1:-}" ;;
     --insecure) ARG_INSECURE=1 ;;
     --debug) DEBUG=1 ;;
     --test) TEST_MODE=1 ;;
@@ -53,7 +59,7 @@ while [[ $# -gt 0 ]]; do
       INBOUND_TYPE="${1%%:*}"
       if [[ "$1" == *:* ]]; then INBOUND_PORT="${1#*:}"; fi
       ;;
-    *) die1 "unknown argument: $1 (supported: --from-server / --server / --insecure / --debug / --inbound / --test)" ;;
+    *) die1 "unknown argument: $1 (supported: --from-server / --server / --outputname / --outputpath / --insecure / --debug / --inbound / --test)" ;;
   esac
   shift
 done
@@ -163,8 +169,31 @@ else
   die1 "unsupported --inbound: $INBOUND_TYPE (tun or socks[:port])"
 fi
 
+# ---------- Output path resolution ----------
+# Priority: SB_OUTPUT env (full path) > --outputpath + --outputname > --outputname > --outputpath > default $SCRIPT_DIR/config-client.json
+if [[ -z "${SB_OUTPUT:-}" ]]; then
+  if [[ -n "$OUTPUT_NAME" && -n "$OUTPUT_PATH" ]]; then
+    SB_OUTPUT="$OUTPUT_PATH/$OUTPUT_NAME"
+  elif [[ -n "$OUTPUT_NAME" ]]; then
+    SB_OUTPUT="$SCRIPT_DIR/$OUTPUT_NAME"
+  elif [[ -n "$OUTPUT_PATH" ]]; then
+    SB_OUTPUT="$OUTPUT_PATH/$OUTPUT_NAME_DEFAULT"
+  else
+    SB_OUTPUT="$SCRIPT_DIR/$OUTPUT_NAME_DEFAULT"
+  fi
+fi
+if [[ "$OUTPUT_NAME" == */* ]]; then
+  die1 "outputname must be a plain filename (no path): $OUTPUT_NAME"
+fi
+# Overwrite protection: never clobber the server config
+srv_real="$(realpath -m "$CONFIG_PATH" 2>/dev/null || echo "$CONFIG_PATH")"
+out_real="$(realpath -m "$SB_OUTPUT" 2>/dev/null || echo "$SB_OUTPUT")"
+if [[ "$srv_real" == "$out_real" ]]; then
+  die1 "refusing to overwrite server config: $CONFIG_PATH (overwrite disabled by default; pick a different --outputname/--outputpath)"
+fi
+debug "output target: $SB_OUTPUT"
+
 # ---------- Render ----------
-SB_OUTPUT="${SB_OUTPUT:-$OUTPUT_DEFAULT}"
 if ! mkdir -p "$(dirname "$SB_OUTPUT")" 2>/dev/null; then
   die1 "cannot write output dir (permission?): $(dirname "$SB_OUTPUT") (add --debug for details)"
 fi
