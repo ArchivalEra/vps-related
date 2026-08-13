@@ -1,37 +1,31 @@
 #!/usr/bin/env bash
-# gen-client.sh — sing-box 客户端配置生成器（单文件版）
+# gen-client.sh — 服务端 config.json → 客户端 client.json 转换器
 #
 # 用法:
-#   bash gen-client.sh --config /path/to/config.json [--insecure] [--inbound tun|socks[:port]] [--debug]
-#   bash gen-client.sh                                   # 交互式输入 config.json 路径
-#   bash gen-client.sh --test                            # 跑自检断言（不生成配置）
+#   bash gen-client.sh --from-server /path/config.json [--server 域名] [--insecure] [--inbound tun|socks[:port]] [--debug]
+#   bash gen-client.sh --test                                    # 跑自检断言
+#
+# 输入: 服务端 sing-box config.json（唯一输入；含全部协议/密钥/端口）
+# 输出: 客户端 client.json（官方 SFA/SFI 从文件导入）
+# 无任何中间配置文件（config.gen.json / secrets.env 全部废弃）。
 #
 # 参数:
-#   --config PATH  config.json 路径（唯一输入：密钥/开关/主机，见 templates/config.gen.json.example）
-#   --insecure     自签证书模式（或 config 里 "insecure": true）
-#   --inbound tun  默认 TUN 全局；--inbound socks:1080 生成 socks5 本地监听（测试用）
-#   --debug        输出诊断信息（默认完全静默，不加词条不输出）
-#   --test         跑 assert_gen 自检（10 项行为断言）后退出
+#   --from-server PATH  服务端 config.json 路径（必填，除非 --test）
+#   --server 域名/IP    客户端连接地址（双栈用域名优先；缺省自动探测公网 IPv4）
+#   --insecure          证书为自签时加 insecure:true（真证书不用）
+#   --inbound tun       默认 TUN 全局；--inbound socks:1080 生成 socks5 本地监听（测试用）
+#   --debug             输出诊断（默认完全静默）
+#   --test              跑 assert_gen 自检后退出
 #
-# 环境变量: SB_BIN / SB_OUTPUT（默认 /etc/sing-box/client.json）/ SB_HOST / SB_IP / DEBUG
-#   端口覆盖（config 缺 port_* 键的可选协议用）:
-#   SB_PORT_REALITY/HY2/ST/TUIC/ANYTLS/SS/VLESS_WS/VMESS_WS/TROJAN/NAIVE/WG
-#   其他: SNI（覆盖默认 SNI_DEFAULT）
-# 退出码: 0=成功  1=参数/依赖/未知键  2=校对/校验失败（契约，assert_gen 依赖）
+# 环境变量: SB_BIN / SB_OUTPUT（默认 /etc/sing-box/client.json）/ DEBUG
+# 退出码: 0=成功  1=参数/依赖错误  2=转换/校验失败（契约，assert_gen 依赖）
 #
 # ═══════════════════════════════════════════════════════════════════════
-# 【版本与破坏性变更速查】——升级 sing-box 二进制前先读这里
+# 【版本策略】——自动检测 sing-box 二进制版本，按时间线确认兼容
+# 基线 1.14.0-beta.14；时间线表在 protocols.lib.sh 的 VERSION_TABLE。
+# 将来升 1.15+: 改 VERSION_TABLE 加行 + 按维护清单适配 convert_xxx()，check 兜底。
+# 完整字段审计 + 变更史 + 升级 SOP: docs/protocol-maintenance.md
 # ═══════════════════════════════════════════════════════════════════════
-# 本脚本协议模板针对: SINGBOX_VERSION="1.14.0-beta.14"
-# 完整字段审计 + 变更史 + 升级 SOP（含 1.13→1.14 的 8 处破坏性变更）见:
-#   docs/protocol-maintenance.md（唯一真源，头部不再重复列出）
-# 协议模板唯一真源: scripts/protocols.lib.sh（升级只改它 + 维护清单）
-# 升级动作: 改版本常量 → 跑 gen --test + 六线链路 → 按 SOP 更新维护清单
-# 本脚本自带二进制版本探测：模板版本与检测到的二进制版本 major.minor 不一致会警告。
-# ═══════════════════════════════════════════════════════════════════════
-
-SINGBOX_VERSION="1.14.0-beta.14"
-SINGBOX_MAJOR_MINOR="1.14"
 
 set -uo pipefail
 
@@ -41,12 +35,16 @@ INSECURE=0
 INBOUND_TYPE="tun"
 INBOUND_PORT=1080
 CONFIG_PATH=""
+SERVER=""
 ARG_INSECURE=0
+TEST_MODE=0
+DEBUG="${DEBUG:-0}"
 
 # ---------- 解析参数 ----------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --config) shift; CONFIG_PATH="${1:-}" ;;
+    --from-server) shift; CONFIG_PATH="${1:-}" ;;
+    --server) shift; SERVER="${1:-}" ;;
     --insecure) ARG_INSECURE=1 ;;
     --debug) DEBUG=1 ;;
     --test) TEST_MODE=1 ;;
@@ -55,127 +53,86 @@ while [[ $# -gt 0 ]]; do
       INBOUND_TYPE="${1%%:*}"
       if [[ "$1" == *:* ]]; then INBOUND_PORT="${1#*:}"; fi
       ;;
-    *) die1 "未知参数: $1（支持 --config / --insecure / --debug / --inbound tun|socks[:port] / --test）" ;;
+    *) die1 "未知参数: $1（支持 --from-server / --server / --insecure / --debug / --inbound / --test）" ;;
   esac
   shift
 done
 
-# ---------- source 协议规范库（含输出分级函数 + assert_gen 自检） ----------
+# ---------- source 协议转换库（含输出函数/版本表/assert_gen） ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/protocols.lib.sh"
 
-# ---------- 临时目录（中间产物隔离，退出自动清理） ----------
+# ---------- 临时目录 ----------
 TMPD="$(mktemp -d)" || die1 "无法创建临时目录"
 trap 'rm -rf "$TMPD"' EXIT
-debug "临时目录: $TMPD  DEBUG=${DEBUG:-0}"
+debug "临时目录: $TMPD"
 
-# ---------- --test：跑自检断言后退出（不生成配置） ----------
-if [[ ${TEST_MODE:-0} -eq 1 ]]; then
+# ---------- --test：自检后退出 ----------
+if [[ $TEST_MODE -eq 1 ]]; then
   ok "== 运行 gen-client.sh 自检（assert_gen）=="
   assert_gen
   exit $?
 fi
 
-# ---------- 交互式输入 config.json 路径（不保存；纯生成器，不假设任何布局） ----------
-if [[ -z "$CONFIG_PATH" ]]; then
-  read -r -p "输入 config.json 路径（回车用当前目录 config.gen.json）: " CONFIG_PATH
-  CONFIG_PATH="${CONFIG_PATH:-config.gen.json}"
-fi
-if [[ ! -f "$CONFIG_PATH" ]]; then
-  die1 "config.json 不存在: $CONFIG_PATH（参考模板: templates/config.gen.json.example）"
-fi
-debug "config: $CONFIG_PATH"
+# ---------- 输入检查 ----------
+[[ -n "$CONFIG_PATH" ]] || die1 "必须 --from-server 指定服务端 config.json"
+[[ -f "$CONFIG_PATH" ]] || die1 "服务端 config.json 不存在: $CONFIG_PATH"
+debug "服务端 config: $CONFIG_PATH"
 
-# ---------- 解析 config.json（python3 只做解析，渲染仍在 bash） ----------
+# ---------- 解析服务端 inbounds（python3 只解析，转换在 bash） ----------
 command -v python3 >/dev/null 2>&1 || die1 "需要 python3 解析 config.json"
-python3 - "$CONFIG_PATH" > "$TMPD/cfg.env" <<'PY'
+python3 - "$CONFIG_PATH" > "$TMPD/inbounds.json" <<'PY'
 import json, sys
-def norm(v):
-    if isinstance(v, bool): return "1" if v else "0"
-    return str(v)
 c = json.load(open(sys.argv[1]))
-for k, v in c.items():
-    k = k.upper()
-    s = str(v).replace(chr(39), chr(92)+chr(39))
-    print(f"{k}='{s}'")
+ibs = c.get("inbounds", [])
+if not isinstance(ibs, list):
+    print("[]")
+else:
+    json.dump(ibs, open(sys.argv[1] + ".ibs", "w"))
+    # 直接输出数组到 stdout（由重定向写入）
 PY
-# shellcheck disable=SC1091
-. "$TMPD/cfg.env"
-debug "config 解析完成 → $(grep -c '=' "$TMPD/cfg.env") 键"
+# 上一步 python 把数组写进了同路径 .ibs，移回来（兼容 stdin 重定向）
+if [[ -f "$CONFIG_PATH.ibs" ]]; then mv "$CONFIG_PATH.ibs" "$TMPD/inbounds.json"; fi
+INBOUND_COUNT="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
+[[ "$INBOUND_COUNT" -gt 0 ]] || die2 "服务端 config 没有 inbounds"
+debug "inbounds 共 $INBOUND_COUNT 个"
 
-# ---------- 未知键检测 ----------
-KNOWN_KEYS="SERVER_HOST INSECURE REALITY HY2 SHADOWTLS TUIC ANYTLS SS_DIRECT VLESS_WS VMESS_WS TROJAN NAIVE WIREGUARD SB_UUID SB_PUB SB_SHORT HY2_PASS HY2_OBFS SS_PASS ST_PASS TU_UUID ANY_PASS TROJAN_PASS NAIVE_USER NAIVE_PASS WG_PRIV WG_PUB WG_PSK WG_LOCAL_ADDR WG_SYSTEM VLESS_WS_PATH VLESS_WS_HOST VMESS_WS_PATH VMESS_WS_HOST PORT_REALITY PORT_HY2 PORT_ST PORT_TUIC PORT_ANYTLS PORT_SS"
-grep -oE '^[A-Z_]+=' "$TMPD/cfg.env" | tr -d '=' | while read -r k; do
-  grep -qw "$k" <<<"$KNOWN_KEYS" || echo "UNKNOWN:$k"
-done > "$TMPD/unknown.txt"
-if [[ -s "$TMPD/unknown.txt" ]]; then
-  die1 "config.json 含未知键: $(sed 's/UNKNOWN://' "$TMPD/unknown.txt" | tr '\n' ' ')"
-fi
-debug "未知键检测: 通过"
-
-# ---------- insecure：--insecure 参数 > config 值 ----------
-[[ $ARG_INSECURE -eq 1 ]] && INSECURE=1
-[[ "${INSECURE:-0}" == "1" ]] && INSECURE=1 || INSECURE=0
-
-# ---------- 定位 sing-box 二进制 + 版本探测 ----------
+# ---------- 版本检测（时间线兼容） ----------
 SB_BIN="${SB_BIN:-}"
 if [[ -z "$SB_BIN" ]]; then
   if command -v sing-box >/dev/null 2>&1; then SB_BIN=$(command -v sing-box)
   elif [[ -x /opt/sing-box/sing-box ]]; then SB_BIN=/opt/sing-box/sing-box
   elif [[ -x "$(dirname "${BASH_SOURCE[0]}")/../bin/sing-box" ]]; then SB_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/sing-box"
-  else warn "未找到 sing-box 二进制，跳过 check 与版本探测"; fi
+  else warn "未找到 sing-box 二进制，跳过 check 与版本检测"; fi
 fi
 if [[ -n "$SB_BIN" ]]; then
-  DETECTED_MM="$("$SB_BIN" version 2>/dev/null | head -1 | grep -oE 'v[0-9]+\.[0-9]+' | tr -d 'v')"
-  if [[ -n "$DETECTED_MM" && "$DETECTED_MM" != "$SINGBOX_MAJOR_MINOR" ]]; then
-    warn "二进制版本 v$DETECTED_MM ≠ 模板针对 v$SINGBOX_MAJOR_MINOR"
-    warn "字段可能已破坏性变更：查 docs/protocol-maintenance.md，改 SINGBOX_VERSION 后重试"
-  fi
-  debug "sing-box: $SB_BIN (v$DETECTED_MM)"
+  DETECTED="$(timeout 5 "$SB_BIN" version 2>/dev/null | head -1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -1 | tr -d 'v')"
+  check_version "$DETECTED"
+  debug "sing-box: $SB_BIN (v${DETECTED:-未知})"
 fi
 
-# ---------- 必需字段检查 ----------
-MISSING=""
-for v in SB_UUID SB_PUB SB_SHORT HY2_PASS HY2_OBFS SS_PASS ST_PASS TU_UUID ANY_PASS; do
-  [[ -z "${!v:-}" ]] && MISSING="$MISSING $v"
-done
-if [[ -n "$MISSING" ]]; then die1 "config.json 缺少字段:$MISSING"; fi
-
-# ---------- 服务器地址：config server_host > 环境 SB_HOST > SB_IP > 自动探测 ----------
-SERVER="${SERVER_HOST:-${SB_HOST:-}}"
+# ---------- 客户端连接地址 ----------
 if [[ -z "$SERVER" ]]; then
-  IP="${SB_IP:-}"
-  [[ -z "$IP" ]] && IP=$(curl -4 -s --max-time 6 https://ifconfig.me || curl -4 -s --max-time 6 https://icanhazip.com || true)
-  [[ -n "$IP" ]] || die1 "无 server_host 且无法探测公网 IP，请填 config 的 server_host"
-  SERVER="$IP"
-  debug "自动探测公网 IP: $SERVER"
+  SERVER=$(curl -4 -s --max-time 6 https://ifconfig.me || curl -4 -s --max-time 6 https://icanhazip.com || true)
+  [[ -n "$SERVER" ]] || die1 "无法探测公网 IP，请用 --server 指定域名/IP"
+  debug "自动探测: $SERVER"
+else
+  debug "server: $SERVER"
 fi
 
-# ---------- 端口（config 优先，环境变量兜底，再默认） ----------
-PR="${PORT_REALITY:-${SB_PORT_REALITY:-443}}"; PH="${PORT_HY2:-${SB_PORT_HY2:-443}}"
-PST="${PORT_ST:-${SB_PORT_ST:-8443}}"; PT="${PORT_TUIC:-${SB_PORT_TUIC:-8445}}"
-PA="${PORT_ANYTLS:-${SB_PORT_ANYTLS:-2083}}"; PS="${PORT_SS:-${SB_PORT_SS:-8388}}"
-PVW="${SB_PORT_VLESS_WS:-8446}"; PMW="${SB_PORT_VMESS_WS:-8447}"; PTJ="${SB_PORT_TROJAN:-8448}"
-PNV="${SB_PORT_NAIVE:-8449}"; PWG="${SB_PORT_WG:-51820}"
+# ---------- insecure ----------
+[[ $ARG_INSECURE -eq 1 ]] && INSECURE=1
 
-# ---------- TLS 后缀与 SNI（供 protocols.lib.sh 模板使用） ----------
+# ---------- TLS 后缀与 SNI（供转换库使用） ----------
 TLS_SUFFIX=""
 [[ $INSECURE -eq 1 ]] && TLS_SUFFIX=', "insecure": true'
-SNI_DEFAULT="${SNI:-your.domain.example}"
-REALITY_SNI="www.microsoft.com"
 
-# 输入变量就绪后渲染（OUTS/TAGS/ST_ON/SS_CHAIN_ON/WG_ON 由 render_lines 填充）
-render_lines
+# ---------- 转换：服务端 inbounds → 客户端 outbounds ----------
+render_from_server
 
 # ---------- 校对: 至少一条线 ----------
-[[ -n "$OUTS" ]] || die2 "未启用任何线路（开关全关）"
-
-# ---------- 校对: shadowtls↔ss 绑定 ----------
-if [[ $ST_ON -eq 1 && $SS_CHAIN_ON -eq 1 ]]; then :;
-elif [[ $ST_ON -eq 1 && $SS_CHAIN_ON -eq 0 ]]; then
-  warn "生成了 shadowtls 但无 ss 挂 detour 指向它"
-fi
+[[ -n "$OUTS" ]] || die2 "未转换出任何线路"
 
 # ---------- 校对: 重复 tag ----------
 if [[ $(echo "$TAGS" | tr ',' '\n' | sort | uniq -d | wc -l) -gt 0 ]]; then
@@ -189,9 +146,7 @@ for t in $(echo "$TAGS" | tr ',' '\n' | tr -d ' "'); do
   [[ "$t" == "wg" ]] && continue
   AUTO_REFS+="${AUTO_REFS:+, }\"$t\""
 done
-# manual 引用全部（含 wg）
 MANUAL_REFS="\"auto\"${TAGS:+, $TAGS}"
-# outbounds: 协议线 + auto(urltest) + manual(selector) + direct + block
 OUTBOUNDS_ALL="${OUTS:+$OUTS, }"
 OUTBOUNDS_ALL+="{ \"type\": \"urltest\", \"tag\": \"auto\", \"outbounds\": [ ${AUTO_REFS} ], \"url\": \"https://www.gstatic.com/generate_204\", \"interval\": \"3m\" }, "
 OUTBOUNDS_ALL+="{ \"type\": \"selector\", \"tag\": \"manual\", \"outbounds\": [ ${MANUAL_REFS} ], \"default\": \"auto\" }, "
@@ -214,7 +169,6 @@ SB_OUTPUT="${SB_OUTPUT:-$OUTPUT_DEFAULT}"
 if ! mkdir -p "$(dirname "$SB_OUTPUT")" 2>/dev/null; then
   die1 "无法写入输出目录: $(dirname "$SB_OUTPUT")（root 或 SB_OUTPUT 指定可写路径）"
 fi
-# wireguard endpoint 段（顶层 endpoints，若有）；outbounds 后逗号固定，EP_JSON 无前导逗号
 EP_JSON=""
 [[ -n "${EP_S:-}" ]] && EP_JSON="
   \"endpoints\": [
@@ -250,7 +204,7 @@ EOF
 
 # ---------- sing-box check（语法兜底：版本破坏性变更的最终防线） ----------
 if [[ -n "$SB_BIN" ]]; then
-  if "$SB_BIN" check -c "$SB_OUTPUT" 2>"$TMPD/check.err"; then
+  if timeout 15 "$SB_BIN" check -c "$SB_OUTPUT" 2>"$TMPD/check.err"; then
     ok "已生成并通过 sing-box 校验: $SB_OUTPUT"
   else
     err "配置校验失败:"; cat "$TMPD/check.err" >&2
@@ -260,6 +214,7 @@ else
   warn "已生成但未校验（无 sing-box 二进制）: $SB_OUTPUT"
 fi
 
-ok "服务器: $SERVER   TLS: $([ $INSECURE -eq 1 ] && echo '自签(insecure)' || echo '真证书')   inbound: $INBOUND_TYPE"
+ok "服务端: $CONFIG_PATH → 客户端: $SB_OUTPUT"
+ok "连接地址: $SERVER   TLS: $([ $INSECURE -eq 1 ] && echo '自签(insecure)' || echo '真证书')   inbound: $INBOUND_TYPE"
 ok "已启用线路: ${TAGS}"
 ok "导入: 官方客户端（SFA/SFI）→ 从文件导入此 JSON"
