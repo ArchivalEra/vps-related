@@ -81,24 +81,19 @@ fi
 debug "服务端 config: $CONFIG_PATH"
 
 # ---------- 解析服务端 config（python3 只解析，转换在 bash） ----------
-# 输出 inbounds.json + endpoints.json（1.14 的 wireguard 是 endpoint 形态，在顶层 endpoints 数组）
 command -v python3 >/dev/null 2>&1 || die1 "需要 python3 解析 config.json"
 python3 - "$CONFIG_PATH" "$TMPD" <<'PY'
 import json, sys, os
 c = json.load(open(sys.argv[1]))
 ibs = c.get("inbounds", [])
-eps = c.get("endpoints", [])
 if not isinstance(ibs, list): ibs = []
-if not isinstance(eps, list): eps = []
 json.dump(ibs, open(os.path.join(sys.argv[2], "inbounds.json"), "w"))
-json.dump(eps, open(os.path.join(sys.argv[2], "endpoints.json"), "w"))
 PY
 INBOUND_COUNT="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
-ENDPOINT_COUNT="$(python3 -c "import json;print(len(json.load(open('$TMPD/endpoints.json'))))")"
-if [[ "$INBOUND_COUNT" -eq 0 && "$ENDPOINT_COUNT" -eq 0 ]]; then
-  die2 "服务端 config 没有 inbounds 或 endpoints"
+if [[ "$INBOUND_COUNT" -eq 0 ]]; then
+  die2 "服务端 config 没有 inbounds"
 fi
-debug "inbounds 共 $INBOUND_COUNT 个，endpoints 共 $ENDPOINT_COUNT 个"
+debug "inbounds 共 $INBOUND_COUNT 个"
 
 # ---------- 版本检测（时间线兼容） ----------
 SB_BIN="${SB_BIN:-}"
@@ -142,12 +137,7 @@ if [[ $(echo "$TAGS" | tr ',' '\n' | sort | uniq -d | wc -l) -gt 0 ]]; then
 fi
 
 # ---------- 组装 outbounds ----------
-# wg 是 endpoint（顶层 endpoints），不是 outbound → urltest 测不了，只进 manual
-AUTO_REFS=""
-for t in $(echo "$TAGS" | tr ',' '\n' | tr -d ' "'); do
-  [[ "$t" == "wg" ]] && continue
-  AUTO_REFS+="${AUTO_REFS:+, }\"$t\""
-done
+AUTO_REFS="$TAGS"
 MANUAL_REFS="\"auto\"${TAGS:+, $TAGS}"
 OUTBOUNDS_ALL="${OUTS:+$OUTS, }"
 OUTBOUNDS_ALL+="{ \"type\": \"urltest\", \"tag\": \"auto\", \"outbounds\": [ ${AUTO_REFS} ], \"url\": \"https://www.gstatic.com/generate_204\", \"interval\": \"3m\" }, "
@@ -171,11 +161,6 @@ SB_OUTPUT="${SB_OUTPUT:-$OUTPUT_DEFAULT}"
 if ! mkdir -p "$(dirname "$SB_OUTPUT")" 2>/dev/null; then
   die1 "无法写入输出目录: $(dirname "$SB_OUTPUT")（root 或 SB_OUTPUT 指定可写路径）"
 fi
-EP_JSON=""
-[[ -n "${EP_S:-}" ]] && EP_JSON="
-  \"endpoints\": [
-    $EP_S
-  ],"
 cat > "$SB_OUTPUT" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
@@ -192,7 +177,7 @@ cat > "$SB_OUTPUT" <<EOF
   ],
   "outbounds": [
     $OUTBOUNDS_ALL
-  ],$EP_JSON
+  ],
   "route": {
     "auto_detect_interface": true,
     "default_domain_resolver": "remote",

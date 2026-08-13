@@ -126,7 +126,10 @@
 | 依赖 | libcronet.so 与二进制同目录 | 1.14 无后缀 linux-amd64 包自带 |
 | 性能 | outbound bug #3837（150→1Mbps）**未修** | 别当主力线 |
 
-### WireGuard（`proto_wireguard` → 顶层 `endpoints`）
+### ~~WireGuard~~（已从本项目移除，2026-08-13）
+
+> 用户拍板从项目中移除（本地双进程隧道编排不成熟 + 单机代理场景价值低）。
+> 1.14 中它是顶层 `endpoints` 形态（outbound 已删）。本转换器不支持，未来若加回参考此表。
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
@@ -159,7 +162,7 @@ docs/protocol-fields-1.14/ ← 字段字典（子代理 research 落盘，含来
 
 | 层 | 手段 | 挡什么 |
 |---|---|---|
-| 0 | **`gen-client.sh --test` 自检断言**（assert_gen 并入 protocols.lib.sh） | 10 项行为回归：退出码契约/未知键/全关/开关增删精确匹配/wg endpoints 结构/幂等 |
+| 0 | **`gen-client.sh --test` 自检断言**（assert_gen 并入 protocols.lib.sh） | 6 项行为回归：退出码契约/空 inbounds/六线结构（含公钥派生、引用集）/幂等 |
 | 1 | gen-client.sh 版本探测警告 | 二进制版本与模板不匹配的提醒 |
 | 2 | `sing-box check`（生成后必跑） | 字段名/必填项/格式错误（**最终裁决**） |
 | 3 | `$schema`（1.14.0-beta.2+ 内置） | 编辑期 IDE 校验（可选项） |

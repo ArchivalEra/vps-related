@@ -11,13 +11,13 @@
 
 - 域：sing-box 1.14.0-beta.14。输入是**服务端** config.json（含各协议 inbound 的全部密钥/端口/TLS），输出是**客户端** outbound 结构。
 - 会话必 consult：
-  - `scripts/protocols.lib.sh` — 转换库唯一真源：`VERSION_TABLE`（版本时间线）/ `check_version` / `convert_xxx()`（vless/hy2/shadowtls+ss链/tuic/anytls/ss/wg）/ `render_from_server()`（遍历表）/ `assert_gen`（自检）。
+  - `scripts/protocols.lib.sh` — 转换库唯一真源：`VERSION_TABLE`（版本时间线）/ `check_version` / `convert_xxx()`（vless/hy2/shadowtls+ss链/tuic/anytls/ss（wg 已移除））/ `render_from_server()`（遍历表）/ `assert_gen`（自检）。
   - `scripts/gen-client.sh` — `--from-server` 编排（版本探测 → 解析 inbounds → 转换 → 组装 → `sing-box check` 兜底）。
   - `docs/protocol-maintenance.md` — 字段审计 / 破坏性变更史 / 升级 SOP（§0）/ 验证防线（§4，check 是最终裁决）。
   - `test-env/` — 本机模拟 VPS 的端到端环境（setup.sh 生成服务端 config，run-test.sh 六线真链路）。
 - 用户决策（destination 已定死，勿重新 grilling）：单输入单输出、基线 1.14.0-beta.14、版本时间线兼容、内置自检。
 - **scripts/ 由另一子代理负责修改，wayfinder 会话不直接改 scripts/ 代码**；本 map 只排决策与研究。
-- 已沿用的旧裁决（仍有效）：服务端配置生成/部署不管（keep it stupid）；naive 无 insecure（必须真证书）；wireguard 1.14 已删 outbound、须 endpoint 形态；客户端必须显式 `utls.enabled:true`；输出导入方式 = SFA/SFI 从文件导入 JSON（分享链接 URI 已被实测推翻）。
+- 已沿用的旧裁决（仍有效）：服务端配置生成/部署不管（keep it stupid）；naive 无 insecure（必须真证书）；wireguard 已从项目移除（1.14 为 endpoint 形态）；客户端必须显式 `utls.enabled:true`；输出导入方式 = SFA/SFI 从文件导入 JSON（分享链接 URI 已被实测推翻）。
 
 ## Decisions so far
 
@@ -43,4 +43,4 @@
 - 远程订阅 / 多客户端分发（从文件导入即可）
 - xhttp transport（1.15 才引入，非 1.14 基线范围，归入版本时间线策略）
 - 同端口 TCP/UDP 分流判定（旧裁决已砍；新架构端口直接来自服务端 config，无冲突面）
-- naive / wireguard 真链路测试（naive 需真证书、wg 需内核特权，超出 test-env 本地能力；用结构断言 + 版本时间线覆盖）
+- naive 真链路测试（需真证书，超出 test-env 本地能力；用结构断言覆盖）
