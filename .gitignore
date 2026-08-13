@@ -27,3 +27,5 @@ sing-box/test-env/server/config.json
 sing-box/test-env/client/
 # Default client output (generated in scripts/ dir, contains server keys)
 sing-box/scripts/config-client.json
+# Python bytecode cache (otd.py)
+sing-box/scripts/__pycache__/
