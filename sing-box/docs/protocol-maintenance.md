@@ -155,12 +155,17 @@ docs/protocol-fields-1.14/ ← 字段字典（子代理 research 落盘，含来
 
 ---
 
-## 4. 验证防线（三层，缺一不可）
+## 4. 验证防线（四层，缺一不可）
 
 | 层 | 手段 | 挡什么 |
 |---|---|---|
+| 0 | **`gen-client.sh --test` 自检断言**（assert_gen 并入 protocols.lib.sh） | 10 项行为回归：退出码契约/未知键/全关/开关增删精确匹配/wg endpoints 结构/幂等 |
 | 1 | gen-client.sh 版本探测警告 | 二进制版本与模板不匹配的提醒 |
 | 2 | `sing-box check`（生成后必跑） | 字段名/必填项/格式错误（**最终裁决**） |
 | 3 | `$schema`（1.14.0-beta.2+ 内置） | 编辑期 IDE 校验（可选项） |
+
+**升级后必跑**：`bash scripts/gen-client.sh --test`（自检）+ `bash test-env/run-test.sh`（六线真链路）双绿才放行。
+
+**排查用**：`bash scripts/gen-client.sh --config ... --debug` 输出全程诊断（config 解析/未知键/二进制探测/临时目录），默认完全静默（不加 `--debug` 零诊断输出）。
 
 > 教训：1.13→1.14 的字段变更，官方 changelog 只写 "Fixes and improvements"，**全靠 check 报错抓出来的**（本仓库实测 6 处）。所以「升级 → 跑 check → 看报错 → 改清单」是唯一可靠循环。
