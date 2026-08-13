@@ -1,3 +1,5 @@
+> ⚠️ research 原始产出（含来源 URL，供复核）；**维护以 `docs/protocol-maintenance.md` §2 字段审计为准**（协议集已演进，本字典可能有已移除协议）。
+
 # sing-box 1.14.0-beta.14 客户端 outbound 字段字典（vless / vmess / trojan）
 
 > 依据：官方文档（testing 分支 markdown）+ GitHub 源码 v1.14.0-beta.14（option/、protocol/、common/tls/）+ 本地二进制 check 实测。标注「已实测」=用 v1.14.0-beta.14 二进制验证过。

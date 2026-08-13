@@ -183,6 +183,36 @@ ufw reload
 }
 ```
 
+### 7.1b VLESS+WS（WebSocket 传输，真证书或自签均可）
+
+```json
+{
+  "type": "vless",
+  "tag": "vless-ws-in",
+  "listen": "::",
+  "listen_port": 8446,
+  "users": [ { "uuid": "SERVER_UUID 的值" } ],
+  "tls": { "enabled": true, "server_name": "你的域名", "certificate_path": "/etc/sing-box/hy2.crt", "key_path": "/etc/sing-box/hy2.key" },
+  "transport": { "type": "ws", "path": "/ws" }
+}
+```
+
+### 7.1c Naive（需真证书 + libcronet.so，cronet 校验严格）
+
+> ⚠️ naive 无 `insecure` 选项（cronet 硬约束），**必须真证书**（自签证书 CN 须与 server_name 匹配）；
+> 依赖 `libcronet.so` 与 sing-box 二进制同目录（1.14 无后缀包自带）。
+
+```json
+{
+  "type": "naive",
+  "tag": "naive-in",
+  "listen": "::",
+  "listen_port": 8449,
+  "users": [ { "username": "sb", "password": "NAIVE_PASS 的值" } ],
+  "tls": { "enabled": true, "server_name": "你的域名", "certificate_path": "/etc/letsencrypt/live/你的域名/fullchain.pem", "key_path": "/etc/letsencrypt/live/你的域名/privkey.pem" }
+}
+```
+
 ### 7.2 Trojan（需要域名 + 正规证书）
 
 域名解析到 VPS 并签发证书（acme.sh / caddy 都行）后：

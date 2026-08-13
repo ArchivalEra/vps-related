@@ -12,7 +12,7 @@
 # 1. 下载新版本二进制到脚本实际查找的位置（gen-client.sh 依次找：PATH 的 sing-box → /opt/sing-box/sing-box → test-env/bin/sing-box）
 # 2. 改 scripts/gen-client.sh 头部的 SINGBOX_VERSION / SINGBOX_MAJOR_MINOR
 # 3. 用 test-env 配置跑 gen-client.sh，看 sing-box check 是否报 unknown field
-#    → 报错字段去下方【字段审计】对应协议找，改 scripts/protocols.lib.sh 对应 proto_* 模板
+#    → 报错字段去下方【字段审计】对应协议找，改 scripts/protocols.lib.sh 对应 convert_* 模板
 # 4. 跑全场景回归（--test 自检 + 六线链路 + 新协议）
 # 5. 把新版本再变的字段记进本清单【变更史】，标注版本
 ```
@@ -45,7 +45,7 @@
 
 > 每表三列：模板字段 / 1.14 现状（必填、默认）/ 升级检查点（该字段一变会怎样）。
 
-### VLESS + Reality（`proto_reality`）
+### VLESS + Reality（`convert_reality`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
@@ -56,7 +56,7 @@
 | `tls.reality.short_id` | 客户端**单个字符串**（服务端是数组） | 客户端写数组会报错 |
 | `tls.handshake_timeout` | 1.14 新增，默认 15s | 可选，删了无碍 |
 
-### Hysteria2（`proto_hy2`）
+### Hysteria2（`convert_hy2`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
@@ -67,7 +67,7 @@
 | `up_mbps`/`down_mbps` | 字段名不是 up/down | 留空退回 BBR 拥塞控制 |
 | `server_ports`/`hop_interval` | 1.11+ 端口跳跃 | 用不到可不配 |
 
-### ShadowTLS（`proto_shadowtls`）
+### ShadowTLS（`convert_shadowtls`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
@@ -75,7 +75,7 @@
 | `password` | 仅 v2/v3 有意义 | v1 无密码字段 |
 | `tls` | server_name + utls chrome | 仅 TCP（UDP 走不了） |
 
-### Shadowsocks（`proto_ss_chain` / `proto_ss_direct`）
+### Shadowsocks（`convert_ss_chain` / `convert_ss_direct`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
@@ -83,7 +83,7 @@
 | `detour`（链式） | ss → shadowtls tag | 目标 tag 不存在会运行时报错 |
 | `server_port`（链式） | 填 shadowtls 端口 | 链式下 ss 层对端口透明 |
 
-### TUIC（`proto_tuic`）
+### TUIC（`convert_tuic`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
@@ -92,7 +92,7 @@
 | `udp_relay_mode`/`udp_over_stream` | 互斥 | 同时配报错 |
 | `zero_rtt_handshake` | 默认 false；需两端同开 | 单端开不生效 |
 
-### AnyTLS（`proto_anytls`）
+### AnyTLS（`convert_anytls`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
@@ -102,7 +102,7 @@
 | `client_metadata` | 1.14 默认空字符串 | 不加=不发指纹（正确默认） |
 | `idle_session_*` | 默认 30s/30s/0 | 可选 |
 
-### VLESS/VMess + WS（`proto_vless_ws`/`proto_vmess_ws`）
+### VLESS/VMess + WS（`convert_vless_ws`/`convert_vmess_ws`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
@@ -111,14 +111,14 @@
 | `vmess.alter_id` | 默认 0（AEAD）；字段名下划线 | 服务端是驼峰 `alterId` |
 | `vmess.packet_encoding` | **缺省禁用**（vless 缺省 xudp，两者不同） | 需要 UDP 要显式写 |
 
-### Trojan（`proto_trojan`）
+### Trojan（`convert_trojan`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
 | `tls.enabled` | **必须 true**（Trojan 本身是 TLS） | 去掉即不可用 |
 | `password` | 必填 | |
 
-### Naive（`proto_naive`）
+### Naive（`convert_naive`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
@@ -143,18 +143,16 @@
 ## 3. 模板与二进制的对应关系
 
 ```
-scripts/protocols.lib.sh   ← 协议模板唯一真源（12 个 proto_* + render_lines 遍历表 + assert_gen 自检）
-scripts/gen-client.sh      ← 编排（参数/解析/校对/渲染/check）+ 版本速查注释 + 版本探测
-templates/config.gen.json.example  ← 输入字段清单（新增协议要补键 + gen-client.sh KNOWN_KEYS）
+scripts/protocols.lib.sh   ← 协议转换库唯一真源（convert_* + render_from_server 遍历表 + assert_gen 自检）
+scripts/gen-client.sh      ← 编排（--from-server 解析/版本探测/渲染/check）+ 版本速查注释
 docs/protocol-fields-1.14/ ← 字段字典（子代理 research 落盘，含来源 URL，升级时可复核）
 ```
 
 **改模板的联动点**（漏一处就断）:
-1. `protocols.lib.sh` 加 `proto_xxx()` + 注册进 `render_lines()`
-2. `config.gen.json.example` 加开关/密钥键
-3. `gen-client.sh` 的 `KNOWN_KEYS` 加对应大写键
-4. `docs/protocol-maintenance.md` 加字段审计行
-5. `test-env/` 加该协议的链路测试
+1. `protocols.lib.sh` 加 `convert_xxx()` + 注册进 `render_from_server()`
+2. `docs/protocol-maintenance.md` 加字段审计行
+3. `test-env/` 加该协议的链路测试（e2e-all.sh 自动取产物线路，无需改脚本）
+4. `docs/protocol-fields-1.14/` 更新字段字典（如需复核来源）
 
 ---
 
@@ -167,7 +165,7 @@ docs/protocol-fields-1.14/ ← 字段字典（子代理 research 落盘，含来
 | 2 | `sing-box check`（生成后必跑） | 字段名/必填项/格式错误（**最终裁决**） |
 | 3 | `$schema`（1.14.0-beta.2+ 内置） | 编辑期 IDE 校验（可选项） |
 
-**升级后必跑**：`bash scripts/gen-client.sh --test`（自检）+ `bash test-env/run-test.sh`（六线真链路）双绿才放行。
+**升级后必跑**：`bash scripts/gen-client.sh --test`（自检）+ `bash test-env/e2e-all.sh`（转换产物逐线真链路）双绿才放行。
 
 **排查用**：`bash scripts/gen-client.sh --config ... --debug` 输出全程诊断（config 解析/未知键/二进制探测/临时目录），默认完全静默（不加 `--debug` 零诊断输出）。
 

@@ -1,3 +1,5 @@
+> ⚠️ research 原始产出（含来源 URL，供复核）；**维护以 `docs/protocol-maintenance.md` §2 字段审计为准**（协议集已演进，本字典可能有已移除协议）。
+
 # sing-box 1.14.0-beta.14 outbound 配置字典：naive / wireguard
 
 > 核实来源：v1.14.0-beta.14 官方文档 + GitHub 源码 + 发布资产实测（222 行）
