@@ -1,0 +1,18 @@
+# 主机清单模板：cp hosts.conf.example hosts.conf 后编辑（hosts.conf 不进 git）
+#
+# 格式（| 分隔，一行一节点）:
+#   name|address|reality_sni|reality_dest|reality_port|hy2_port|ss_port
+#
+#   - name        : 节点标识（小写字母/数字/连字符），同时是 out/ 下目录名
+#   - address     : VPS 公网 IP
+#   - reality_sni : Reality 伪装域名（客户端 TLS 的 server_name，须为真实存在的站点）
+#   - reality_dest: 回落目标（无有效客户端时 443 端口展示的站点），一般与 sni 相同
+#   - reality_port: VLESS+Reality 监听端口（TCP）
+#   - hy2_port    : Hysteria2 监听端口（UDP）；与 reality_port 同为 443 不冲突（不同协议栈）
+#   - ss_port     : Shadowsocks 2022 监听端口（TCP+UDP）
+#
+# 建议两个节点用不同的 SNI（如 microsoft / apple），增加抗封锁多样性。
+# 改端口或 SNI 后重跑 ./scripts/gen.sh，重新上传对应 server.json 并重启服务即可。
+
+utah|1.2.3.4|www.microsoft.com|www.microsoft.com|443|443|8388
+phoenix|5.6.7.8|www.apple.com|www.apple.com|443|443|8388

@@ -1,0 +1,25 @@
+# ── 白名单模式（反向忽略）：默认忽略一切，只放行显式列出的内容 ──────────
+# 往仓库塞任何新东西都默认不推，只有这里显式放行的才被 git 跟踪。
+# 已跟踪文件不受 .gitignore 影响，要 git rm --cached 才停止跟踪。
+
+# 1) 忽略所有
+*
+
+# 2) 放行根文件（项目入口）
+!.gitignore
+!README.md
+
+# 3) 放行 sing-box 子项目（各子目录整体放行；新增分类时在此补一行）
+!sing-box/
+!sing-box/**
+
+# 4) 局部排除（敏感/生成物；gitignore 不支持行尾注释，注释必须独立一行）
+# 生成的配置与密钥（含服务端私钥），绝不上传
+sing-box/out/
+# setup.sh 生成的测试假密钥（可再生）
+sing-box/test-env/secrets/
+# 自签测试证书/私钥（setup.sh 再生）
+sing-box/test-env/server/hy2.crt
+sing-box/test-env/server/hy2.key
+# 测试生成物
+sing-box/test-env/client/
