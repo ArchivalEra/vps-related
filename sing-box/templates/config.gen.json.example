@@ -30,6 +30,7 @@
   "wg_pub": "WG_PEER_PUBLIC_KEY",
   "wg_psk": "WG_PRESHARED_KEY",
   "wg_local_addr": "10.0.0.2/32",
+  "wg_system": false,
 
   "vless_ws_path": "/ws",
   "vless_ws_host": "your.domain.example",

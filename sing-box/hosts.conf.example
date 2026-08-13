@@ -14,5 +14,5 @@
 # 建议两个节点用不同的 SNI（如 microsoft / apple），增加抗封锁多样性。
 # 改端口或 SNI 后重跑 ./scripts/gen.sh，重新上传对应 server.json 并重启服务即可。
 
-utah|1.2.3.4|www.microsoft.com|www.microsoft.com|443|443|8388
-phoenix|5.6.7.8|www.apple.com|www.apple.com|443|443|8388
+node-a|1.2.3.4|www.microsoft.com|www.microsoft.com|443|443|8388
+node-b|5.6.7.8|www.apple.com|www.apple.com|443|443|8388

@@ -1,6 +1,6 @@
 # sing-box 双节点手动部署手册
 
-犹他（utah）/ 凤凰城（phoenix）两台 VPS，Debian/Ubuntu，root，systemd。
+节点A（node-a）/ 节点B（node-b）两台 VPS，Debian/Ubuntu，root，systemd。
 **每一节都是 SSH 里可直接复制粘贴的命令块。**
 
 ---
@@ -14,25 +14,27 @@
 
 ---
 
-## 1. 端口规划（默认，六线全家桶）
+## 1. 端口规划（六线全家桶，与客户端生成器 gen-client.sh 默认对齐）
 
 | 端口 | 协议 | 服务 | 角色 |
 |---|---|---|---|
 | 443/tcp | VLESS+Reality | 抗封锁主力 | 伪装微软，443 标准 HTTPS 语义 |
+| 443/udp | Hysteria2 | QUIC 高吞吐 | 标准 HTTP/3 端口 + Chrome QUIC 指纹（1.14 默认） |
 | 8443/tcp | ShadowTLS → SS2022 | TCP 伪装线 | SSL 端口伪装 |
-| 8444/udp | Hysteria2 | QUIC 高吞吐 | Chrome QUIC 指纹伪装（1.14 默认） |
 | 8445/udp | TUIC | QUIC 备用 | |
 | 2083/tcp | AnyTLS | 1.14 新贵 | |
 | 8388/tcp+udp | Shadowsocks 2022 | 兜底 | 单协议双栈，保留 |
 
-**端口纪律：每个端口单一协议**（不搞同端口 tcp/udp 双协议，降低单 IP 流量画像特征）。443 只留给 Reality；QUIC 线靠协议栈指纹伪装（Hy2 的 Chrome QUIC parrot），不依赖端口号，高位端口无损。
+**端口纪律**：443/tcp + 443/udp 是 Reality + Hy2（标准 HTTPS + HTTP/3 组合，真实站点同款）；其余端口每个单一协议，不搞同端口 tcp/udp 双协议。QUIC 线靠协议栈指纹伪装（Hy2 的 Chrome QUIC parrot），不依赖端口号。
+
+> 注：`templates/server.json.tpl`（gen.sh 产物）只含**基础三线**（Reality 443 / Hy2 443 / SS 8388）；ShadowTLS、TUIC、AnyTLS 按第 7 节附录手动补 inbound（VPS 上已是六线全开）。
 
 ---
 
 ## 2. 本地生成（只在本机跑，幂等）
 
 ```bash
-cd <repo-root>
+cd sing-box
 cp hosts.conf.example hosts.conf
 # ✏️ 编辑 hosts.conf：把 1.2.3.4 / 5.6.7.8 换成两台 VPS 的真实公网 IP（SNI/端口可按需改）
 ./scripts/gen.sh
@@ -42,8 +44,8 @@ cp hosts.conf.example hosts.conf
 
 | 文件 | 用途 |
 |---|---|
-| `out/utah/server.json` | 上传到犹他 VPS |
-| `out/phoenix/server.json` | 上传到凤凰城 VPS |
+| `out/node-a/server.json` | 上传到节点A VPS |
+| `out/node-b/server.json` | 上传到节点B VPS |
 | `out/singbox-client.json` | 客户端导入 |
 | `out/<节点>/secrets.env` | 密钥存档（重装换机靠它恢复，勿外传） |
 
@@ -51,15 +53,15 @@ cp hosts.conf.example hosts.conf
 
 ---
 
-## 3. 部署节点（两台步骤完全一样，以 utah 为例）
+## 3. 部署节点（两台步骤完全一样，以 node-a 为例）
 
 ### 3.1 上传配置
 
 ```bash
 # 本机执行
-scp out/utah/server.json root@<utah-ip>:/etc/sing-box/config.json
+scp out/node-a/server.json root@<node-a-ip>:/etc/sing-box/config.json
 ```
-提示目录不存在就先生成：`ssh root@<utah-ip> 'mkdir -p /etc/sing-box'` 再 scp。
+提示目录不存在就先生成：`ssh root@<node-a-ip> 'mkdir -p /etc/sing-box'` 再 scp。
 
 ### 3.2 安装 sing-box 1.14.0-beta.14（x86_64，当前为 beta 最新版）
 
@@ -117,10 +119,10 @@ systemctl enable --now sing-box
 ```bash
 systemctl status sing-box --no-pager   # Active: active (running)
 journalctl -u sing-box -n 20 --no-pager
-ss -tlnup | grep -E ':(443|8443|8444|8445|2083|8388)'   # 应看到六线全部监听
+ss -tlnup | grep -E ':(443|8443|8445|2083|8388)'   # 基础三线至少见 443/tcp+udp、8388；附录线按 §7 添加后各见其端口
 ```
 
-**Reality 回落检查**：从**没走代理**的浏览器访问 `https://<utah-ip>:443`——应看到真实网站
+**Reality 回落检查**：从**没走代理**的浏览器访问 `https://<node-a-ip>:443`——应看到真实网站
 （该 IP 的证书错误页/微软页面内容），而不是连接被拒。回落正常 = Reality 伪装生效。
 
 ---
@@ -143,7 +145,7 @@ ufw reload
    - **Android**：sing-box 官方应用 → 配置 → 导入文件
    - **macOS/Windows**：官方应用同上；或 CLI：`sing-box run -c singbox-client.json`
 3. 打开 TUN 开关即全局接管。
-4. `auto` 组会自动在 4 条线路（犹他/凤凰城 × Reality/Hy2）间轮询测延迟，**选最低者；节点挂了自动切到另一台**，无需手动干预。
+4. `auto` 组会自动在 4 条线路（节点A/节点B × Reality/Hy2）间轮询测延迟，**选最低者；节点挂了自动切到另一台**，无需手动干预。
 
 想锁定某条线路：把配置里 `"route"` 的 `"final": "auto"` 改成 `"manual"`，然后在客户端手动选。
 
@@ -174,14 +176,14 @@ ufw reload
   "type": "tuic",
   "tag": "tuic-in",
   "listen": "::",
-  "listen_port": 8443,
-  "users": [ { "uuid": "SERVER_UUID 的值", "password": "HY2_PASSWORD 的值" } ],
+  "listen_port": 8445,
+  "users": [ { "uuid": "SERVER_UUID 的值", "password": "ST_PASS 的值（secrets.env 的 SHADOWTLS_PASSWORD，与客户端 gen-client.sh 的 ST_PASS 同键）" } ],
   "congestion_control": "bbr",
   "tls": { "enabled": true, "certificate_path": "/etc/sing-box/hy2.crt", "key_path": "/etc/sing-box/hy2.key" }
 }
 ```
 
-### 7.2 Trojan（需要域名 + 正规证书，可套 CDN）
+### 7.2 Trojan（需要域名 + 正规证书）
 
 域名解析到 VPS 并签发证书（acme.sh / caddy 都行）后：
 
@@ -190,8 +192,8 @@ ufw reload
   "type": "trojan",
   "tag": "trojan-in",
   "listen": "::",
-  "listen_port": 8443,
-  "users": [ { "password": "HY2_PASSWORD 的值" } ],
+  "listen_port": 8447,
+  "users": [ { "password": "TROJAN_PASS 的值" } ],
   "tls": {
     "enabled": true,
     "server_name": "你的域名",
@@ -201,14 +203,14 @@ ufw reload
 }
 ```
 
-### 7.3 VMess+WS（CDN 兜底线路，同样需要域名证书）
+### 7.3 VMess+WS（需域名证书，套 CDN 已被验证为死路，仅直连备用）
 
 ```json
 {
   "type": "vmess",
   "tag": "vmess-ws-in",
   "listen": "::",
-  "listen_port": 8443,
+  "listen_port": 8448,
   "users": [ { "uuid": "SERVER_UUID 的值", "alterId": 0 } ],
   "transport": { "type": "ws", "path": "/ws" },
   "tls": {
@@ -220,4 +222,4 @@ ufw reload
 }
 ```
 
-> 7.2 / 7.3 需要"你的域名"这两台上暂时没有（`another-project-domain` 在别的项目里），等域名到手再补不迟。
+> 7.2 / 7.3 需要"你的域名"（另一项目里的域名，不在本仓库范围），等域名配置好后补不迟。

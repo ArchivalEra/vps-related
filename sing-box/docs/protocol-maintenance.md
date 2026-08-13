@@ -1,7 +1,7 @@
 # sing-box 客户端协议维护清单（MAINTENANCE）
 
 > **适配范围**: sing-box 1.13+ 的**客户端** outbound 配置（服务端不在本清单范围）。
-> **当前模板针对**: `1.14.0-beta.14`（见 `scripts/protocols.lib.sh` 头部 `SINGBOX_VERSION`）。
+> **当前模板针对**: `1.14.0-beta.14`（版本常量在 `scripts/gen-client.sh` 头部 `SINGBOX_VERSION`/`SINGBOX_MAJOR_MINOR`）。
 > **用法**: 升级 sing-box 二进制时，对照本清单逐项核对；本仓库实测踩过的坑标注「✅实测」。
 
 ---
@@ -9,11 +9,11 @@
 ## 0. 升级 SOP（每次升版本按序执行）
 
 ```bash
-# 1. 下载新版本二进制到 test-env/bin/（本机）
-# 2. 修改 scripts/protocols.lib.sh 头部注释 + scripts/gen-client.sh 的 SINGBOX_VERSION
+# 1. 下载新版本二进制到脚本实际查找的位置（gen-client.sh 依次找：PATH 的 sing-box → /opt/sing-box/sing-box → test-env/bin/sing-box）
+# 2. 改 scripts/gen-client.sh 头部的 SINGBOX_VERSION / SINGBOX_MAJOR_MINOR
 # 3. 用 test-env 配置跑 gen-client.sh，看 sing-box check 是否报 unknown field
-#    → 报错字段去下方【字段审计】对应协议找，改模板
-# 4. 跑全场景回归（六线 / 新协议 / 全关 / 未知键）
+#    → 报错字段去下方【字段审计】对应协议找，改 scripts/protocols.lib.sh 对应 proto_* 模板
+# 4. 跑全场景回归（--test 自检 + 六线链路 + 新协议）
 # 5. 把新版本再变的字段记进本清单【变更史】，标注版本
 ```
 
@@ -140,7 +140,7 @@
 ## 3. 模板与二进制的对应关系
 
 ```
-scripts/protocols.lib.sh   ← 协议模板唯一真源（11 个 proto_* + render_lines 遍历表）
+scripts/protocols.lib.sh   ← 协议模板唯一真源（12 个 proto_* + render_lines 遍历表 + assert_gen 自检）
 scripts/gen-client.sh      ← 编排（参数/解析/校对/渲染/check）+ 版本速查注释 + 版本探测
 templates/config.gen.json.example  ← 输入字段清单（新增协议要补键 + gen-client.sh KNOWN_KEYS）
 docs/protocol-fields-1.14/ ← 字段字典（子代理 research 落盘，含来源 URL，升级时可复核）
