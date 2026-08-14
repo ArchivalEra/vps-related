@@ -261,7 +261,8 @@ convert_anytls() { # $1=inbound index — server anytls → client anytls
 convert_ss() { # $1=inbound index — direct shadowsocks → client ss (skip ss consumed by shadowtls chain)
   local i="$1" method pass tag
   tag="$(inb_field $i 'tag')"
-  if [[ " ${CONSUMED_SS_TAGS:-} " == *" $tag "* ]]; then
+  # untagged ss can never be consumed by a shadowtls chain (empty tag would match empty CONSUMED set)
+  if [[ -n "$tag" && " ${CONSUMED_SS_TAGS:-} " == *" $tag "* ]]; then
     debug "ss inbound[$i]($tag) consumed by shadowtls chain, skip direct conversion"
     return
   fi
