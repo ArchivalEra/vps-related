@@ -64,8 +64,10 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# ---------- Source conversion library (output tiers / version table / assert_gen) ----------
+# ---------- Source: common output layer first, then conversion library ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/common.lib.sh"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/protocols.lib.sh"
 

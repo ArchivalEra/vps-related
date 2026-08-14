@@ -10,9 +10,8 @@
 #   3. If a new protocol was added: add convert_xxx() + register it in render_from_server()'s dispatch table
 # Full field audit + breaking-change history + upgrade SOP: docs/protocol-maintenance.md
 
-# ---------- Output tiers (single source: common.lib.sh) ----------
-# shellcheck disable=SC1091
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.lib.sh"
+# Output tiers (ok/warn/err/die1/die2/debug) come from common.lib.sh, sourced directly
+# by the entry script (gen-client.sh) — do NOT re-source here (single ownership).
 
 # ═══════════════════════════════════════════════════════════════════════
 # 【Version compatibility timeline】— auto-detect sing-box version, confirm compatibility

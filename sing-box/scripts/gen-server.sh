@@ -94,8 +94,10 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# ---------- Source secrets library (which sources common.lib.sh) ----------
+# ---------- Source: common output layer first, then secrets library ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/common.lib.sh"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/secrets.lib.sh"
 

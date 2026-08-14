@@ -7,9 +7,8 @@
 #
 # Requires: sing-box (generate uuid / reality-keypair), openssl
 
-# ---------- Output tiers (single source: common.lib.sh) ----------
-# shellcheck disable=SC1091
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.lib.sh"
+# Output tiers (ok/warn/err/die1/debug) come from common.lib.sh, sourced directly
+# by the entry script (gen-server.sh) — do NOT re-source here (single ownership).
 
 # ---------- Credential generators (stdout only; failures return non-zero) ----------
 
