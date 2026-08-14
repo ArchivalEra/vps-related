@@ -34,6 +34,7 @@ fi
 PORT=443
 TTL=600
 HOST=""
+RESOLVE=""
 CERT=""
 KEY=""
 FILE=""
@@ -44,6 +45,8 @@ print_help() {
   --port N        listen port (default 443, 1-65535, <1024 needs root)
   --ttl SEC       auto-delete the file after N seconds (default 600, >= 1)
   --host HOST     host/IP shown in the link (default localhost, never auto-probed)
+  --resolve NAME  resolve NAME to an IP and build the link with that IP — the link
+                  then carries no domain SNI to sniff (mutually exclusive with --host)
   --cert FILE     PEM certificate; must be paired with --key (default: self-signed ECDSA)
   --key FILE      PEM private key; must be paired with --cert
   FILE            file to deliver (positional, e.g. serve ./config-client.json)
@@ -60,6 +63,7 @@ while [[ $i -lt ${#args[@]} ]]; do
     --port) PORT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --ttl)  TTL="${args[$((i+1))]}";  i=$((i+2)) ;;
     --host) HOST="${args[$((i+1))]}"; i=$((i+2)) ;;
+    --resolve) RESOLVE="${args[$((i+1))]}"; i=$((i+2)) ;;
     --cert) CERT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --key)  KEY="${args[$((i+1))]}";  i=$((i+2)) ;;
     *)      FILE="$a"; i=$((i+1)) ;;
@@ -106,6 +110,21 @@ if [[ -n "$CERT" || -n "$KEY" ]]; then
   [[ -n "$CERT" && -n "$KEY" ]] || { echo "error: --cert and --key must be given together (or neither)"; exit 1; }
   [[ -r "$CERT" && -r "$KEY" ]] || { echo "error: cert/key not readable"; exit 1; }
 fi
+# --resolve and --host are two ways to pick the link host — refusing both at once
+# keeps the tool unambiguous (never guess which one the caller meant).
+if [[ -n "$RESOLVE" && -n "$HOST" ]]; then
+  echo "error: --resolve and --host are mutually exclusive — pick one"
+  exit 1
+fi
+# --resolve: turn the user's domain into an IP (getent is glibc, no new deps) so the
+# link carries an IP instead of a sniffable domain SNI. v6 links need [brackets].
+if [[ -n "$RESOLVE" ]]; then
+  RESOLVED_IP="$(getent ahosts "$RESOLVE" 2>/dev/null | awk 'NR==1{print $1}')"
+  [[ -n "$RESOLVED_IP" ]] || { echo "error: cannot resolve $RESOLVE (getent ahosts)"; exit 1; }
+  HOST="$RESOLVED_IP"
+  [[ "$HOST" == *:* ]] && HOST="[$HOST]"   # IPv6 → [2001:db8::1]
+  echo "resolved $RESOLVE → $HOST"
+fi
 
 # Port pre-check via bash /dev/tcp — pure-bash (no nc), loopback only, so it checks
 # availability without probing anything on the network.
@@ -151,7 +170,6 @@ SH="${HOST:-localhost}"
 echo "one-time download link: https://$SH:$PORT/$KEYSTR"
 echo "file auto-deletes after ${TTL}s; dir listing hidden; host is user-supplied (never auto-probed)"
 echo "client: curl -kOJ https://$SH:$PORT/$KEYSTR"
-
 # TTL auto-expiry: kill the server after the window so the file and the process
 # both vanish — that is what makes the link one-time, not best-effort.
 ( sleep "$TTL"; kill "$DUFS_PID" 2>/dev/null ) &
