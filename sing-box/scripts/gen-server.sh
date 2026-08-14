@@ -445,11 +445,13 @@ JSON
 }
 
 # ---------- --test: self-check (8 instances incl. dual ss; same render path as production) ----------
+# Self-contained: throwaway cert generated via openssl (a hard dep of secrets.lib) —
+# no repo test-env dependency, works on any machine (deploy hosts included).
 if [[ $TEST_MODE -eq 1 ]]; then
   ok "== running gen-server.sh self-check =="
-  local_cert="$SCRIPT_DIR/../test-env/server/hy2.crt"
-  local_key="$SCRIPT_DIR/../test-env/server/hy2.key"
-  [[ -f "$local_cert" && -f "$local_key" ]] || { err "self-check: missing test cert ($local_cert)"; exit 1; }
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout "$TMPD/key.pem" -out "$TMPD/cert.pem" -days 1 -subj "/CN=127.0.0.1" >/dev/null 2>&1 \
+    || { err "self-check: openssl cert generation failed"; exit 1; }
   DOMAIN="127.0.0.1"
   PROTOCOLS="reality hysteria2 vless-ws vless-grpc anytls shadowtls shadowsocks shadowsocks"
   instantiate
@@ -458,7 +460,7 @@ if [[ $TEST_MODE -eq 1 ]]; then
   INST_SS_METHOD[shadowsocks-2]="aes-128-gcm"
   CHAIN_SS=1; CHAIN_SS_PORT_VAL=8389
   test_out="$TMPD/config-server.json"
-  render_config "$local_cert" "$local_key" "$test_out" >/dev/null || { err "self-check: generation failed"; exit 1; }
+  render_config "$TMPD/cert.pem" "$TMPD/key.pem" "$test_out" >/dev/null || { err "self-check: generation failed"; exit 1; }
   if timeout 15 "$SB_BIN" check -c "$test_out" 2>"$TMPD/check.err"; then
     ok "self-check: generated + passed sing-box check ($INST_TAGS)"
     exit 0
