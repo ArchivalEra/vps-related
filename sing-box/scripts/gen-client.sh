@@ -90,13 +90,18 @@ fi
 debug "server config: $CONFIG_PATH"
 
 # ---------- Parse server config (python3 parses, bash converts) ----------
+# sing-box's JSON parser accepts // comments (we append ECH CONFIGS there); python's
+# json.load does not — strip comment lines before parsing.
 command -v python3 >/dev/null 2>&1 || die1 "python3 required to parse config.json"
 if ! python3 - "$CONFIG_PATH" "$TMPD" <<'PY'
-import json, sys, os
-c = json.load(open(sys.argv[1]))
+import json, sys, os, re
+raw = open(sys.argv[1]).read()                       # original (may carry // ECH CONFIGS comments)
+stripped = re.sub(r'(?m)^[ \t]*//.*$', '', raw)      # sing-box accepts comments; python json does not
+c = json.loads(stripped)
 ibs = c.get("inbounds", [])
 if not isinstance(ibs, list): ibs = []
 json.dump(ibs, open(os.path.join(sys.argv[2], "inbounds.json"), "w"))
+open(os.path.join(sys.argv[2], "server-orig.txt"), "w").write(raw)   # keep original for ECH CONFIGS extraction
 PY
 then
   die1 "failed to parse server config.json (corrupt JSON or unreadable): $CONFIG_PATH (add --debug for details)"
@@ -227,6 +232,12 @@ then
 fi
 if [[ ! -s "$SB_OUTPUT" ]]; then
   die1 "output file empty after write (disk full?): $SB_OUTPUT (add --debug for details)"
+fi
+# Carry the server's ECH CONFIGS comment block into the client config tail
+# (single artifact; sing-box accepts // comments)
+if grep -q '^// ECH CONFIGS' "$TMPD/server-orig.txt" 2>/dev/null; then
+  grep '^// ' "$TMPD/server-orig.txt" >> "$SB_OUTPUT"
+  debug "ECH CONFIGS comment block appended to client output"
 fi
 debug "output written: $SB_OUTPUT"
 

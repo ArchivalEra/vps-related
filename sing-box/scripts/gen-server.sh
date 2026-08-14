@@ -443,6 +443,15 @@ render_config() {
   "route": { "default_domain_resolver": { "server": "local" } }
 }
 JSON
+  # ECH CONFIGS (public) appended as // comments — sing-box accepts them, and the
+  # config is the only artifact we keep (zero extra files). Client side re-extracts.
+  if [[ $ECH -eq 1 && -f "$TMPD/ech.configs" && -s "$TMPD/ech.configs" ]]; then
+    {
+      echo
+      echo "// ECH CONFIGS for $DOMAIN — publish as the HTTPS/SVCB record so clients auto-load"
+      sed 's/^/\/\/ /' "$TMPD/ech.configs"
+    } >> "$out"
+  fi
   echo "$GEN_PUB"
 }
 
@@ -514,7 +523,6 @@ fi
 ok "server config: $SB_OUTPUT (inbounds: $INST_TAGS)"
 ok "credentials embedded (fresh each run, nothing persisted). Reality public key: $PUB"
 if [[ $ECH -eq 1 && -f "$TMPD/ech.configs" && -s "$TMPD/ech.configs" ]]; then
-  ok "ECH enabled. Publish these CONFIGS as the HTTPS/SVCB record for $DOMAIN (client auto-loads via DNS):"
-  cat "$TMPD/ech.configs"
+  ok "ECH enabled — CONFIGS embedded as comments at the end of $SB_OUTPUT; publish them as the HTTPS/SVCB record for $DOMAIN (clients auto-load via DNS)"
 fi
 ok "clients: bash gen-client.sh --from-server $SB_OUTPUT --server $DOMAIN"
