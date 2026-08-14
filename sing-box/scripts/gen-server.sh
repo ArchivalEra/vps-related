@@ -444,7 +444,7 @@ JSON
   echo "$GEN_PUB"
 }
 
-# ---------- --test: self-check (8 instances incl. dual ss; same render path as production) ----------
+# ---------- --test: self-check (default set = deployment shape; --protocols overrides) ----------
 # Self-contained: throwaway cert generated via openssl (a hard dep of secrets.lib) —
 # no repo test-env dependency, works on any machine (deploy hosts included).
 if [[ $TEST_MODE -eq 1 ]]; then
@@ -453,11 +453,35 @@ if [[ $TEST_MODE -eq 1 ]]; then
     -keyout "$TMPD/key.pem" -out "$TMPD/cert.pem" -days 1 -subj "/CN=127.0.0.1" >/dev/null 2>&1 \
     || { err "self-check: openssl cert generation failed"; exit 1; }
   DOMAIN="127.0.0.1"
-  PROTOCOLS="reality hysteria2 vless-ws vless-grpc anytls shadowtls shadowsocks shadowsocks"
+  # default self-check set mirrors the deployment shape (6 protocols, no ss);
+  # pass --protocols (and --ports for repeats) to self-check your own set
+  if [[ -n "$PROTOCOLS_ARG" ]]; then
+    p=""
+    IFS=',' read -ra list <<< "$PROTOCOLS_ARG"
+    for p in "${list[@]}"; do
+      p="$(echo "$p" | xargs)"
+      [[ -n "$p" ]] || continue
+      [[ -n "${PROTO_DEFAULT_PORT[$p]+x}" ]] || die1 "unknown protocol: $p (available: ${PROTO_ORDER[*]})"
+      PROTOCOLS+=" $p"
+    done
+    PROTOCOLS="${PROTOCOLS# }"
+  else
+    PROTOCOLS="reality hysteria2 vless-ws vless-grpc tuic shadowtls"
+  fi
+  [[ -n "$PROTOCOLS" ]] || die1 "--test: empty protocol set"
   instantiate
-  INST_PORTS[shadowsocks-2]=8390
-  INST_SS_METHOD[shadowsocks]="2022-blake3-aes-256-gcm"
-  INST_SS_METHOD[shadowsocks-2]="aes-128-gcm"
+  # apply --ports when given (needed e.g. multi-ss self-check: --protocols shadowsocks,shadowsocks --ports 8388,8390)
+  if [[ -n "$PORTS_ARG" ]]; then
+    e=""; n=0
+    read -ra tags <<< "$INST_TAGS"
+    IFS=',' read -ra pv <<< "$PORTS_ARG"
+    [[ ${#pv[@]} -eq ${#tags[@]} ]] || die1 "--ports has ${#pv[@]} entries but ${#tags[@]} instances"
+    for e in "${pv[@]}"; do
+      [[ "$e" =~ ^[0-9]+$ ]] || die1 "bad --ports entry: $e"
+      INST_PORTS[${tags[$n]}]="$e"
+      n=$((n+1))
+    done
+  fi
   CHAIN_SS=1; CHAIN_SS_PORT_VAL=8389
   test_out="$TMPD/config-server.json"
   render_config "$TMPD/cert.pem" "$TMPD/key.pem" "$test_out" >/dev/null || { err "self-check: generation failed"; exit 1; }
