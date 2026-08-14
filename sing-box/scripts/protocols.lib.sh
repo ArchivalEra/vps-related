@@ -107,6 +107,10 @@ find_sb_bin() {
 # appends to OUTS/TAGS.
 # Shared input vars (provided by gen-client.sh): SERVER (client connect address) / INSECURE / TMPD / inbound index
 OUTS=""; TAGS=""
+# Optional TLS SNI override for real-TLS lines (ws/grpc/hy2/tuic/anytls/naive);
+# default: the connect address. reality/shadowtls keep their config-filtered SNI.
+# `${SNI_OVERRIDE:-}` (not `=""`) so gen-client may set it BEFORE sourcing this lib.
+SNI_OVERRIDE="${SNI_OVERRIDE:-}"
 
 # ---------- Field access — single-pass dump, no per-field python spawn ----------
 # dump_fields() resolves every conversion-relevant field for all inbounds once into $TMPD/fields.lst
@@ -180,7 +184,9 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
   ttype="$(inb_field $i 'transport.type')"
   ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
-  [[ -z "$sni" ]] && sni="$SERVER"    # server config without tls.server_name → use connect address
+  # Real-TLS lines default SNI = connect address (SNI sniffing on the domain is the
+  # pain point); --sni overrides to a whitelisted name when you need cert-valid SNI.
+  sni="${SNI_OVERRIDE:-$SERVER}"
   case "$ttype" in
     ws)
       local ws_path ws_host
@@ -220,7 +226,7 @@ convert_hy2() { # $1=inbound index — server hysteria2 → client hysteria2
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field $i 'listen_port')"
   ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="hy2"
-  OUTS+="${OUTS:+, }{ \"type\": \"hysteria2\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\"$obfs_json, \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins$(ech_suffix $i) } }"
+  OUTS+="${OUTS:+, }{ \"type\": \"hysteria2\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\"$obfs_json, \"tls\": { \"enabled\": true, \"server_name\": \"${SNI_OVERRIDE:-$SERVER}\"$ins$(ech_suffix $i) } }"
   TAGS+=" $ctag"
   debug "hy2 ← inbound[$i] port=$port obfs=$obfs_type tag=$ctag"
 }
@@ -269,7 +275,7 @@ convert_tuic() { # $1=inbound index — server tuic → client tuic
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field $i 'listen_port')"
   ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="tuic"
-  OUTS+="${OUTS:+, }{ \"type\": \"tuic\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins$(ech_suffix $i) } }"
+  OUTS+="${OUTS:+, }{ \"type\": \"tuic\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\", \"tls\": { \"enabled\": true, \"server_name\": \"${SNI_OVERRIDE:-$SERVER}\"$ins$(ech_suffix $i) } }"
   TAGS+=" $ctag"
   debug "tuic ← inbound[$i] port=$port tag=$ctag"
 }
@@ -282,7 +288,7 @@ convert_anytls() { # $1=inbound index — server anytls → client anytls
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field $i 'listen_port')"
   ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="anytls"
-  OUTS+="${OUTS:+, }{ \"type\": \"anytls\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins$(ech_suffix $i) } }"
+  OUTS+="${OUTS:+, }{ \"type\": \"anytls\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"${SNI_OVERRIDE:-$SERVER}\"$ins$(ech_suffix $i) } }"
   TAGS+=" $ctag"
   debug "anytls ← inbound[$i] port=$port tag=$ctag"
 }
@@ -308,7 +314,7 @@ convert_naive() { # $1=inbound index — server naive → client naive (no insec
   local i="$1" user pass cert sni tag ctag
   user="$(inb_field $i 'users.0.username')"
   pass="$(inb_field $i 'users.0.password')"
-  sni="$(inb_field $i 'tls.server_name')"
+  sni="${SNI_OVERRIDE:-$SERVER}"
   cert="$(inb_field $i 'tls.certificate_path')"
   tag="$(inb_field $i 'tag')"
   local port; port="$(inb_field $i 'listen_port')"
@@ -379,7 +385,7 @@ assert_gen() {
 
   check() { if [[ "$3" -eq "$2" ]]; then echo "  ✔ $1"; PASS=$((PASS+1)); else echo "  ✗ $1 (expected exit $2, got $3) ${4:-}"; FAIL=$((FAIL+1)); fi; }
   run_gen() { # $1=server config  $2=extra args → exit code to stdout
-    SB_OUTPUT="$TMPD2/out.json" SB_BIN="$BIN" bash "$GEN" --from-server "$1" --server 127.0.0.1 --insecure ${2:-} >"$TMPD2/log.txt" 2>&1
+    SB_OUTPUT="$TMPD2/out.json" SB_BIN="$BIN" bash "$GEN" --from-server "$1" --addr 127.0.0.1 --insecure ${2:-} >"$TMPD2/log.txt" 2>&1
     echo "$?"
   }
 

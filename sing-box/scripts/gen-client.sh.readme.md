@@ -10,7 +10,8 @@ Flags (identical to the top-of-file usage block):
 | Flag | Meaning |
 |---|---|
 | `--from-server PATH` | server config.json path (required unless `--test`) |
-| `--server host` | client connect address — domain / IPv4 / IPv6 (default: interactive prompt; never probes) |
+| `--addr host` | client connect address — domain / IPv4 / IPv6 (default: interactive prompt; never probes) |
+| `--sni name` | TLS SNI for real-TLS lines (default: the connect address; reality/shadowtls keep config-filtered SNI) |
 | `--outputname NAME` | output filename (default `config-client.json`; filename only, no path) |
 | `--outputpath DIR` | output directory (default: the script's own dir) |
 | `--insecure` | add when the cert is self-signed; omit with a real cert |
@@ -22,7 +23,7 @@ Example:
 
 ```bash
 bash gen-client.sh --from-server /path/config-server.json \
-  --server your.domain --outputname config-client.json
+  --addr your.domain --outputname config-client.json
 ```
 
 ## Requirements
@@ -33,8 +34,8 @@ bash gen-client.sh --from-server /path/config-server.json \
 ## Notes
 
 - Single input: reads only the server config.json; no intermediate files.
-- Never probes for IPs: `--server` is user-specified (domain / IPv4 / IPv6); if omitted, prompts interactively.
+- Never probes for IPs: `--addr` is user-specified (domain / IPv4 / IPv6); if omitted, prompts interactively.
 - `--insecure`: add for self-signed certs, not for real certs.
 - ECH: when the server config carries `tls.ech.key`, the client auto-adds `ech.enabled`; the CONFIGS comment block is carried over to the output.
 - `--test` self-check: internal assertions (conversion structure / idempotency / unique multi-instance tags).
-- Interactive mode: no flags and stdin is a TTY → prompts for `--server`; non-TTY stdin → hints `try --help`.
+- Interactive mode: no flags and stdin is a TTY → prompts for `--addr`; non-TTY stdin → hints `try --help`.

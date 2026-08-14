@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash gen-client.sh --help
-#   bash gen-client.sh --from-server /path/config.json [--server host] [--outputname NAME] [--outputpath DIR] [--insecure] [--inbound tun|socks[:port]] [--debug]
+#   bash gen-client.sh --from-server /path/config.json [--addr host] [--sni name] [--outputname NAME] [--outputpath DIR] [--insecure] [--inbound tun|socks[:port]] [--debug]
 #   bash gen-client.sh --test                                    # run self-check assertions
 #
 # No flags: prompts for the connect address interactively (TTY). No flags + non-TTY
@@ -16,7 +16,10 @@
 # Args:
 #   --help            print the ##help## flag reference and exit 0
 #   --from-server PATH  server config.json path (required unless --test)
-#   --server host/IP    client connect address (domain for dual-stack; default prompts interactively, never probes local IP)
+#   --addr host         client connect address — domain / IPv4 / IPv6, user-supplied
+#                       (default prompts interactively, never probes local IP)
+#   --sni name          TLS SNI for real-TLS lines (ws/grpc/hy2/tuic/anytls/naive);
+#                       default = the connect address (reality/shadowtls keep config-filtered SNI)
 #   --outputname NAME   output filename (default config-client.json; spaces/non-ASCII OK, filename only, no path)
 #   --outputpath DIR    output directory (default: this script's own dir)
 #   --insecure          add insecure:true when cert is self-signed (omit with real cert)
@@ -57,7 +60,8 @@ gen-client.sh — converter: server config.json → client config.json (single i
 
 ##help##
   --from-server PATH  server config.json path (required unless --test)
-  --server host       client connect address (domain for dual-stack; default: interactive prompt)
+  --addr host         client connect address — domain / IPv4 / IPv6, user-supplied (default: interactive prompt)
+  --sni name          TLS SNI for real-TLS lines (default: the connect address; reality/shadowtls keep config-filtered SNI)
   --outputname NAME   output filename (default: config-client.json; filename only, no path)
   --outputpath DIR    output directory (default: this script's own dir)
   --insecure          add insecure:true when the cert is self-signed (omit with a real cert)
@@ -82,7 +86,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --help) help; exit 0 ;;
     --from-server) shift; CONFIG_PATH="${1:-}" ;;
-    --server) shift; SERVER="${1:-}" ;;
+    --addr) shift; SERVER="${1:-}" ;;
+    --sni) shift; SNI_OVERRIDE="${1:-}" ;;
     --outputname) shift; OUTPUT_NAME="${1:-}" ;;
     --outputpath) shift; OUTPUT_PATH="${1:-}" ;;
     --insecure) ARG_INSECURE=1 ;;
@@ -93,7 +98,7 @@ while [[ $# -gt 0 ]]; do
       INBOUND_TYPE="${1%%:*}"
       if [[ "$1" == *:* ]]; then INBOUND_PORT="${1#*:}"; fi
       ;;
-    *) die1 "unknown argument: $1 (supported: --from-server / --server / --outputname / --outputpath / --insecure / --debug / --inbound / --test)" ;;
+    *) die1 "unknown argument: $1 (supported: --from-server / --addr / --sni / --outputname / --outputpath / --insecure / --debug / --inbound / --test)" ;;
   esac
   shift
 done
@@ -159,16 +164,17 @@ if [[ -n "$SB_BIN" ]]; then
   debug "sing-box: $SB_BIN (v${DETECTED:-unknown})"
 fi
 
-# ---------- Client connect address (--server or interactive; never probes local IP; domain/IPv4/IPv6 all accepted) ----------
+# ---------- Client connect address (--addr or interactive; never probes local IP; domain/IPv4/IPv6 all accepted) ----------
 # The connect address is a *client-side* fact: probing "our own" IP would only discover the
 # machine we happen to run on, not how the client will reach the server — so we always ask.
 if [[ -z "$SERVER" ]]; then
   read -r -p "Enter client connect address (domain dual-stack / IPv4 / IPv6): " SERVER
-  [[ -n "$SERVER" ]] || die1 "must provide connect address (--server arg or interactive input)"
+  [[ -n "$SERVER" ]] || die1 "must provide connect address (--addr arg or interactive input)"
   debug "interactive input: $SERVER"
 else
-  debug "server: $SERVER"
+  debug "addr: $SERVER"
 fi
+[[ -n "${SNI_OVERRIDE:-}" ]] && debug "sni override: $SNI_OVERRIDE"
 
 # ---------- insecure ----------
 [[ $ARG_INSECURE -eq 1 ]] && INSECURE=1

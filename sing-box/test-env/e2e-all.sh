@@ -21,7 +21,7 @@ echo "=== 0. prepare test-env (server config) ==="
 
 echo "=== 1. convert: server config → client json ==="
 SB_OUTPUT="$WORK/client-all.json" SB_BIN="$BIN" bash "$GEN" \
-  --from-server "$SRVCFG" --server 127.0.0.1 --insecure --inbound socks:10808 >/dev/null 2>&1 \
+  --from-server "$SRVCFG" --addr 127.0.0.1 --insecure --inbound socks:10808 >/dev/null 2>&1 \
   || { echo "✗ conversion failed"; exit 1; }
 echo "   ✓ client-all.json"
 
