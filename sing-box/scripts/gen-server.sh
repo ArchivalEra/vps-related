@@ -1,38 +1,46 @@
 #!/usr/bin/env bash
 # gen-server.sh — interactive/flag-driven server config generator
-# (fresh credentials, single output, zero persistence)
+# (fresh credentials, single output, zero persistence, multi-instance)
 #
 # Usage:
 #   bash gen-server.sh [--domain D] [--reality-sni S] [--certpath P] [--keypath P]
-#                      [--protocols a,b,c] [--ports "name=port,..."]
-#                      [--chain-ss-port N] [--ss-method M] [--ss-port N]
+#                      [--protocols a,a,b,...] [--ports "port,port,..."] [--ss-methods "m1,m2,..."]
+#                      [--chain-ss-port N] [--ss-port N]
 #                      [--outputname NAME] [--outputpath DIR] [--debug] [--test]
 #
-# Output: ONE server sing-box config.json with the SELECTED inbounds (protocols/ports chosen
-# interactively, or via flags). Every run rotates all credentials; nothing is persisted.
-# Compatible with gen-client.sh (server config.json → client config.json, single input).
-# All TLS inbounds share ONE cert/key — designed for a wildcard cert covering all SNIs.
+# Output: ONE server sing-box config.json. ANY protocol can appear multiple times —
+# each instance gets a unique tag (<proto> for the 1st, <proto>-N for repeats) and its
+# own port; TLS protocols share ONE cert/key (wildcard cert design). Every run rotates
+# all credentials; nothing is persisted.
 #
-# Interactive mode (no --protocols): prompts for domain, protocol selection, per-protocol
-# ports, shadowtls→ss chain binding, and standalone ss settings. IDN (non-ASCII) domains
-# emit a punycode warning — TLS SNI cannot carry raw IDN.
+# Two domains (independent):
+#   gen-server.sh + secrets.lib.sh  → server config.json   (this script's only output)
+#   gen-client.sh + protocols.lib.sh → client config.json  (reads that server config)
+#   common.lib.sh is the shared output layer both libs source; the two domains do not
+#   cross-import each other.
+#
+# Interactive mode (no --protocols): prompts for domain, protocol selection (numbers,
+# repeats allowed → multi-instance), per-instance ports, shadowtls→ss chain, and ss
+# method/port (repeat the ss choice for more instances). IDN domains warn — TLS SNI
+# requires punycode.
 #
 # Args:
-#   --domain D        SNI for ws/grpc (and connect address); default prompts interactively
+#   --domain D        SNI for ws/grpc/naive (and connect address); default prompts
 #   --reality-sni S   reality handshake server SNI (default www.microsoft.com)
 #   --certpath P      TLS cert path (all TLS inbounds share it; default /your/cert/at/here)
 #   --keypath P       TLS key path (default /your/key/at/here)
-#   --protocols L     non-interactive: comma list of protocol names (skips selection prompts)
-#   --ports K=V,...   non-interactive port overrides (unset → protocol defaults)
+#   --protocols L     non-interactive: comma list, repeats allowed (e.g. shadowsocks,shadowsocks)
+#   --ports P,P,...   non-interactive: comma port list, positionally aligned with --protocols
+#   --ss-methods M    non-interactive: comma method list for ss instances (positional)
 #   --chain-ss-port N shadowtls chained ss port (default 8389; 0 = no chain)
-#   --ss-method M     standalone ss method (default 2022-blake3-aes-256-gcm)
-#   --ss-port N       standalone ss port (default 8388)
+#   --ss-port N       default port for ss instances when --ports omits them (default 8388)
 #   --outputname N    output filename (default config-server.json; filename only, no path)
 #   --outputpath D    output directory (default: this script's own dir)
 #   --debug           diagnostic output (fully silent by default)
-#   --test            self-check: full default set → temp, sing-box check, exit
+#   --test            self-check: 8-inbound set incl. dual ss → temp, sing-box check, exit
 #
-# Protocols: reality / hysteria2 / vless-ws / vless-grpc / anytls / shadowtls / shadowsocks / tuic / naive
+# Protocols (repeatable): reality / hysteria2 / vless-ws / vless-grpc / anytls /
+# shadowtls (+chained ss) / shadowsocks / tuic / naive
 #
 # Env: SB_OUTPUT (full output path override) / SB_BIN / DEBUG
 # Exit codes: 0=ok  1=argument/dependency  2=sing-box check failure
@@ -49,8 +57,8 @@ CERT_FILE="/your/cert/at/here"
 KEY_FILE="/your/key/at/here"
 PROTOCOLS_ARG=""
 PORTS_ARG=""
+SS_METHODS_ARG=""
 CHAIN_SS_PORT=""
-SS_METHOD=""
 SS_PORT=""
 TEST_MODE=0
 DEBUG="${DEBUG:-0}"
@@ -75,14 +83,14 @@ while [[ $# -gt 0 ]]; do
     --keypath) shift; KEY_FILE="${1:-}" ;;
     --protocols) shift; PROTOCOLS_ARG="${1:-}" ;;
     --ports) shift; PORTS_ARG="${1:-}" ;;
+    --ss-methods) shift; SS_METHODS_ARG="${1:-}" ;;
     --chain-ss-port) shift; CHAIN_SS_PORT="${1:-}" ;;
-    --ss-method) shift; SS_METHOD="${1:-}" ;;
     --ss-port) shift; SS_PORT="${1:-}" ;;
     --outputname) shift; OUTPUT_NAME="${1:-}" ;;
     --outputpath) shift; OUTPUT_PATH="${1:-}" ;;
     --debug) DEBUG=1 ;;
     --test) TEST_MODE=1 ;;
-    *) die1 "unknown argument: $1 (supported: --domain / --reality-sni / --certpath / --keypath / --protocols / --ports / --chain-ss-port / --ss-method / --ss-port / --outputname / --outputpath / --debug / --test)" ;;
+    *) die1 "unknown argument: $1 (supported: --domain / --reality-sni / --certpath / --keypath / --protocols / --ports / --ss-methods / --chain-ss-port / --ss-port / --outputname / --outputpath / --debug / --test)" ;;
   esac
   shift
 done
@@ -104,12 +112,13 @@ if [[ -z "$SB_BIN" ]]; then
 fi
 [[ -x "$SB_BIN" ]] || die1 "sing-box binary not found (set SB_BIN or add sing-box to PATH)"
 
-# ---------- Shared state (filled by selection; read by renderers) ----------
-PROTOCOLS=""                 # space-separated protocol names (selection order)
-declare -A PORTS=()          # name → port
-CHAIN_SS=0                   # shadowtls binds an internal ss (detour)
+# ---------- Instance state (filled by instantiate(); read by renderers) ----------
+PROTOCOLS=""            # ordered proto list (repeats allowed)
+INST_TAGS=""            # ordered unique instance tags ("reality hy2 vless-ws ... ss2022 ss2022-2")
+declare -A INST_PORTS=()   # instance tag → port
+declare -A INST_LAYER=()   # instance tag → tcp/udp
+CHAIN_SS=0              # first shadowtls binds an internal ss (detour)
 CHAIN_SS_PORT_VAL=8389
-SS_METHOD_VAL="2022-blake3-aes-256-gcm"
 SS_PORT_VAL=8388
 
 # ---------- IDN (non-ASCII domain) warning — TLS SNI needs punycode ----------
@@ -119,9 +128,41 @@ check_domain() {
   fi
 }
 
+# ---------- Instantiate: PROTOCOLS (repeats ok) → INST_TAGS/INST_PORTS/INST_LAYER ----------
+instantiate() {
+  local p tag count
+  declare -A _cnt=()
+  INST_TAGS=""
+  for p in $PROTOCOLS; do
+    count=$(( ${_cnt[$p]:-0} + 1 ))
+    _cnt[$p]=$count
+    if [[ $count -eq 1 ]]; then tag="$p"; else tag="${p}-${count}"; fi
+    INST_TAGS+=" $tag"
+    INST_PORTS[$tag]="${PROTO_DEFAULT_PORT[$p]}"
+    INST_LAYER[$tag]="${PROTO_LAYER[$p]}"
+  done
+  INST_TAGS="${INST_TAGS# }"
+}
+
+# ---------- Port conflict check (TCP and UDP each must be unique; TCP/UDP may share) ----------
+check_port_conflicts() {
+  local layer seen t
+  for layer in tcp udp; do
+    seen=""
+    for t in $INST_TAGS; do
+      if [[ "${INST_LAYER[$t]}" == "$layer" ]]; then
+        if [[ " $seen " == *" ${INST_PORTS[$t]} "* ]]; then
+          die1 "port ${INST_PORTS[$t]} used by two $layer instances ($t) — TCP and UDP may share a port, but two $layer cannot"
+        fi
+        seen+=" ${INST_PORTS[$t]}"
+      fi
+    done
+  done
+}
+
 # ---------- Interactive selection ----------
 ask_protocols() {
-  echo "Select protocols (comma-separated numbers, or empty for all):"
+  echo "Select protocols (comma-separated numbers, repeats allowed for multi-instance, empty = all):"
   local i=1 p
   for p in "${PROTO_ORDER[@]}"; do
     printf "  [%d] %-12s (%s, default port %s)\n" "$i" "$p" "${PROTO_LAYER[$p]}" "${PROTO_DEFAULT_PORT[$p]}"
@@ -129,40 +170,37 @@ ask_protocols() {
   done
   read -r -p "Selection: " sel
   sel="$(echo "$sel" | tr -d ' ')"
-  local list=()
+  local list=() n
   if [[ -z "$sel" ]]; then
     list=("${PROTO_ORDER[@]}")
   else
     IFS=',' read -ra nums <<< "$sel"
-    local n
     for n in "${nums[@]}"; do
       [[ "$n" =~ ^[0-9]+$ ]] || die1 "invalid selection entry: $n"
       (( n >= 1 && n <= ${#PROTO_ORDER[@]} )) || die1 "selection out of range: $n"
       list+=("${PROTO_ORDER[$((n-1))]}")
     done
   fi
-  local seen="" p
-  for p in "${list[@]}"; do
-    [[ " $seen " == *" $p "* ]] && die1 "duplicate protocol in selection: $p"
-    seen+=" $p"; PROTOCOLS+=" $p"
-  done
-  PROTOCOLS="${PROTOCOLS# }"
+  PROTOCOLS="${list[*]}"
 }
 
 ask_ports() {
-  local p port
-  for p in $PROTOCOLS; do
-    read -r -p "  $p port [${PROTO_DEFAULT_PORT[$p]}]: " port
-    [[ -z "$port" ]] && port="${PROTO_DEFAULT_PORT[$p]}"
-    [[ "$port" =~ ^[0-9]+$ ]] || die1 "invalid port for $p: $port"
-    PORTS[$p]="$port"
+  local t p
+  for t in $INST_TAGS; do
+    p="${t%%-*}"   # instance's protocol family (strip -N)
+    [[ -n "${PROTO_DEFAULT_PORT[$p]+x}" ]] || p="$t"
+    read -r -p "  $t port [${INST_PORTS[$t]}]: " port
+    [[ -z "$port" ]] && port="${INST_PORTS[$t]}"
+    [[ "$port" =~ ^[0-9]+$ ]] || die1 "invalid port for $t: $port"
+    INST_PORTS[$t]="$port"
   done
   check_port_conflicts
 }
 
 ask_chain_ss() {
+  local ans p n ss_i
+  # chain ss bound to the FIRST shadowtls instance
   if [[ " $PROTOCOLS " == *" shadowtls "* ]]; then
-    local ans p
     read -r -p "  Bind chained ss2022 (detour) for shadowtls? [Y/n]: " ans
     if [[ "${ans:-Y}" =~ ^[Yy] ]]; then
       CHAIN_SS=1
@@ -170,59 +208,64 @@ ask_chain_ss() {
       CHAIN_SS_PORT_VAL="${p:-8389}"
     fi
   fi
-  if [[ " $PROTOCOLS " == *" shadowsocks "* ]]; then
-    local m p
-    read -r -p "  standalone ss method [2022-blake3-aes-256-gcm]: " m
-    SS_METHOD_VAL="${m:-2022-blake3-aes-256-gcm}"
-    read -r -p "  standalone ss port [8388]: " p
-    SS_PORT_VAL="${p:-8388}"
-  fi
+  # ss instances: ask method+port per instance
+  ss_i=0
+  for t in $INST_TAGS; do
+    p="${t%%-*}"
+    if [[ "$p" == "shadowsocks" ]]; then
+      ss_i=$((ss_i+1))
+      read -r -p "  ss[$ss_i] ($t) method [2022-blake3-aes-256-gcm]: " m
+      [[ -z "$m" ]] && m="2022-blake3-aes-256-gcm"
+      INST_SS_METHOD[$t]="$m"
+      read -r -p "  ss[$ss_i] ($t) port [${INST_PORTS[$t]}]: " n
+      [[ -z "$n" ]] && n="${INST_PORTS[$t]}"
+      [[ "$n" =~ ^[0-9]+$ ]] || die1 "invalid ss port: $n"
+      INST_PORTS[$t]="$n"
+    fi
+  done
+  [[ $ss_i -ge 1 ]] && check_port_conflicts
 }
 
-# ---------- Port conflict check (TCP and UDP each must be unique; TCP/UDP may share) ----------
-check_port_conflicts() {
-  local layer seen p
-  for layer in tcp udp; do
-    seen=""
-    for p in $PROTOCOLS; do
-      if [[ "${PROTO_LAYER[$p]}" == "$layer" ]]; then
-        if [[ " $seen " == *" ${PORTS[$p]} "* ]]; then
-          die1 "port ${PORTS[$p]} used by two $layer protocols ($p) — TCP and UDP may share a port, but two $layer cannot"
-        fi
-        seen+=" ${PORTS[$p]}"
-      fi
-    done
-  done
-}
+declare -A INST_SS_METHOD=()   # instance tag → ss method (flag or interactive)
 
 # ---------- Selection: --test bypasses; else flag-driven (non-interactive) or interactive ----------
 if [[ $TEST_MODE -eq 1 ]]; then
   : # --test sets its own selection below (same render path as production)
 elif [[ -n "$PROTOCOLS_ARG" ]]; then
+  p=""
   IFS=',' read -ra list <<< "$PROTOCOLS_ARG"
-  p=""; seen=""
   for p in "${list[@]}"; do
     p="$(echo "$p" | xargs)"
     [[ -n "$p" ]] || continue
     [[ -n "${PROTO_DEFAULT_PORT[$p]+x}" ]] || die1 "unknown protocol: $p (available: ${PROTO_ORDER[*]})"
-    [[ " $seen " == *" $p "* ]] && die1 "duplicate protocol: $p"
-    seen+=" $p"; PROTOCOLS+=" $p"
+    PROTOCOLS+=" $p"
   done
   PROTOCOLS="${PROTOCOLS# }"
   [[ -n "$PROTOCOLS" ]] || die1 "--protocols resolved to empty list"
-  for p in $PROTOCOLS; do PORTS[$p]="${PROTO_DEFAULT_PORT[$p]}"; done
+  instantiate
   if [[ -n "$PORTS_ARG" ]]; then
-    e=""; name=""; val=""
-    IFS=',' read -ra kv <<< "$PORTS_ARG"
-    for e in "${kv[@]}"; do
-      name="${e%%=*}"; val="${e#*=}"
-      [[ -n "${PROTO_DEFAULT_PORT[$name]+x}" ]] || die1 "unknown protocol in --ports: $name"
-      [[ "$val" =~ ^[0-9]+$ ]] || die1 "bad port entry: $e"
-      PORTS[$name]="$val"
+    e=""; n=0
+    read -ra tags <<< "$INST_TAGS"
+    IFS=',' read -ra pv <<< "$PORTS_ARG"
+    [[ ${#pv[@]} -eq ${#tags[@]} ]] || die1 "--ports has ${#pv[@]} entries but ${#tags[@]} instances (must align with --protocols)"
+    for e in "${pv[@]}"; do
+      [[ "$e" =~ ^[0-9]+$ ]] || die1 "bad --ports entry: $e"
+      INST_PORTS[${tags[$n]}]="$e"
+      n=$((n+1))
+    done
+  fi
+  # ss methods (positional across ss instances in selection order)
+  if [[ -n "$SS_METHODS_ARG" ]]; then
+    e=""; n=0
+    IFS=',' read -ra mv <<< "$SS_METHODS_ARG"
+    for t in $INST_TAGS; do
+      [[ "${t%%-*}" == "shadowsocks" ]] || continue
+      [[ $n -lt ${#mv[@]} ]] || die1 "--ss-methods has fewer entries than ss instances"
+      INST_SS_METHOD[$t]="${mv[$n]}"; n=$((n+1))
     done
   fi
   check_port_conflicts
-  # chain ss / standalone ss (flag-driven; chain default ON when shadowtls present)
+  # chain ss (flag-driven; default ON when shadowtls present)
   if [[ " $PROTOCOLS " == *" shadowtls "* ]]; then
     if [[ -n "$CHAIN_SS_PORT" ]]; then
       [[ "$CHAIN_SS_PORT" =~ ^[0-9]+$ ]] || die1 "bad --chain-ss-port: $CHAIN_SS_PORT"
@@ -231,14 +274,14 @@ elif [[ -n "$PROTOCOLS_ARG" ]]; then
       CHAIN_SS=1
     fi
   fi
-  [[ -n "$SS_METHOD" ]] && SS_METHOD_VAL="$SS_METHOD"
   [[ -n "$SS_PORT" ]] && { [[ "$SS_PORT" =~ ^[0-9]+$ ]] || die1 "bad --ss-port: $SS_PORT"; SS_PORT_VAL="$SS_PORT"; }
 else
   ask_protocols
+  instantiate
   ask_ports
   ask_chain_ss
 fi
-debug "protocols: $PROTOCOLS  ports: ${PORTS[*]}  chain_ss=$CHAIN_SS chain_port=$CHAIN_SS_PORT_VAL ss_port=$SS_PORT_VAL"
+debug "instances: $INST_TAGS  ports: ${INST_PORTS[*]}  chain_ss=$CHAIN_SS chain_port=$CHAIN_SS_PORT_VAL"
 
 # ---------- Domain (interactive or --domain; never probed; --test sets its own) ----------
 if [[ $TEST_MODE -ne 1 ]]; then
@@ -277,69 +320,76 @@ if [[ $TEST_MODE -ne 1 ]]; then
   debug "output target: $SB_OUTPUT"
 fi
 
-# ---------- Per-protocol inbound renderers (read shared state; emit JSON fragments) ----------
+# ---------- Per-protocol inbound renderers (instance-aware; emit JSON fragments) ----------
+# Instance context: INST_TAG (current), INST_PORT, INST_SS_METHOD — set by render_config loop.
+# Shadowtls chained ss: rendered only for the FIRST shadowtls instance (CHAIN_SS=1).
 render_reality() {
-  echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": ${PORTS[reality]},
+  echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\", \"flow\": \"xtls-rprx-vision\" } ],
     \"tls\": { \"enabled\": true, \"server_name\": \"$REALITY_SNI\",
       \"reality\": { \"enabled\": true, \"handshake\": { \"server\": \"$REALITY_SNI\", \"server_port\": 443 },
         \"private_key\": \"$GEN_PRIV\", \"short_id\": [\"$GEN_SID\"] } } }"
 }
 render_hysteria2() {
-  echo "{ \"type\": \"hysteria2\", \"listen\": \"::\", \"listen_port\": ${PORTS[hysteria2]},
+  echo "{ \"type\": \"hysteria2\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"password\": \"$GEN_HY2_PASS\" } ],
     \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" } }"
 }
 render_vless_ws() {
-  echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": ${PORTS[vless-ws]},
+  echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\" } ],
     \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" },
     \"transport\": { \"type\": \"ws\", \"path\": \"/ws\" } }"
 }
 render_vless_grpc() {
-  echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": ${PORTS[vless-grpc]},
+  echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\" } ],
     \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" },
     \"transport\": { \"type\": \"grpc\", \"service_name\": \"grpc\" } }"
 }
 render_anytls() {
-  echo "{ \"type\": \"anytls\", \"listen\": \"::\", \"listen_port\": ${PORTS[anytls]},
+  echo "{ \"type\": \"anytls\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"password\": \"$GEN_ANYTLS_PASS\" } ],
     \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" } }"
 }
 render_shadowtls() {
-  local out
-  out="{ \"type\": \"shadowtls\", \"tag\": \"st-in\", \"listen\": \"::\", \"listen_port\": ${PORTS[shadowtls]},
+  # tag must be unique per instance; the server may have several shadowtls inbounds
+  local out detour chain_frag
+  detour=""
+  if [[ $CHAIN_SS -eq 1 && "${INST_SHADOWTLS_N:-0}" -eq 0 ]]; then
+    detour=", \"detour\": \"ss-chain-in\""
+  fi
+  INST_SHADOWTLS_N=$(( ${INST_SHADOWTLS_N:-0} + 1 ))
+  out="{ \"type\": \"shadowtls\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"version\": 3, \"users\": [ { \"name\": \"sb\", \"password\": \"$GEN_ST_PASS\" } ],
-    \"handshake\": { \"server\": \"$REALITY_SNI\", \"server_port\": 443 }, \"strict_mode\": true,
-    \"detour\": \"ss-chain-in\" }"
-  if [[ $CHAIN_SS -eq 1 ]]; then
+    \"handshake\": { \"server\": \"$REALITY_SNI\", \"server_port\": 443 }, \"strict_mode\": true$detour }"
+  if [[ $CHAIN_SS -eq 1 && $(( ${INST_SHADOWTLS_N:-0} - 1 )) -eq 1 ]]; then
     out+=", { \"type\": \"shadowsocks\", \"tag\": \"ss-chain-in\", \"listen\": \"::\", \"listen_port\": $CHAIN_SS_PORT_VAL,
-      \"method\": \"$SS_METHOD_VAL\", \"password\": \"$GEN_SS_CHAIN_PASS\" }"
+      \"method\": \"2022-blake3-aes-256-gcm\", \"password\": \"$GEN_SS_CHAIN_PASS\" }"
   fi
   echo "$out"
 }
 render_shadowsocks() {
-  echo "{ \"type\": \"shadowsocks\", \"tag\": \"ss2022-in\", \"listen\": \"::\", \"listen_port\": $SS_PORT_VAL,
-    \"method\": \"$SS_METHOD_VAL\", \"password\": \"$GEN_SS_PASS\" }"
+  local method="${INST_SS_METHOD[$INST_TAG]:-2022-blake3-aes-256-gcm}"
+  echo "{ \"type\": \"shadowsocks\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
+    \"method\": \"$method\", \"password\": \"$GEN_SS_PASS\" }"
 }
 render_tuic() {
-  echo "{ \"type\": \"tuic\", \"listen\": \"::\", \"listen_port\": ${PORTS[tuic]},
+  echo "{ \"type\": \"tuic\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\", \"password\": \"$GEN_TU_PASS\" } ],
     \"congestion_control\": \"bbr\",
     \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" } }"
 }
 render_naive() {
-  echo "{ \"type\": \"naive\", \"listen\": \"::\", \"listen_port\": ${PORTS[naive]},
+  echo "{ \"type\": \"naive\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"username\": \"sb\", \"password\": \"$GEN_NAIVE_PASS\" } ],
     \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" } }"
 }
 
-# ---------- Render server config (fresh credentials embedded; $1=cert $2=key $3=out) ----------
+# ---------- Render server config (fresh credentials; $1=cert $2=key $3=out) ----------
 render_config() {
-  local cert="$1" key="$2" out="$3" inbounds=""
+  local cert="$1" key="$2" out="$3" inbounds="" t proto
   GEN_CERT="$cert"; GEN_KEY="$key"
-  # fresh credentials (generated once per run; unused ones are harmless, never persisted)
   GEN_UUID="$(gen_uuid)" || die1 "failed to generate uuid"
   local kp; kp="$(gen_reality_keypair)" || die1 "failed to generate reality keypair"
   GEN_PRIV="${kp%% *}"; GEN_PUB="${kp#* }"
@@ -351,11 +401,15 @@ render_config() {
   GEN_SS_CHAIN_PASS="$(gen_ss_pass)"
   GEN_TU_PASS="$(gen_hex_pass)"
   GEN_NAIVE_PASS="$(gen_hex_pass)"
-  debug "domain=$DOMAIN reality_sni=$REALITY_SNI protocols=$PROTOCOLS"
-  local p
-  for p in $PROTOCOLS; do
+  INST_SHADOWTLS_N=0
+  debug "domain=$DOMAIN reality_sni=$REALITY_SNI instances=$INST_TAGS"
+  for t in $INST_TAGS; do
+    INST_TAG="$t"
+    INST_PORT="${INST_PORTS[$t]}"
+    proto="${t%%-*}"
+    [[ -n "${PROTO_DEFAULT_PORT[$proto]+x}" ]] || proto="$t"
     local frag
-    frag="$(render_${p//-/_})" || die1 "render failed for protocol: $p"
+    frag="$(render_${proto//-/_})" || die1 "render failed for instance: $t"
     inbounds+="${inbounds:+, }$frag"
   done
   cat > "$out" <<JSON
@@ -372,22 +426,23 @@ JSON
   echo "$GEN_PUB"
 }
 
-# ---------- --test: self-check (same render path as production; no recursion) ----------
+# ---------- --test: self-check (8 instances incl. dual ss; same render path as production) ----------
 if [[ $TEST_MODE -eq 1 ]]; then
   ok "== running gen-server.sh self-check =="
   local_cert="$SCRIPT_DIR/../test-env/server/hy2.crt"
   local_key="$SCRIPT_DIR/../test-env/server/hy2.key"
   [[ -f "$local_cert" && -f "$local_key" ]] || { err "self-check: missing test cert ($local_cert)"; exit 1; }
   DOMAIN="127.0.0.1"
-  PROTOCOLS="reality hysteria2 vless-ws vless-grpc anytls shadowtls shadowsocks"
-  p=""
-  for p in $PROTOCOLS; do PORTS[$p]="${PROTO_DEFAULT_PORT[$p]}"; done
+  PROTOCOLS="reality hysteria2 vless-ws vless-grpc anytls shadowtls shadowsocks shadowsocks"
+  instantiate
+  INST_PORTS[shadowsocks-2]=8390
+  INST_SS_METHOD[shadowsocks]="2022-blake3-aes-256-gcm"
+  INST_SS_METHOD[shadowsocks-2]="aes-128-gcm"
   CHAIN_SS=1; CHAIN_SS_PORT_VAL=8389
-  SS_METHOD_VAL="2022-blake3-aes-256-gcm"; SS_PORT_VAL=8388
   test_out="$TMPD/config-server.json"
   render_config "$local_cert" "$local_key" "$test_out" >/dev/null || { err "self-check: generation failed"; exit 1; }
   if timeout 15 "$SB_BIN" check -c "$test_out" 2>"$TMPD/check.err"; then
-    ok "self-check: generated + passed sing-box check ($PROTOCOLS)"
+    ok "self-check: generated + passed sing-box check ($INST_TAGS)"
     exit 0
   else
     err "self-check: sing-box check failed:"; cat "$TMPD/check.err" >&2
@@ -410,6 +465,6 @@ else
   exit 2
 fi
 
-ok "server config: $SB_OUTPUT (inbounds: $PROTOCOLS)"
+ok "server config: $SB_OUTPUT (inbounds: $INST_TAGS)"
 ok "credentials embedded (fresh each run, nothing persisted). Reality public key: $PUB"
 ok "clients: bash gen-client.sh --from-server $SB_OUTPUT --server $DOMAIN"
