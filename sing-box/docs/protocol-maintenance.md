@@ -102,11 +102,12 @@
 | `client_metadata` | 1.14 默认空字符串 | 不加=不发指纹（正确默认） |
 | `idle_session_*` | 默认 30s/30s/0 | 可选 |
 
-### VLESS/VMess + WS（`convert_vless_ws`/`convert_vmess_ws`）
+### VLESS/VMess + WS / GRPC（`convert_vless_ws`/`convert_vmess_ws`/`vless-grpc`）
 
 | 字段 | 1.14 现状 | 升级检查点 |
 |---|---|---|
 | `transport.type: ws` | 无 plain TCP；transport 只有 http/ws/quic/grpc/httpupgrade | **xhttp 1.15 才有**，1.14 写 xhttp=unknown |
+| `transport.type: grpc` | `service_name` 必须填；`transport.headers` 对 grpc 无效 | 1.15 若改 `proto` 写法需同步 convert_vless grpc 分支 |
 | `ws.path`/`ws.headers.Host` | 默认 path 空 | |
 | `vmess.alter_id` | 默认 0（AEAD）；字段名下划线 | 服务端是驼峰 `alterId` |
 | `vmess.packet_encoding` | **缺省禁用**（vless 缺省 xudp，两者不同） | 需要 UDP 要显式写 |

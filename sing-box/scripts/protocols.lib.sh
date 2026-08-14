@@ -122,19 +122,35 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
     debug "vless[reality] ← inbound[$i] port=$port sni=$sni"
     return
   fi
-  # Branch B: ws transport (vless+ws, self-signed or real cert)
-  local ttype ws_path ws_host ins
+  # Branch B/C: ws / grpc transport (vless+ws / vless+grpc, self-signed or real cert)
+  local ttype ins
   ttype="$(inb_field $i 'transport.type')"
-  [[ "$ttype" == "ws" ]] || { warn "vless inbound[$i] no reality and transport.type=$ttype (only ws supported), skip"; return; }
-  ws_path="$(inb_field $i 'transport.path')"
-  [[ -z "$ws_path" ]] && ws_path="/ws"
-  ws_host="$(inb_field $i 'transport.headers.Host')"
-  [[ -z "$ws_host" ]] && ws_host="$sni"
   ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
-  OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"vless-ws\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"ws\", \"path\": \"$ws_path\", \"headers\": { \"Host\": \"$ws_host\" } } }"
-  TAGS+="${TAGS:+, }\"vless-ws\""
-  debug "vless[ws] ← inbound[$i] port=$port path=$ws_path host=$ws_host"
+  [[ -z "$sni" ]] && sni="$SERVER"    # server config without tls.server_name → use connect address
+  case "$ttype" in
+    ws)
+      local ws_path ws_host
+      ws_path="$(inb_field $i 'transport.path')"
+      [[ -z "$ws_path" ]] && ws_path="/ws"
+      ws_host="$(inb_field $i 'transport.headers.Host')"
+      [[ -z "$ws_host" ]] && ws_host="$sni"
+      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"vless-ws\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"ws\", \"path\": \"$ws_path\", \"headers\": { \"Host\": \"$ws_host\" } } }"
+      TAGS+="${TAGS:+, }\"vless-ws\""
+      debug "vless[ws] ← inbound[$i] port=$port path=$ws_path host=$ws_host"
+      ;;
+    grpc)
+      local service_name
+      service_name="$(inb_field $i 'transport.service_name')"
+      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"vless-grpc\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"grpc\", \"service_name\": \"$service_name\" } }"
+      TAGS+="${TAGS:+, }\"vless-grpc\""
+      debug "vless[grpc] ← inbound[$i] port=$port service=$service_name"
+      ;;
+    *)
+      warn "vless inbound[$i] no reality and transport.type=$ttype (only ws/grpc supported), skip"
+      return
+      ;;
+  esac
 }
 
 convert_hy2() { # $1=inbound index — server hysteria2 → client hysteria2
@@ -307,19 +323,19 @@ assert_gen() {
   echo "=== B. conversion failure (exit 2) ==="
   python3 -c "import json;json.dump({'inbounds':[]},open('$TMPD2/empty.json','w'))"
   code=$(run_gen "$TMPD2/empty.json");       check "empty inbounds → 2" 2 "$code"
-  echo "=== C. 8-line conversion structure (exit 0 + structure) ==="
-  code=$(run_gen "$SRVCFG");                 check "8-line conversion → 0" 0 "$code"
+  echo "=== C. 9-line conversion structure (exit 0 + structure) ==="
+  code=$(run_gen "$SRVCFG");                 check "9-line conversion → 0" 0 "$code"
   python3 - "$TMPD2/out.json" <<'PY'
 import json, sys
 c = json.load(open(sys.argv[1]))
 errs = []
 tags = {o["tag"] for o in c["outbounds"]}
-expect = {"reality","hy2","shadowtls","ss-over-st","tuic","anytls","vless-ws","naive","auto","manual","direct","block"}
+expect = {"reality","hy2","shadowtls","ss-over-st","tuic","anytls","vless-ws","vless-grpc","naive","auto","manual","direct","block"}
 if tags != expect: errs.append(f"tag set mismatch: {sorted(tags)} expected {sorted(expect)}")
 auto = next(o for o in c["outbounds"] if o["tag"]=="auto")["outbounds"]
 manual = next(o for o in c["outbounds"] if o["tag"]=="manual")["outbounds"]
-if set(auto) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","naive"}: errs.append(f"auto ref set mismatch: {auto}")
-if manual[0] != "auto" or set(manual[1:]) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","naive"}: errs.append(f"manual ref set mismatch: {manual}")
+if set(auto) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","vless-grpc","naive"}: errs.append(f"auto ref set mismatch: {auto}")
+if manual[0] != "auto" or set(manual[1:]) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","vless-grpc","naive"}: errs.append(f"manual ref set mismatch: {manual}")
 if c["route"]["final"] != "auto": errs.append("route.final not auto")
 if c["dns"]["servers"][0].get("detour") != "reality": errs.append("DNS detour not reality")
 rv = next(o for o in c["outbounds"] if o["tag"]=="reality")

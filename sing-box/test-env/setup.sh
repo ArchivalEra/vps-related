@@ -81,6 +81,10 @@ cat > "$T/server/config.json" <<EOF
       "users": [ { "uuid": "$SB_UUID" } ],
       "tls": { "enabled": true, "server_name": "your.domain.example", "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" },
       "transport": { "type": "ws", "path": "/ws" } },
+    { "type": "vless", "tag": "vless-grpc-in", "listen": "127.0.0.1", "listen_port": 10009,
+      "users": [ { "uuid": "$SB_UUID" } ],
+      "tls": { "enabled": true, "server_name": "your.domain.example", "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" },
+      "transport": { "type": "grpc", "service_name": "grpc" } },
     { "type": "naive", "tag": "naive-in", "listen": "127.0.0.1", "listen_port": 10008,
       "users": [ { "username": "$NAIVE_USER", "password": "$NAIVE_PASS" } ],
       "tls": { "enabled": true, "server_name": "your.domain.example", "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } }
