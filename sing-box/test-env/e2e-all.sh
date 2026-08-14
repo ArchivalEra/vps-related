@@ -6,11 +6,12 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T="$ROOT/test-env"
-BIN="${SB_BIN:-/tmp/sing-box-1.14.0-beta.14-linux-amd64/sing-box}"
+# shellcheck disable=SC1091
+. "$ROOT/scripts/protocols.lib.sh"   # find_sb_bin (single source of truth for binary discovery)
+BIN="$(find_sb_bin)" || { echo "✗ sing-box binary not found (set SB_BIN or add sing-box to PATH)"; exit 1; }
 GEN="$ROOT/scripts/gen-client.sh"
 SRVCFG="$T/server/config.json"
 WORK="$(mktemp -d)"
-[[ -x "$BIN" ]] || { echo "✗ missing binary: $BIN"; exit 1; }
 SRV_PID=""; CLI_PID=""
 cleanup() { [[ -n "$SRV_PID" ]] && kill "$SRV_PID" 2>/dev/null; [[ -n "$CLI_PID" ]] && kill "$CLI_PID" 2>/dev/null; rm -rf "$WORK"; }
 trap cleanup EXIT

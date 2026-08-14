@@ -74,43 +74,65 @@ open('$derfile','wb').write(der)
   rm -f "$derfile"
 }
 
+# ---------- sing-box binary discovery — single source of truth for gen-client.sh / assert_gen / e2e-all.sh ----------
+# Priority: $SB_BIN env (must be executable) → PATH → test-env/bin/sing-box
+find_sb_bin() {
+  if [[ -n "${SB_BIN:-}" ]]; then
+    [[ -x "$SB_BIN" ]] && { echo "$SB_BIN"; return 0; }
+    return 1
+  fi
+  local p lib_dir
+  p="$(command -v sing-box 2>/dev/null)" && [[ -n "$p" ]] && { echo "$p"; return 0; }
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -x "$lib_dir/../test-env/bin/sing-box" ]]; then
+    echo "$lib_dir/../test-env/bin/sing-box"; return 0
+  fi
+  return 1
+}
+
 # ---------- Conversion functions ----------
 # Each convert_xxx() reads one inbound's fields (parsed by python into bash vars) and
 # appends to OUTS/TAGS.
 # Shared input vars (provided by gen-client.sh): SERVER (client connect address) / INSECURE / TMPD / inbound index
 OUTS=""; TAGS=""
-PORT_OVERRIDE=""    # per-inbound client port override (--map), set by render_from_server
 
-# Resolve client port for this inbound: --map "tag=port" wins, else server config listen_port
-out_port() { # $1=client tag  $2=config port → stdout client port
-  local tag="$1" cfg_port="$2" kv p
-  for kv in $PORT_OVERRIDE; do
-    if [[ "${kv%%=*}" == "$tag" ]]; then p="${kv#*=}"; [[ -n "$p" ]] && { echo "$p"; return; }; fi
-  done
-  echo "$cfg_port"
-}
-
-# Get field of inbound $1 by dotted path $2; output to stdout
-# Path rules: dict → by key; list → numeric segment indexes, else first element (e.g. short_id array)
-inb_field() { # $1=inbound index  $2=dotted field path
-  local f="${TMPD:-/tmp}/inbounds.json"
-  python3 - "$f" "$1" "$2" <<'PY'
+# ---------- Field access — single-pass dump, no per-field python spawn ----------
+# dump_fields() resolves every conversion-relevant field for all inbounds once into $TMPD/fields.lst
+# (tab-separated: <idx> \t <path> \t <value>); inb_field() greps that table.
+# Path rules (same semantics as before): dict → by key; list → numeric segment indexes, else first element.
+dump_fields() {
+  local f="${TMPD:-/tmp}/inbounds.json" out="${TMPD:-/tmp}/fields.lst"
+  python3 - "$f" "$out" <<'PY'
 import json, sys
 ibs = json.load(open(sys.argv[1]))
-v = ibs[int(sys.argv[2])]
-for k in sys.argv[3].split('.'):
-    if isinstance(v, list):
-        if k.isdigit():
-            try: v = v[int(k)]
-            except IndexError: v = ''
-        else:
-            v = v[0] if v else ''
-    elif isinstance(v, dict):
-        v = v.get(k, '')
-    else:
-        v = ''
-print(v, end='')
+paths = ["type","tag","listen_port","users.0.uuid","users.0.flow","users.0.password",
+           "users.0.username","tls.server_name","tls.certificate_path","tls.reality.private_key",
+           "tls.reality.short_id","tls.reality.short_id.0","transport.type","transport.path",
+           "transport.headers.Host","transport.service_name","obfs.type","obfs.password",
+           "congestion_control","method","password","version","handshake.server","detour"]
+with open(sys.argv[2], "w") as out:
+    for idx, ib in enumerate(ibs):
+        for p in paths:
+            v = ib
+            for k in p.split('.'):
+                if isinstance(v, list):
+                    if k.isdigit():
+                        try: v = v[int(k)]
+                        except IndexError: v = ''
+                    else:
+                        v = v[0] if v else ''
+                elif isinstance(v, dict):
+                    v = v.get(k, '')
+                else:
+                    v = ''
+            out.write(f"{idx}\t{p}\t{v}\n")
 PY
+}
+
+inb_field() { # $1=inbound index  $2=dotted field path → stdout value (from fields.lst)
+  local f="${TMPD:-/tmp}/fields.lst" line
+  line="$(grep -m1 -F -e "$1	$2	" "$f" 2>/dev/null)" || { echo ''; return; }
+  echo "${line#*	$2	}"
 }
 
 convert_vless() { # $1=inbound index — server vless → client vless (reality or ws transport variant)
@@ -127,8 +149,8 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
     [[ -z "$short" ]] && short="$(inb_field $i 'tls.reality.short_id')"
     local pub
     pub="$(derive_pubkey "$priv")" || { warn "vless inbound[$i] pubkey derivation failed, skip"; return; }
-    OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"reality\", \"server\": \"$SERVER\", \"server_port\": $(out_port reality "$port"), \"uuid\": \"$uuid\", \"flow\": \"$flow\", \"packet_encoding\": \"xudp\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" }, \"reality\": { \"enabled\": true, \"public_key\": \"$pub\", \"short_id\": \"$short\" } } }"
-    TAGS+="${TAGS:+, }\"reality\""
+    OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"reality\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"flow\": \"$flow\", \"packet_encoding\": \"xudp\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" }, \"reality\": { \"enabled\": true, \"public_key\": \"$pub\", \"short_id\": \"$short\" } } }"
+    TAGS+=" reality"
     debug "vless[reality] ← inbound[$i] port=$port sni=$sni"
     return
   fi
@@ -145,15 +167,15 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
       [[ -z "$ws_path" ]] && ws_path="/ws"
       ws_host="$(inb_field $i 'transport.headers.Host')"
       [[ -z "$ws_host" ]] && ws_host="$sni"
-      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"vless-ws\", \"server\": \"$SERVER\", \"server_port\": $(out_port vless-ws "$port"), \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"ws\", \"path\": \"$ws_path\", \"headers\": { \"Host\": \"$ws_host\" } } }"
-      TAGS+="${TAGS:+, }\"vless-ws\""
+      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"vless-ws\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"ws\", \"path\": \"$ws_path\", \"headers\": { \"Host\": \"$ws_host\" } } }"
+      TAGS+=" vless-ws"
       debug "vless[ws] ← inbound[$i] port=$port path=$ws_path host=$ws_host"
       ;;
     grpc)
       local service_name
       service_name="$(inb_field $i 'transport.service_name')"
-      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"vless-grpc\", \"server\": \"$SERVER\", \"server_port\": $(out_port vless-grpc "$port"), \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"grpc\", \"service_name\": \"$service_name\" } }"
-      TAGS+="${TAGS:+, }\"vless-grpc\""
+      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"vless-grpc\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"grpc\", \"service_name\": \"$service_name\" } }"
+      TAGS+=" vless-grpc"
       debug "vless[grpc] ← inbound[$i] port=$port service=$service_name"
       ;;
     *)
@@ -173,8 +195,8 @@ convert_hy2() { # $1=inbound index — server hysteria2 → client hysteria2
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field $i 'listen_port')"
-  OUTS+="${OUTS:+, }{ \"type\": \"hysteria2\", \"tag\": \"hy2\", \"server\": \"$SERVER\", \"server_port\": $(out_port hy2 "$port"), \"password\": \"$pass\"$obfs_json, \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
-  TAGS+="${TAGS:+, }\"hy2\""
+  OUTS+="${OUTS:+, }{ \"type\": \"hysteria2\", \"tag\": \"hy2\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\"$obfs_json, \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
+  TAGS+=" hy2"
   debug "hy2 ← inbound[$i] port=$port obfs=$obfs_type"
 }
 
@@ -185,8 +207,8 @@ convert_shadowtls() { # $1=inbound index — server shadowtls (chain→ss) → c
   [[ -z "$ver" || "$ver" == "0" ]] && ver=3
   handshake_sni="$(inb_field $i 'handshake.server')"
   local port; port="$(inb_field $i 'listen_port')"
-  OUTS+="${OUTS:+, }{ \"type\": \"shadowtls\", \"tag\": \"shadowtls\", \"server\": \"$SERVER\", \"server_port\": $(out_port shadowtls "$port"), \"version\": $ver, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$handshake_sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" } } }"
-  TAGS+="${TAGS:+, }\"shadowtls\""
+  OUTS+="${OUTS:+, }{ \"type\": \"shadowtls\", \"tag\": \"shadowtls\", \"server\": \"$SERVER\", \"server_port\": $port, \"version\": $ver, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$handshake_sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" } } }"
+  TAGS+=" shadowtls"
   # Chain: find the ss inbound referenced by detour, emit ss(detour→shadowtls)
   detour_tag="$(inb_field $i 'detour')"
   local n ss_method ss_pass ss_port
@@ -204,7 +226,7 @@ convert_shadowtls() { # $1=inbound index — server shadowtls (chain→ss) → c
     ss_pass="$(inb_field $ss_in 'password')"
     ss_port="$(inb_field $ss_in 'listen_port')"
     OUTS+=", { \"type\": \"shadowsocks\", \"tag\": \"ss-over-st\", \"server\": \"$SERVER\", \"server_port\": $ss_port, \"method\": \"$ss_method\", \"password\": \"$ss_pass\", \"detour\": \"shadowtls\" }"
-    TAGS+=", \"ss-over-st\""
+    TAGS+=" ss-over-st"
     debug "shadowtls ← inbound[$i] + ss chain inbound[$ss_in]"
   else
     warn "shadowtls inbound[$i] has no matching ss inbound (detour=$detour_tag), only shadowtls emitted"
@@ -220,8 +242,8 @@ convert_tuic() { # $1=inbound index — server tuic → client tuic
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field $i 'listen_port')"
-  OUTS+="${OUTS:+, }{ \"type\": \"tuic\", \"tag\": \"tuic\", \"server\": \"$SERVER\", \"server_port\": $(out_port tuic "$port"), \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
-  TAGS+="${TAGS:+, }\"tuic\""
+  OUTS+="${OUTS:+, }{ \"type\": \"tuic\", \"tag\": \"tuic\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
+  TAGS+=" tuic"
   debug "tuic ← inbound[$i] port=$port"
 }
 
@@ -231,8 +253,8 @@ convert_anytls() { # $1=inbound index — server anytls → client anytls
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field $i 'listen_port')"
-  OUTS+="${OUTS:+, }{ \"type\": \"anytls\", \"tag\": \"anytls\", \"server\": \"$SERVER\", \"server_port\": $(out_port anytls "$port"), \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
-  TAGS+="${TAGS:+, }\"anytls\""
+  OUTS+="${OUTS:+, }{ \"type\": \"anytls\", \"tag\": \"anytls\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
+  TAGS+=" anytls"
   debug "anytls ← inbound[$i] port=$port"
 }
 
@@ -246,8 +268,8 @@ convert_ss() { # $1=inbound index — direct shadowsocks → client ss (skip ss 
   method="$(inb_field $i 'method')"
   pass="$(inb_field $i 'password')"
   local port; port="$(inb_field $i 'listen_port')"
-  OUTS+="${OUTS:+, }{ \"type\": \"shadowsocks\", \"tag\": \"ss2022\", \"server\": \"$SERVER\", \"server_port\": $(out_port ss2022 "$port"), \"method\": \"$method\", \"password\": \"$pass\" }"
-  TAGS+="${TAGS:+, }\"ss2022\""
+  OUTS+="${OUTS:+, }{ \"type\": \"shadowsocks\", \"tag\": \"ss2022\", \"server\": \"$SERVER\", \"server_port\": $port, \"method\": \"$method\", \"password\": \"$pass\" }"
+  TAGS+=" ss2022"
   debug "ss ← inbound[$i] port=$port"
 }
 
@@ -261,8 +283,8 @@ convert_naive() { # $1=inbound index — server naive → client naive (no insec
   [[ -z "$port" || "$port" == "0" ]] && { warn "naive inbound[$i] missing listen_port, skip"; return; }
   local cert_json=""
   [[ -n "$cert" ]] && cert_json=", \"certificate_path\": \"$cert\""
-  OUTS+="${OUTS:+, }{ \"type\": \"naive\", \"tag\": \"naive\", \"server\": \"$SERVER\", \"server_port\": $(out_port naive "$port"), \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$cert_json } }"
-  TAGS+="${TAGS:+, }\"naive\""
+  OUTS+="${OUTS:+, }{ \"type\": \"naive\", \"tag\": \"naive\", \"server\": \"$SERVER\", \"server_port\": $port, \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$cert_json } }"
+  TAGS+=" naive"
   debug "naive ← inbound[$i] port=$port user=$user"
 }
 
@@ -271,6 +293,7 @@ convert_naive() { # $1=inbound index — server naive → client naive (no insec
 # Output: OUTS/TAGS (client outbounds fragments)
 render_from_server() {
   OUTS=""; TAGS=""
+  dump_fields   # single-pass field table ($TMPD/fields.lst); inb_field reads it
   local ni t j det i
   ni="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
   # Pre-scan: collect ss tags referenced by shadowtls chains (avoid duplicate direct conversion)
@@ -309,10 +332,9 @@ assert_gen() {
   LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   ROOT="$(dirname "$LIB_DIR")"
   TEST="$ROOT/test-env"
-  BIN="${SB_BIN:-/tmp/sing-box-1.14.0-beta.14-linux-amd64/sing-box}"
+  BIN="$(find_sb_bin)" || { err "sing-box binary not found (set SB_BIN or add sing-box to PATH)"; return 1; }
   GEN="$ROOT/scripts/gen-client.sh"
   SRVCFG="$TEST/server/config.json"
-  [[ -x "$BIN" ]] || { err "missing test binary: $BIN"; return 1; }
   if [[ ! -f "$SRVCFG" ]]; then
     warn "missing test-env/server/config.json, running bash test-env/setup.sh first"
     ( cd "$TEST" && bash setup.sh >/dev/null 2>&1 ) || { err "setup.sh failed"; return 1; }
@@ -361,26 +383,6 @@ PY
   code=$(run_gen "$SRVCFG"); check "idempotent run 2 → 0" 0 "$code"
   M2=$(md5sum "$TMPD2/out.json" | cut -d' ' -f1)
   if [[ "$M1" == "$M2" ]]; then echo "  ✔ both runs identical"; PASS=$((PASS+1)); else echo "  ✗ idempotency failed"; FAIL=$((FAIL+1)); fi
-
-  echo "=== E. --map port override (CF 443 front) ==="
-  SB_OUTPUT="$TMPD2/map.json" SB_BIN="$BIN" bash "$GEN" --from-server "$SRVCFG" --server 127.0.0.1 --insecure --map "vless-ws=443,vless-grpc=443" >/dev/null 2>&1
-  if [[ -f "$TMPD2/map.json" ]]; then
-    python3 - "$TMPD2/map.json" <<'PY'
-import json, sys
-c = json.load(open(sys.argv[1]))
-errs = []
-port = {o["tag"]: o.get("server_port") for o in c["outbounds"]}
-if port.get("vless-ws") != 443: errs.append(f"vless-ws port {port.get('vless-ws')} != 443")
-if port.get("vless-grpc") != 443: errs.append(f"vless-grpc port {port.get('vless-grpc')} != 443")
-for t in ("reality","hy2","tuic","anytls"):
-    if port.get(t) and port[t] == 443: errs.append(f"{t} unexpectedly overridden to 443")
-if errs: print("  ✗ " + "; ".join(errs)); sys.exit(1)
-print("  ✔ vless-ws/vless-grpc → 443, others untouched")
-PY
-    [[ $? -eq 0 ]] || FAIL=$((FAIL+1))
-  else
-    echo "  ✗ --map run failed to produce output"; FAIL=$((FAIL+1))
-  fi
 
   echo
   echo "=== Result: passed $PASS / $((PASS+FAIL)) ==="

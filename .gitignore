@@ -29,6 +29,8 @@ sing-box/test-env/server/hy2.key
 sing-box/test-env/server/config.json
 # Test artifacts
 sing-box/test-env/client/
+# Test sing-box binary + libcronet.so (79MB+12MB, downloaded, never tracked)
+sing-box/test-env/bin/
 # Default client output (generated in scripts/ dir, contains server keys)
 sing-box/scripts/config-client.json
 # Python bytecode cache (otd.py in share/)

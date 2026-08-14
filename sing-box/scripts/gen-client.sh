@@ -12,7 +12,6 @@
 # Args:
 #   --from-server PATH  server config.json path (required unless --test)
 #   --server host/IP    client connect address (domain for dual-stack; default prompts interactively, never probes local IP)
-#   --map "tag=port,..."  override client port per outbound tag (e.g. CF 443 front: --map "vless-ws=443,vless-grpc=443")
 #   --outputname NAME   output filename (default config-client.json; spaces/non-ASCII OK, filename only, no path)
 #   --outputpath DIR    output directory (default: this script's own dir)
 #   --insecure          add insecure:true when cert is self-signed (omit with real cert)
@@ -41,7 +40,6 @@ INBOUND_TYPE="tun"
 INBOUND_PORT=1080
 CONFIG_PATH=""
 SERVER=""
-MAP_ARG=""
 ARG_INSECURE=0
 TEST_MODE=0
 DEBUG="${DEBUG:-0}"
@@ -51,7 +49,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-server) shift; CONFIG_PATH="${1:-}" ;;
     --server) shift; SERVER="${1:-}" ;;
-    --map) shift; MAP_ARG="${1:-}" ;;
     --outputname) shift; OUTPUT_NAME="${1:-}" ;;
     --outputpath) shift; OUTPUT_PATH="${1:-}" ;;
     --insecure) ARG_INSECURE=1 ;;
@@ -62,7 +59,7 @@ while [[ $# -gt 0 ]]; do
       INBOUND_TYPE="${1%%:*}"
       if [[ "$1" == *:* ]]; then INBOUND_PORT="${1#*:}"; fi
       ;;
-    *) die1 "unknown argument: $1 (supported: --from-server / --server / --map / --outputname / --outputpath / --insecure / --debug / --inbound / --test)" ;;
+    *) die1 "unknown argument: $1 (supported: --from-server / --server / --outputname / --outputpath / --insecure / --debug / --inbound / --test)" ;;
   esac
   shift
 done
@@ -114,10 +111,8 @@ debug "inbounds: $INBOUND_COUNT"
 # ---------- Version detection (timeline compatibility) ----------
 SB_BIN="${SB_BIN:-}"
 if [[ -z "$SB_BIN" ]]; then
-  if command -v sing-box >/dev/null 2>&1; then SB_BIN=$(command -v sing-box)
-  elif [[ -x /opt/sing-box/sing-box ]]; then SB_BIN=/opt/sing-box/sing-box
-  elif [[ -x "$(dirname "${BASH_SOURCE[0]}")/../bin/sing-box" ]]; then SB_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/sing-box"
-  else warn "sing-box binary not found, skipping check and version detection"; fi
+  SB_BIN="$(find_sb_bin)" || SB_BIN=""
+  [[ -n "$SB_BIN" ]] || warn "sing-box binary not found, skipping check and version detection"
 fi
 if [[ -n "$SB_BIN" ]]; then
   DETECTED="$(timeout 5 "$SB_BIN" version 2>/dev/null | head -1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -1 | tr -d 'v')"
@@ -141,16 +136,6 @@ fi
 TLS_SUFFIX=""
 [[ $INSECURE -eq 1 ]] && TLS_SUFFIX=', "insecure": true'
 
-# ---------- --map: per-tag client port override (validate + feed conversion) ----------
-if [[ -n "$MAP_ARG" ]]; then
-  # normalize "t=p,t=p" → "t=p t=p" (lib out_port iterates words)
-  PORT_OVERRIDE="$(echo "$MAP_ARG" | tr ',' ' ')"
-  for kv in $PORT_OVERRIDE; do
-    [[ "$kv" == *=* && "${kv#*=}" =~ ^[0-9]+$ ]] || die1 "bad --map entry: $kv (expected tag=port)"
-  done
-  debug "port override: $PORT_OVERRIDE"
-fi
-
 # ---------- Convert: server inbounds → client outbounds ----------
 render_from_server
 
@@ -158,20 +143,22 @@ render_from_server
 [[ -n "$OUTS" ]] || die2 "no lines converted"
 
 # ---------- Validate: duplicate tags ----------
-if [[ $(echo "$TAGS" | tr ',' '\n' | sort | uniq -d | wc -l) -gt 0 ]]; then
-  die2 "duplicate tags: $(echo "$TAGS" | tr ',' '\n' | sort | uniq -d | tr '\n' ' ')"
+if [[ $(echo "$TAGS" | tr ' ' '\n' | sort | uniq -d | wc -l) -gt 0 ]]; then
+  die2 "duplicate tags: $(echo "$TAGS" | tr ' ' '\n' | sort | uniq -d | tr '\n' ' ')"
 fi
 
 # ---------- Assemble outbounds ----------
-AUTO_REFS="$TAGS"
-MANUAL_REFS="\"auto\"${TAGS:+, $TAGS}"
+# TAGS is space-separated bare tags; quote with JSON commas for arrays (awk trims whitespace)
+QUOTED_TAGS="$(echo "$TAGS" | awk '{for(i=1;i<=NF;i++) printf "\"%s\"%s", $i, (i==NF?"\n":", ") }')"
+AUTO_REFS="$QUOTED_TAGS"
+MANUAL_REFS="\"auto\"${QUOTED_TAGS:+, $QUOTED_TAGS}"
 OUTBOUNDS_ALL="${OUTS:+$OUTS, }"
 OUTBOUNDS_ALL+="{ \"type\": \"urltest\", \"tag\": \"auto\", \"outbounds\": [ ${AUTO_REFS} ], \"url\": \"https://www.gstatic.com/generate_204\", \"interval\": \"3m\" }, "
 OUTBOUNDS_ALL+="{ \"type\": \"selector\", \"tag\": \"manual\", \"outbounds\": [ ${MANUAL_REFS} ], \"default\": \"auto\" }, "
 OUTBOUNDS_ALL+="{ \"type\": \"direct\", \"tag\": \"direct\" }, { \"type\": \"block\", \"tag\": \"block\" }"
 
 DNS_DETOUR="reality"
-echo "$TAGS" | tr ',' '\n' | grep -q '"reality"' || DNS_DETOUR="$(echo "$TAGS" | cut -d'"' -f2)"
+echo "$TAGS" | tr ' ' '\n' | grep -q '^reality$' || DNS_DETOUR="$(echo "$TAGS" | cut -d' ' -f1)"
 
 # ---------- inbound ----------
 if [[ "$INBOUND_TYPE" == "tun" ]]; then
