@@ -100,7 +100,8 @@ dump_fields() {
 import json, sys
 ibs = json.load(open(sys.argv[1]))
 paths = ["type","tag","listen_port","users.0.uuid","users.0.flow","users.0.password",
-           "users.0.username","tls.server_name","tls.certificate_path","tls.reality.private_key",
+           "users.0.username","tls.server_name","tls.certificate_path","tls.ech.key",
+           "tls.reality.private_key",
            "tls.reality.short_id","tls.reality.short_id.0","transport.type","transport.path",
            "transport.headers.Host","transport.service_name","obfs.type","obfs.password",
            "congestion_control","method","password","version","handshake.server","detour"]
@@ -127,6 +128,12 @@ inb_field() { # $1=inbound index  $2=dotted field path → stdout value (from fi
   local f="${TMPD:-/tmp}/fields.lst" line
   line="$(grep -m1 -F -e "$1	$2	" "$f" 2>/dev/null)" || { echo ''; return; }
   echo "${line#*	"$2"	}"
+}
+
+# ECH: enable client-side when the server inbound has tls.ech.key (ECH-terminating TLS)
+ech_suffix() { # $1=inbound index → '' or ', "ech": { "enabled": true }'
+  local k; k="$(inb_field "$1" 'tls.ech.key')"
+  [[ -n "$k" ]] && echo ', "ech": { "enabled": true }'
 }
 
 convert_vless() { # $1=inbound index — server vless → client vless (reality or ws/grpc transport variant)
@@ -164,7 +171,7 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
       ws_host="$(inb_field $i 'transport.headers.Host')"
       [[ -z "$ws_host" ]] && ws_host="$sni"
       ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="vless-ws"
-      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"ws\", \"path\": \"$ws_path\", \"headers\": { \"Host\": \"$ws_host\" } } }"
+      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins$(ech_suffix $i) }, \"transport\": { \"type\": \"ws\", \"path\": \"$ws_path\", \"headers\": { \"Host\": \"$ws_host\" } } }"
       TAGS+=" $ctag"
       debug "vless[ws] ← inbound[$i] port=$port path=$ws_path host=$ws_host tag=$ctag"
       ;;
@@ -172,7 +179,7 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
       local service_name
       service_name="$(inb_field $i 'transport.service_name')"
       ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="vless-grpc"
-      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins }, \"transport\": { \"type\": \"grpc\", \"service_name\": \"$service_name\" } }"
+      OUTS+="${OUTS:+, }{ \"type\": \"vless\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins$(ech_suffix $i) }, \"transport\": { \"type\": \"grpc\", \"service_name\": \"$service_name\" } }"
       TAGS+=" $ctag"
       debug "vless[grpc] ← inbound[$i] port=$port service=$service_name tag=$ctag"
       ;;
@@ -195,7 +202,7 @@ convert_hy2() { # $1=inbound index — server hysteria2 → client hysteria2
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field $i 'listen_port')"
   ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="hy2"
-  OUTS+="${OUTS:+, }{ \"type\": \"hysteria2\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\"$obfs_json, \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
+  OUTS+="${OUTS:+, }{ \"type\": \"hysteria2\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\"$obfs_json, \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins$(ech_suffix $i) } }"
   TAGS+=" $ctag"
   debug "hy2 ← inbound[$i] port=$port obfs=$obfs_type tag=$ctag"
 }
@@ -244,7 +251,7 @@ convert_tuic() { # $1=inbound index — server tuic → client tuic
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field $i 'listen_port')"
   ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="tuic"
-  OUTS+="${OUTS:+, }{ \"type\": \"tuic\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
+  OUTS+="${OUTS:+, }{ \"type\": \"tuic\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins$(ech_suffix $i) } }"
   TAGS+=" $ctag"
   debug "tuic ← inbound[$i] port=$port tag=$ctag"
 }
@@ -257,7 +264,7 @@ convert_anytls() { # $1=inbound index — server anytls → client anytls
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field $i 'listen_port')"
   ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="anytls"
-  OUTS+="${OUTS:+, }{ \"type\": \"anytls\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins } }"
+  OUTS+="${OUTS:+, }{ \"type\": \"anytls\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$SERVER\"$ins$(ech_suffix $i) } }"
   TAGS+=" $ctag"
   debug "anytls ← inbound[$i] port=$port tag=$ctag"
 }
@@ -291,7 +298,7 @@ convert_naive() { # $1=inbound index — server naive → client naive (no insec
   local cert_json=""
   [[ -n "$cert" ]] && cert_json=", \"certificate_path\": \"$cert\""
   ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="naive"
-  OUTS+="${OUTS:+, }{ \"type\": \"naive\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$cert_json } }"
+  OUTS+="${OUTS:+, }{ \"type\": \"naive\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$cert_json$(ech_suffix $i) } }"
   TAGS+=" $ctag"
   debug "naive ← inbound[$i] port=$port user=$user tag=$ctag"
 }

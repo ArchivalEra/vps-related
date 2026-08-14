@@ -58,6 +58,7 @@ PROTOCOLS_ARG=""
 PORTS_ARG=""
 SS_METHODS_ARG=""
 CHAIN_SS_PORT=""
+ECH=0                   # --ech: add ECH (Encrypted Client Hello) to TLS-terminating inbounds
 TEST_MODE=0
 DEBUG="${DEBUG:-0}"
 
@@ -83,11 +84,12 @@ while [[ $# -gt 0 ]]; do
     --ports) shift; PORTS_ARG="${1:-}" ;;
     --ss-methods) shift; SS_METHODS_ARG="${1:-}" ;;
     --chain-ss-port) shift; CHAIN_SS_PORT="${1:-}" ;;
+    --ech) ECH=1 ;;
     --outputname) shift; OUTPUT_NAME="${1:-}" ;;
     --outputpath) shift; OUTPUT_PATH="${1:-}" ;;
     --debug) DEBUG=1 ;;
     --test) TEST_MODE=1 ;;
-    *) die1 "unknown argument: $1 (supported: --domain / --reality-sni / --certpath / --keypath / --protocols / --ports / --ss-methods / --chain-ss-port / --outputname / --outputpath / --debug / --test)" ;;
+    *) die1 "unknown argument: $1 (supported: --domain / --reality-sni / --certpath / --keypath / --protocols / --ports / --ss-methods / --chain-ss-port / --ech / --outputname / --outputpath / --debug / --test)" ;;
   esac
   shift
 done
@@ -328,24 +330,24 @@ render_reality() {
 render_hysteria2() {
   echo "{ \"type\": \"hysteria2\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"password\": \"$GEN_HY2_PASS\" } ],
-    \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" } }"
+    \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
 render_vless_ws() {
   echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\" } ],
-    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" },
+    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) },
     \"transport\": { \"type\": \"ws\", \"path\": \"/ws\" } }"
 }
 render_vless_grpc() {
   echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\" } ],
-    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" },
+    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) },
     \"transport\": { \"type\": \"grpc\", \"service_name\": \"grpc\" } }"
 }
 render_anytls() {
   echo "{ \"type\": \"anytls\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"password\": \"$GEN_ANYTLS_PASS\" } ],
-    \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" } }"
+    \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
 render_shadowtls() {
   # tag must be unique per instance; the server may have several shadowtls inbounds
@@ -373,12 +375,30 @@ render_tuic() {
   echo "{ \"type\": \"tuic\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\", \"password\": \"$GEN_TU_PASS\" } ],
     \"congestion_control\": \"bbr\",
-    \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" } }"
+    \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
 render_naive() {
   echo "{ \"type\": \"naive\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"username\": \"sb\", \"password\": \"$GEN_NAIVE_PASS\" } ],
-    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\" } }"
+    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
+}
+
+# ---------- ECH keypair (server side): PEM line array for tls.ech.key + CONFIGS for DNS ----------
+# Generated only when --ech; keys embed the plain server name (domain). CONFIGS block is
+# printed for publishing as the HTTPS/SVCB record (client auto-loads via DNS).
+gen_ech() {
+  local kp
+  kp="$(${SB_BIN:-sing-box} generate ech-keypair "$DOMAIN" 2>/dev/null)" || { warn "ECH: ech-keypair failed for $DOMAIN — ECH disabled"; return 1; }
+  # configs/keys written to files: render_config runs in a subshell (command subst),
+  # so parent cannot read child vars — files survive the boundary.
+  echo "$kp" | sed -n '/BEGIN ECH CONFIGS/,/END ECH CONFIGS/p' > "$TMPD/ech.configs"
+  echo "$kp" | sed -n '/BEGIN ECH KEYS/,/END ECH KEYS/p' > "$TMPD/ech.keys"
+  GEN_ECH_KEY_ARR="$(python3 -c "import json; print(json.dumps(open('$TMPD/ech.keys').read().splitlines()))")"
+  return 0
+}
+# JSON fragment: ', "ech": { "enabled": true, "key": [...] }' or ''
+ech_json() {
+  [[ $ECH -eq 1 && -n "${GEN_ECH_KEY_ARR:-}" ]] && echo ", \"ech\": { \"enabled\": true, \"key\": $GEN_ECH_KEY_ARR }"
 }
 
 # ---------- Render server config (fresh credentials; $1=cert $2=key $3=out) ----------
@@ -396,8 +416,11 @@ render_config() {
   GEN_SS_CHAIN_PASS="$(gen_ss_pass)"
   GEN_TU_PASS="$(gen_hex_pass)"
   GEN_NAIVE_PASS="$(gen_hex_pass)"
+  GEN_ECH_KEY_ARR=""
+  GEN_ECH_CONFIGS=""
+  [[ $ECH -eq 1 ]] && gen_ech
   INST_SHADOWTLS_N=0
-  debug "domain=$DOMAIN reality_sni=$REALITY_SNI instances=$INST_TAGS"
+  debug "domain=$DOMAIN reality_sni=$REALITY_SNI instances=$INST_TAGS ech=$ECH"
   for t in $INST_TAGS; do
     INST_TAG="$t"
     INST_PORT="${INST_PORTS[$t]}"
@@ -462,4 +485,8 @@ fi
 
 ok "server config: $SB_OUTPUT (inbounds: $INST_TAGS)"
 ok "credentials embedded (fresh each run, nothing persisted). Reality public key: $PUB"
+if [[ $ECH -eq 1 && -f "$TMPD/ech.configs" && -s "$TMPD/ech.configs" ]]; then
+  ok "ECH enabled. Publish these CONFIGS as the HTTPS/SVCB record for $DOMAIN (client auto-loads via DNS):"
+  cat "$TMPD/ech.configs"
+fi
 ok "clients: bash gen-client.sh --from-server $SB_OUTPUT --server $DOMAIN"
