@@ -24,7 +24,6 @@ SB_OUTPUT=~/client.json bash gen-client.sh --from-server /etc/sing-box/config.js
 #   --outputname NAME: output filename (spaces/non-ASCII OK); --outputpath DIR: output dir
 #       default output: config-client.json in the scripts dir (overwrite of server config is refused)
 #   --insecure: add when cert is self-signed
-#   --map "tag=port,...": override client port per outbound (CF 443 front: --map "vless-ws=443,vless-grpc=443")
 #   --debug: diagnostics (fully silent by default); --test: self-check
 ```
 

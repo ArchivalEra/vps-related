@@ -1,12 +1,12 @@
-# sing-box 客户端协议维护清单（MAINTENANCE）
+# sing-box Client Protocol Maintenance Guide (MAINTENANCE)
 
-> **适配范围**: sing-box 1.13+ 的**客户端** outbound 配置（服务端不在本清单范围）。
-> **当前模板针对**: `1.14.0-beta.14`（版本常量在 `scripts/gen-client.sh` 头部 `SINGBOX_VERSION`/`SINGBOX_MAJOR_MINOR`）。
-> **用法**: 升级 sing-box 二进制时，对照本清单逐项核对；本仓库实测踩过的坑标注「✅实测」。
+> **Scope**: sing-box 1.13+ **client** outbound config (server side is out of scope here).
+> **Current baseline**: `1.14.0-beta.14` (version constants `SINGBOX_VERSION`/`SINGBOX_MAJOR_MINOR` live in `scripts/protocols.lib.sh`).
+> **Usage**: when upgrading the sing-box binary, walk through this guide item by item; issues actually hit in this repo are marked `[verified]`.
 
 ---
 
-## 0. 升级 SOP（每次升版本按序执行）
+## 0. Upgrade SOP (run in order for every version bump)
 
 ```bash
 # 1. 下载新版本二进制到脚本实际查找的位置（gen-client.sh 依次找：PATH 的 sing-box → /opt/sing-box/sing-box → test-env/bin/sing-box）
@@ -17,131 +17,135 @@
 # 5. 把新版本再变的字段记进本清单【变更史】，标注版本
 ```
 
-**版本一致性防线**: gen-client.sh 自带二进制版本探测——检测到的 major.minor ≠ `SINGBOX_MAJOR_MINOR` 会警告。**但 check 才是最终裁决**：字段改名了 check 必报 `unknown field`，所以「改版本 → 跑 check → 看报错」是永远不会漏的三步。
+**Binary discovery** (`find_sb_bin` in `scripts/protocols.lib.sh`, the single source of truth shared by gen-client.sh / assert_gen / e2e-all.sh): `SB_BIN` env (must be executable) → `sing-box` in `PATH` → `test-env/bin/sing-box`.
+
+**Version consistency defense**: gen-client.sh probes the binary version itself — if the detected major.minor ≠ `SINGBOX_MAJOR_MINOR`, it warns. **But `check` is the final arbiter**: a renamed field always makes `check` report `unknown field`, so "bump version → run check → read errors" is the three-step loop that can never miss.
 
 ---
 
-## 1. 破坏性变更史（踩过 + 已知）
+## 1. Breaking-change history (hit + known)
 
-| 版本 | 变更 | 影响面 | 证据 |
+| Version | Change | Impact | Evidence |
 |---|---|---|---|
-| 1.14 | reality `handshake.port` → `server_port` | 服务端模板 | ✅实测 FATAL `unknown field "port"` |
-| 1.14 | DNS server `address` 简写格式**移除** | 客户端 DNS 段 | ✅实测：须 `type:https`/`type:local` 新格式 |
-| 1.14 | `dns.strategy: ipv4_first` → `prefer_ipv4` | 客户端 DNS | ✅实测 FATAL `unknown domain strategy` |
-| 1.14 | 缺 domain_resolver 被强制 | 客户端 route | ✅实测：须 `route.default_domain_resolver` |
-| 1.14 | **wireguard outbound 删除** → endpoint 形态 | 客户端 wg | ✅实测 FATAL `outbounds[].server unknown field`；schema 确认 endpoint |
-| 1.14 | reality 客户端须显式 `utls.enabled:true` | 客户端 vless | ✅实测 FATAL `uTLS is required by reality client` |
-| 1.14 | `tls.acme` 内联 → `certificate_providers` | 服务端（客户端无影响） | 子代理查证 |
-| 1.14 | hy2 新增 `disable_chrome_parrot`（默认 false=Chrome 指纹） | 客户端 hy2 | 子代理查证 |
-| 1.14 | naiveproxy → v150（字段无变化） | 客户端 naive | 子代理查证 |
-| 1.13 | tls 证书字段反复（certpath → certificate_path 一类改名，用户经验） | 各 tls 段 | 用户经验（非本仓库实测）；**1.14 现状以 schema 为准：`certificate_path`/`certificate`** |
-| 1.12 | DNS legacy server 格式开始弃用 | 客户端 DNS | 官方 deprecation 公告 |
-| 1.13 | wireguard outbound 弃用（1.14 移除） | 客户端 wg | 官方报错文案 |
-| 1.15(预告) | **xhttp transport** 引入 | 客户端 vless 传输 | 1.14 实测无 xhttp，1.15 才有 |
+| 1.14 | reality `handshake.port` → `server_port` | server template | [verified] FATAL `unknown field "port"` |
+| 1.14 | DNS server `address` shorthand **removed** | client DNS section | [verified]: must use the new `type:https`/`type:local` format |
+| 1.14 | `dns.strategy: ipv4_first` → `prefer_ipv4` | client DNS | [verified] FATAL `unknown domain strategy` |
+| 1.14 | missing domain_resolver is enforced | client route | [verified]: requires `route.default_domain_resolver` |
+| 1.14 | **wireguard outbound removed** → endpoint form | client wg | [verified] FATAL `outbounds[].server unknown field`; schema confirms endpoint |
+| 1.14 | reality client must set `utls.enabled:true` explicitly | client vless | [verified] FATAL `uTLS is required by reality client` |
+| 1.14 | `tls.acme` inline → `certificate_providers` | server (no client impact) | verified by sub-agent |
+| 1.14 | hy2 adds `disable_chrome_parrot` (default false = Chrome fingerprint) | client hy2 | verified by sub-agent |
+| 1.14 | naiveproxy → v150 (fields unchanged) | client naive | verified by sub-agent |
+| 1.13 | tls cert field churn (certpath → certificate_path-type renames, user experience) | various tls sections | user experience (not tested in this repo); **1.14 state per schema: `certificate_path`/`certificate`** |
+| 1.12 | DNS legacy server format begins deprecation | client DNS | official deprecation announcement |
+| 1.13 | wireguard outbound deprecated (removed in 1.14) | client wg | official error text |
+| 1.15 (upcoming) | **xhttp transport** introduced | client vless transport | verified: no xhttp in 1.14, only in 1.15 |
 
 ---
 
-## 2. 协议字段审计表
+## 2. Protocol field audit tables
 
-> 每表三列：模板字段 / 1.14 现状（必填、默认）/ 升级检查点（该字段一变会怎样）。
+> Each table has three columns: template field / 1.14 state (required, default) / upgrade check point (what happens if the field changes).
 
-### VLESS + Reality（`convert_reality`）
+### VLESS + Reality (`convert_vless`)
 
-| 字段 | 1.14 现状 | 升级检查点 |
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| `flow: xtls-rprx-vision` | 唯一合法值；服务端须同款 | 非法值初始化即报 `unsupported flow` |
-| `packet_encoding: xudp` | 缺省即 xudp（显式空串=禁用） | 默认行为变化会影响 UDP |
-| `tls.utls.enabled` | **必须显式 true**（reality 客户端） | 1.14 起不自动补，去掉必 FATAL |
-| `tls.reality.public_key` | URL-safe raw base64（无 `=`，含 `-_`） | 编码规则变=全部密钥重生成 |
-| `tls.reality.short_id` | 客户端**单个字符串**（服务端是数组） | 客户端写数组会报错 |
-| `tls.handshake_timeout` | 1.14 新增，默认 15s | 可选，删了无碍 |
+| `flow: xtls-rprx-vision` | only legal value; server must use the same | invalid value fails at init with `unsupported flow` |
+| `packet_encoding: xudp` | xudp by default (explicit empty string = disabled) | a default-behavior change affects UDP |
+| `tls.utls.enabled` | **must be explicitly true** (reality client) | not auto-filled since 1.14; removing it is a FATAL |
+| `tls.reality.public_key` | URL-safe raw base64 (no `=`, may contain `-_`) | encoding-rule change = all keys must be regenerated |
+| `tls.reality.short_id` | client uses a **single string** (server uses an array) | writing an array on the client errors out |
+| `tls.handshake_timeout` | new in 1.14, default 15s | optional; safe to remove |
 
-### Hysteria2（`convert_hy2`）
+### Hysteria2 (`convert_hy2`)
 
-| 字段 | 1.14 现状 | 升级检查点 |
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| `obfs.type: salamander` | 只有 salamander/gecko（1.14 加 gecko） | type 写别的值 check 报错 |
-| `obfs.password` | 设了 obfs 则必填 | 空报 `missing obfs password` |
-| `password` | 认证密码 | userpass 组合串要整个塞进 password |
-| `tls`（disable_chrome_parrot） | 默认 false=Chrome QUIC 指纹 | **服务端必须 ECDSA 证书**（Chrome 不支持 Ed25519） |
-| `up_mbps`/`down_mbps` | 字段名不是 up/down | 留空退回 BBR 拥塞控制 |
-| `server_ports`/`hop_interval` | 1.11+ 端口跳跃 | 用不到可不配 |
+| `obfs.type: salamander` | only salamander/gecko (gecko added in 1.14) | any other value fails `check` |
+| `obfs.password` | required once obfs is set | empty reports `missing obfs password` |
+| `password` | auth password | the userpass composite string goes entirely into password |
+| `tls` (disable_chrome_parrot) | default false = Chrome QUIC fingerprint | **server must use an ECDSA cert** (Chrome doesn't support Ed25519) |
+| `up_mbps`/`down_mbps` | field names are not up/down | left empty falls back to BBR congestion control |
+| `server_ports`/`hop_interval` | 1.11+ port hopping | optional if unused |
 
-### ShadowTLS（`convert_shadowtls`）
+### ShadowTLS (`convert_shadowtls`)
 
-| 字段 | 1.14 现状 | 升级检查点 |
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| `version: 3` | 默认 1；v2/v3 才用 password | 客户端 v3 写法= v2 同构 |
-| `password` | 仅 v2/v3 有意义 | v1 无密码字段 |
-| `tls` | server_name + utls chrome | 仅 TCP（UDP 走不了） |
+| `version: 3` | default 1; password only used by v2/v3 | client v3 config is structurally identical to v2 |
+| `password` | only meaningful for v2/v3 | v1 has no password field |
+| `tls` | server_name + utls chrome | TCP only (UDP not supported) |
 
-### Shadowsocks（`convert_ss_chain` / `convert_ss_direct`）
+### Shadowsocks (`convert_ss` direct; the chain form lives in `convert_shadowtls`)
 
-| 字段 | 1.14 现状 | 升级检查点 |
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| `method: 2022-blake3-aes-256-gcm` | 2022 系（密码 base64） | method 拼错 check 报错 |
-| `detour`（链式） | ss → shadowtls tag | 目标 tag 不存在会运行时报错 |
-| `server_port`（链式） | 填 shadowtls 端口 | 链式下 ss 层对端口透明 |
+| `method: 2022-blake3-aes-256-gcm` | 2022 series (base64 password) | a misspelled method fails `check` |
+| `detour` (chained) | ss → shadowtls tag | a missing target tag fails at runtime |
+| `server_port` (chained) | set to the shadowtls port | in a chain the ss layer is port-transparent |
 
-### TUIC（`convert_tuic`）
+### TUIC (`convert_tuic`)
 
-| 字段 | 1.14 现状 | 升级检查点 |
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| `uuid` | 必填，非法 UUID 报错 | 格式必须标准 UUID |
-| `congestion_control: bbr` | **默认 cubic**，要 BBR 显式写 | 去掉字段=回 cubic |
-| `udp_relay_mode`/`udp_over_stream` | 互斥 | 同时配报错 |
-| `zero_rtt_handshake` | 默认 false；需两端同开 | 单端开不生效 |
+| `uuid` | required; invalid UUID errors | format must be a standard UUID |
+| `congestion_control: bbr` | **defaults to cubic**; write BBR explicitly | removing the field = back to cubic |
+| `udp_relay_mode`/`udp_over_stream` | mutually exclusive | configuring both errors |
+| `zero_rtt_handshake` | default false; must be enabled on both ends | enabled on one end only has no effect |
 
-### AnyTLS（`convert_anytls`）
+### AnyTLS (`convert_anytls`)
 
-| 字段 | 1.14 现状 | 升级检查点 |
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| `password` | 必填 | |
-| `padding_scheme` | **服务端字段，客户端不能配** | 别写进模板（写了 check 报错） |
-| `tcp_fast_open` | **禁用**（lazy 连接空指针崩溃） | 模板绝不能加 tfo |
-| `client_metadata` | 1.14 默认空字符串 | 不加=不发指纹（正确默认） |
-| `idle_session_*` | 默认 30s/30s/0 | 可选 |
+| `password` | required | |
+| `padding_scheme` | **server-side field; not configurable on the client** | don't write it into the template (check errors) |
+| `tcp_fast_open` | **disabled** (lazy-connect nil-pointer crash) | the template must never add tfo |
+| `client_metadata` | default empty string in 1.14 | not adding it = no fingerprint sent (correct default) |
+| `idle_session_*` | default 30s/30s/0 | optional |
 
-### VLESS/VMess + WS / GRPC（`convert_vless_ws`/`convert_vmess_ws`/`vless-grpc`）
+### VLESS + WS / GRPC (`convert_vless` — ws/grpc branches)
 
-| 字段 | 1.14 现状 | 升级检查点 |
+> Note: the converter has a single `convert_vless` covering the reality / ws / grpc branches. There is no separate `convert_vless_ws`/`convert_vmess_ws`, and **VMess is not implemented**.
+
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| `transport.type: ws` | 无 plain TCP；transport 只有 http/ws/quic/grpc/httpupgrade | **xhttp 1.15 才有**，1.14 写 xhttp=unknown |
-| `transport.type: grpc` | `service_name` 必须填；`transport.headers` 对 grpc 无效 | 1.15 若改 `proto` 写法需同步 convert_vless grpc 分支 |
-| `ws.path`/`ws.headers.Host` | 默认 path 空 | |
-| `vmess.alter_id` | 默认 0（AEAD）；字段名下划线 | 服务端是驼峰 `alterId` |
-| `vmess.packet_encoding` | **缺省禁用**（vless 缺省 xudp，两者不同） | 需要 UDP 要显式写 |
+| `transport.type: ws` | no plain TCP; transport is only http/ws/quic/grpc/httpupgrade | **xhttp is 1.15 only**; writing xhttp on 1.14 = unknown |
+| `transport.type: grpc` | `service_name` required; `transport.headers` has no effect on grpc | if 1.15 changes the `proto` form, sync the convert_vless grpc branch |
+| `ws.path`/`ws.headers.Host` | default path empty | |
 
-### Trojan（`convert_trojan`）
+### Trojan (not implemented — no `convert_trojan` in the code)
 
-| 字段 | 1.14 现状 | 升级检查点 |
+> Reference only: the converter has no trojan branch (`convert_trojan` does not exist). If trojan is ever added back, the field facts below apply.
+
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| `tls.enabled` | **必须 true**（Trojan 本身是 TLS） | 去掉即不可用 |
-| `password` | 必填 | |
+| `tls.enabled` | **must be true** (Trojan itself is TLS) | removing it makes the line unusable |
+| `password` | required | |
 
-### Naive（`convert_naive`）
+### Naive (`convert_naive`)
 
-| 字段 | 1.14 现状 | 升级检查点 |
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| `tls` | **无 insecure 选项**（硬校验） | 真证书前提；insecure=true 直接报错 |
-| 依赖 | libcronet.so 与二进制同目录 | 1.14 无后缀 linux-amd64 包自带 |
-| 性能 | outbound bug #3837（150→1Mbps）**未修** | 别当主力线 |
+| `tls` | **no insecure option** (hard validation) | real cert required; insecure=true errors out |
+| dependency | libcronet.so in the same dir as the binary | included in the 1.14 suffix-less linux-amd64 package |
+| performance | outbound bug #3837 (150→1Mbps) **unfixed** | don't use as a primary line |
 
-### ~~WireGuard~~（已从本项目移除，2026-08-13）
+### ~~WireGuard~~ (removed from this project, 2026-08-13)
 
-> 用户拍板从项目中移除（本地双进程隧道编排不成熟 + 单机代理场景价值低）。
-> 1.14 中它是顶层 `endpoints` 形态（outbound 已删）。本转换器不支持，未来若加回参考此表。
+> Removed by user decision (local dual-process tunnel orchestration wasn't mature + low value in a single-machine proxy scenario).
+> In 1.14 it's a top-level `endpoints` form (the outbound was removed). This converter does not support it; refer to this table if it's ever added back.
 
-| 字段 | 1.14 现状 | 升级检查点 |
+| Field | 1.14 state | Upgrade check point |
 |---|---|---|
-| 形态 | **outbound 已删**，须顶层 `endpoints` 数组 | 写回 outbounds 报 `unknown field "server"` |
-| `endpoints[].address` | 必填（如 10.0.0.2/32） | |
-| `peers[].public_key`/`allowed_ips` | 必填 | |
-| `system` | true 需 root；1.14 alpha 有崩溃 issue #4334 | 默认 false（gVisor）最稳 |
+| form | **outbound removed**; must use the top-level `endpoints` array | writing it back into outbounds reports `unknown field "server"` |
+| `endpoints[].address` | required (e.g. 10.0.0.2/32) | |
+| `peers[].public_key`/`allowed_ips` | required | |
+| `system` | true needs root; 1.14 alpha has crash issue #4334 | default false (gVisor) is most stable |
 
 ---
 
-## 3. 模板与二进制的对应关系
+## 3. Mapping between templates and binary
 
 ```
 scripts/protocols.lib.sh   ← 协议转换库唯一真源（convert_* + render_from_server 遍历表 + assert_gen 自检）
@@ -149,25 +153,25 @@ scripts/gen-client.sh      ← 编排（--from-server 解析/版本探测/渲染
 docs/protocol-fields-1.14/ ← 字段字典（子代理 research 落盘，含来源 URL，升级时可复核）
 ```
 
-**改模板的联动点**（漏一处就断）:
-1. `protocols.lib.sh` 加 `convert_xxx()` + 注册进 `render_from_server()`
-2. `docs/protocol-maintenance.md` 加字段审计行
-3. `test-env/` 加该协议的链路测试（e2e-all.sh 自动取产物线路，无需改脚本）
-4. `docs/protocol-fields-1.14/` 更新字段字典（如需复核来源）
+**Linked points when editing a template** (miss one and it breaks):
+1. add `convert_xxx()` in `protocols.lib.sh` + register it in `render_from_server()`
+2. add a field-audit row in `docs/protocol-maintenance.md`
+3. add the protocol's line test in `test-env/` (e2e-all.sh picks lines from the generated output automatically; no script change needed)
+4. update the field dictionary in `docs/protocol-fields-1.14/` (when sources need re-checking)
 
 ---
 
-## 4. 验证防线（四层，缺一不可）
+## 4. Verification layers (four, all required)
 
-| 层 | 手段 | 挡什么 |
+| Layer | Means | Blocks |
 |---|---|---|
-| 0 | **`gen-client.sh --test` 自检断言**（assert_gen 并入 protocols.lib.sh） | 6 项行为回归：退出码契约/空 inbounds/六线结构（含公钥派生、引用集）/幂等 |
-| 1 | gen-client.sh 版本探测警告 | 二进制版本与模板不匹配的提醒 |
-| 2 | `sing-box check`（生成后必跑） | 字段名/必填项/格式错误（**最终裁决**） |
-| 3 | `$schema`（1.14.0-beta.2+ 内置） | 编辑期 IDE 校验（可选项） |
+| 0 | **`gen-client.sh --test` self-check assertions** (assert_gen, merged into protocols.lib.sh) | 7 behavior regressions: exit-code contract / empty inbounds / 9-line conversion structure (incl. public-key derivation, ref sets) / idempotency |
+| 1 | gen-client.sh version-probe warning | reminder that the binary version doesn't match the template |
+| 2 | `sing-box check` (always run after generation) | field-name / required / format errors (**final arbiter**) |
+| 3 | `$schema` (built-in since 1.14.0-beta.2+) | IDE edit-time validation (optional) |
 
-**升级后必跑**：`bash scripts/gen-client.sh --test`（自检）+ `bash test-env/e2e-all.sh`（转换产物逐线真链路）双绿才放行。
+**Must run after upgrade**: `bash scripts/gen-client.sh --test` (self-check) + `bash test-env/e2e-all.sh` (per-line live test of the converted output) — only release when both are green.
 
-**排查用**：`bash scripts/gen-client.sh --config ... --debug` 输出全程诊断（config 解析/未知键/二进制探测/临时目录），默认完全静默（不加 `--debug` 零诊断输出）。
+**For troubleshooting**: `bash scripts/gen-client.sh --from-server ... --debug` prints full diagnostics (config parse / unknown keys / binary probe / temp dir); fully silent by default (zero diagnostic output without `--debug`).
 
-> 教训：1.13→1.14 的字段变更，官方 changelog 只写 "Fixes and improvements"，**全靠 check 报错抓出来的**（本仓库实测 6 处）。所以「升级 → 跑 check → 看报错 → 改清单」是唯一可靠循环。
+> Lesson: for the 1.13→1.14 field changes, the official changelog only said "Fixes and improvements" — **everything was caught by check errors** (6 places verified in this repo). So "upgrade → run check → read errors → update the list" is the only reliable loop.

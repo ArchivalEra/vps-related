@@ -1,40 +1,40 @@
-> ⚠️ research 原始产出（含来源 URL，供复核）；**维护以 `docs/protocol-maintenance.md` §2 字段审计为准**（协议集已演进，本字典可能有已移除协议）。
+> ⚠️ Raw research output (includes source URLs for re-verification); **for maintenance, defer to the `docs/protocol-maintenance.md` §2 field audits** (the protocol set has evolved — this dictionary may include removed protocols).
 
-# sing-box 1.14.0-beta.14 outbound 配置字典：hysteria2 / shadowtls / tuic / anytls
+# sing-box 1.14.0-beta.14 outbound config dictionary: hysteria2 / shadowtls / tuic / anytls
 
-> 核实来源：官方文档（v1.14.0-beta.14 分支 docs/configuration/outbound/）+ GitHub 源码 v1.14.0-beta.14（option/、protocol/、test/shadowtls_test.go）
+> Sources verified against: official docs (v1.14.0-beta.14 branch docs/configuration/outbound/) + GitHub source v1.14.0-beta.14 (option/, protocol/, test/shadowtls_test.go)
 
-通用结构：每个 outbound 都含 `type`（必填）、`tag`（可选）、`server`/`server_port`（一般必填）、`tls` 段（多数协议必填且 `enabled` 必须为 true，否则源码直接报 `ErrTLSRequired`）、Dial Fields（含 `detour`、`bind_interface`、`connect_timeout`、`tcp_fast_open`、`tcp_multi_path`、`domain_resolver`、`network_strategy` 等）。
+Common structure: every outbound has `type` (required), `tag` (optional), `server`/`server_port` (usually required), a `tls` section (required for most protocols, and `enabled` must be true or the source errors out with `ErrTLSRequired`), and Dial Fields (including `detour`, `bind_interface`, `connect_timeout`, `tcp_fast_open`, `tcp_multi_path`, `domain_resolver`, `network_strategy`, etc.).
 
 ---
 
-## 一、hysteria2
+## 1. hysteria2
 
-### 字段清单
+### Field list
 
-| 字段 | 类型 | 必填 | 默认/说明 |
+| Field | Type | Required | Default/Notes |
 |---|---|---|---|
-| `server` | string | 必填 | 服务器地址。与 `realm` 冲突 |
-| `server_port` | number | 必填 | 服务器端口。设置了 `server_ports` 时被忽略 |
-| `server_ports` | string[] | 可选 | 1.11+ 端口范围列表 |
-| `hop_interval` | duration | 可选 | 端口跳跃间隔，默认 `30s` |
-| `hop_interval_max` | duration | 可选 | 1.14+ 最大跳跃间隔（随机化） |
-| `up_mbps` / `down_mbps` | number | 可选 | 最大带宽（Mbps）。**注意字段名不是 up/down**。留空则退回 BBR |
-| `obfs` | object | 可选 | `type` 为空即禁用 |
-| `obfs.type` | string | 条件必填 | `salamander` 或 `gecko`（gecko 1.14+） |
-| `obfs.password` | string | 条件必填 | 设了 `obfs` 则必填，空报 `missing obfs password` |
-| `obfs.min_packet_size` | number | 可选 | 1.14+，仅 gecko，默认 `512` |
-| `obfs.max_packet_size` | number | 可选 | 1.14+，仅 gecko，默认 `1200` |
-| `password` | string | 见坑 | 认证密码 |
-| `network` | string | 可选 | `tcp`/`udp`，默认两者 |
-| `tls` | object | 必填 | enabled/server_name/insecure/utls 等 |
-| `bbr_profile` | string | 可选 | 1.14+，`conservative`/`standard`/`aggressive`，默认 `standard` |
-| `brutal_debug` | boolean | 可选 | 调试日志 |
-| `disable_chrome_parrot` | boolean | 可选 | 1.14+，默认 `false`（默认模仿 Chrome QUIC 指纹） |
-| `realm` | object | 可选 | 1.14+ 打洞连接 |
-| QUIC Fields | — | 可选 | `initial_packet_size`、`disable_path_mtu_discovery` + HTTP2 Fields |
+| `server` | string | required | server address. Conflicts with `realm` |
+| `server_port` | number | required | server port. Ignored when `server_ports` is set |
+| `server_ports` | string[] | optional | 1.11+ port range list |
+| `hop_interval` | duration | optional | port-hopping interval, default `30s` |
+| `hop_interval_max` | duration | optional | 1.14+ max hop interval (randomized) |
+| `up_mbps` / `down_mbps` | number | optional | max bandwidth (Mbps). **Note the field names are not up/down**. Left empty falls back to BBR |
+| `obfs` | object | optional | empty `type` = disabled |
+| `obfs.type` | string | conditionally required | `salamander` or `gecko` (gecko 1.14+) |
+| `obfs.password` | string | conditionally required | required once `obfs` is set; empty reports `missing obfs password` |
+| `obfs.min_packet_size` | number | optional | 1.14+, gecko only, default `512` |
+| `obfs.max_packet_size` | number | optional | 1.14+, gecko only, default `1200` |
+| `password` | string | see pitfalls | auth password |
+| `network` | string | optional | `tcp`/`udp`, default both |
+| `tls` | object | required | enabled/server_name/insecure/utls, etc. |
+| `bbr_profile` | string | optional | 1.14+, `conservative`/`standard`/`aggressive`, default `standard` |
+| `brutal_debug` | boolean | optional | debug logging |
+| `disable_chrome_parrot` | boolean | optional | 1.14+, default `false` (mimics the Chrome QUIC fingerprint by default) |
+| `realm` | object | optional | 1.14+ hole punching |
+| QUIC Fields | — | optional | `initial_packet_size`, `disable_path_mtu_discovery` + HTTP2 Fields |
 
-### 最小 outbound JSON
+### Minimal outbound JSON
 
 ```json
 {
@@ -47,29 +47,29 @@
 }
 ```
 
-### 坑
+### Pitfalls
 
-1. 官方 userpass 认证本质是 `<username>:<password>` 作为实际密码；sing-box 没有该别名，直接把组合串填进 `password`。
-2. `disable_chrome_parrot` 默认 false（默认开 Chrome 指纹模仿）。开启时 Chrome 参数覆盖 `idle_timeout`(固定30s)、`max_concurrent_streams`、`initial_packet_size` 等；**Chrome 不支持 Ed25519，服务端 Ed25519 证书会握手失败**。
-3. `obfs` 一旦设置，password 不能空，type 只能是 salamander/gecko。
-4. 带宽字段是 `up_mbps`/`down_mbps`，留空退回 BBR 拥塞控制。
-5. 1.14 新增：`hop_interval_max`、`bbr_profile`、`disable_chrome_parrot`、`realm`、obfs `gecko`。
+1. The official userpass auth is really `<username>:<password>` used as the actual password; sing-box has no such alias — put the whole composite string into `password`.
+2. `disable_chrome_parrot` defaults to false (Chrome fingerprint mimicry on by default). When enabled, Chrome params override `idle_timeout` (fixed 30s), `max_concurrent_streams`, `initial_packet_size`, etc.; **Chrome doesn't support Ed25519, so a server Ed25519 cert fails the handshake**.
+3. Once `obfs` is set, password can't be empty and type can only be salamander/gecko.
+4. Bandwidth fields are `up_mbps`/`down_mbps`; left empty falls back to BBR congestion control.
+5. New in 1.14: `hop_interval_max`, `bbr_profile`, `disable_chrome_parrot`, `realm`, obfs `gecko`.
 
 ---
 
-## 二、shadowtls
+## 2. shadowtls
 
-### 字段清单
+### Field list
 
-| 字段 | 类型 | 必填 | 默认/说明 |
+| Field | Type | Required | Default/Notes |
 |---|---|---|---|
-| `server` | string | 必填 | 服务器地址 |
-| `server_port` | number | 必填 | 服务器端口 |
-| `version` | number | 可选 | `1`（默认）/`2`/`3` |
-| `password` | string | v2/v3 必填 | 仅 v2/v3 可用 |
-| `tls` | object | 必填 | 共享 TLS（outbound 侧） |
+| `server` | string | required | server address |
+| `server_port` | number | required | server port |
+| `version` | number | optional | `1` (default)/`2`/`3` |
+| `password` | string | required for v2/v3 | only usable with v2/v3 |
+| `tls` | object | required | shared TLS (outbound side) |
 
-### 最小 outbound JSON（v3）
+### Minimal outbound JSON (v3)
 
 ```json
 {
@@ -83,35 +83,35 @@
 }
 ```
 
-### 坑
+### Pitfalls
 
-1. **version 默认 1**（源码 Version==0 强制置 1）。
-2. v1 强制 TLS 1.2（源码固定 Min/MaxVersion）。
-3. password 仅 v2/v3 有意义。
-4. **v3 客户端写法与 v2 相同**：`version: 3` + `password` + `tls`。v3 握手优先用 uTLS session ID 协商，否则回退默认 handshake func。
-5. **仅支持 TCP**（源码 network 固定 `["tcp"]`，UDP 走不了）。
-6. 链式：ss outbound 的 `detour` 指向 shadowtls outbound 的 `tag`。
+1. **version defaults to 1** (source forces 1 when Version==0).
+2. v1 forces TLS 1.2 (source fixes Min/MaxVersion).
+3. password is only meaningful for v2/v3.
+4. **The v3 client config is the same as v2**: `version: 3` + `password` + `tls`. The v3 handshake prefers uTLS session-ID negotiation, otherwise falls back to the default handshake func.
+5. **TCP only** (source fixes network to `["tcp"]`; UDP can't go through).
+6. Chained: the ss outbound's `detour` points to the shadowtls outbound's `tag`.
 
 ---
 
-## 三、tuic
+## 3. tuic
 
-### 字段清单
+### Field list
 
-| 字段 | 类型 | 必填 | 默认/说明 |
+| Field | Type | Required | Default/Notes |
 |---|---|---|---|
-| `server` | string | 必填 | |
-| `server_port` | number | 必填 | |
-| `uuid` | string | 必填 | 非法 UUID 直接报错 |
-| `password` | string | 服务端需要 | |
-| `congestion_control` | string | 可选 | `cubic`/`new_reno`/`bbr`，**默认 `cubic`** |
-| `udp_relay_mode` | string | 可选 | `native`/`quic`，默认 `native`；与 `udp_over_stream` 冲突 |
-| `udp_over_stream` | boolean | 可选 | 与 `udp_relay_mode` 冲突 |
-| `zero_rtt_handshake` | boolean | 可选 | 默认 `false` |
-| `heartbeat` | duration | 可选 | 文档示例 `"10s"` |
-| `tls` | object | 必填 | |
+| `server` | string | required | |
+| `server_port` | number | required | |
+| `uuid` | string | required | invalid UUID errors directly |
+| `password` | string | needed by server | |
+| `congestion_control` | string | optional | `cubic`/`new_reno`/`bbr`, **default `cubic`** |
+| `udp_relay_mode` | string | optional | `native`/`quic`, default `native`; conflicts with `udp_over_stream` |
+| `udp_over_stream` | boolean | optional | conflicts with `udp_relay_mode` |
+| `zero_rtt_handshake` | boolean | optional | default `false` |
+| `heartbeat` | duration | optional | docs example `"10s"` |
+| `tls` | object | required | |
 
-### 最小 outbound JSON
+### Minimal outbound JSON
 
 ```json
 {
@@ -128,32 +128,32 @@
 }
 ```
 
-### 坑
+### Pitfalls
 
-1. `uuid` 必须合法 UUID，否则 `invalid uuid`。
-2. **congestion_control 默认 cubic 不是 bbr**——要 BBR 显式写 `"bbr"`。
-3. `udp_relay_mode` 与 `udp_over_stream` 互斥。
-4. `zero_rtt_handshake` 需客户端+服务端同时开启。
-5. hysteria2/tuic 都强制 `UDPFragmentDefault = true`。
+1. `uuid` must be a valid UUID, otherwise `invalid uuid`.
+2. **congestion_control defaults to cubic, not bbr** — for BBR write `"bbr"` explicitly.
+3. `udp_relay_mode` and `udp_over_stream` are mutually exclusive.
+4. `zero_rtt_handshake` must be enabled on both client and server.
+5. Both hysteria2 and tuic force `UDPFragmentDefault = true`.
 
 ---
 
-## 四、anytls
+## 4. anytls
 
-### 字段清单
+### Field list
 
-| 字段 | 类型 | 必填 | 默认/说明 |
+| Field | Type | Required | Default/Notes |
 |---|---|---|---|
-| `server` | string | 必填 | |
-| `server_port` | number | 必填 | |
-| `password` | string | 必填 | |
-| `idle_session_check_interval` | duration | 可选 | 默认 `30s` |
-| `idle_session_timeout` | duration | 可选 | 默认 `30s` |
-| `min_idle_session` | number | 可选 | 默认 `0` |
-| `client_metadata` | string | 可选 | **1.14 默认空字符串 `""`**（1.13.16 起） |
-| `tls` | object | 必填 | |
+| `server` | string | required | |
+| `server_port` | number | required | |
+| `password` | string | required | |
+| `idle_session_check_interval` | duration | optional | default `30s` |
+| `idle_session_timeout` | duration | optional | default `30s` |
+| `min_idle_session` | number | optional | default `0` |
+| `client_metadata` | string | optional | **1.14 defaults to empty string `""`** (since 1.13.16) |
+| `tls` | object | required | |
 
-### 最小 outbound JSON
+### Minimal outbound JSON
 
 ```json
 {
@@ -170,19 +170,19 @@
 }
 ```
 
-### 坑
+### Pitfalls
 
-1. **tcp_fast_open 禁用**：true 直接报 `tcp_fast_open is not supported with anytls outbound`（lazy 连接握手空指针崩溃）。
-2. **padding_scheme 是服务端（inbound）字段**，outbound 没有也不能配。
-3. **client_metadata 1.14 默认空**（不再发软件指纹，防厂商识别封锁）。
-4. TLS 必须 `enabled: true`。
-5. 支持 TCP+UDP（UDP 走 UoT），内置 multiplex。
+1. **tcp_fast_open is disabled**: true errors directly with `tcp_fast_open is not supported with anytls outbound` (lazy-connect handshake nil-pointer crash).
+2. **padding_scheme is a server-side (inbound) field**; the outbound doesn't have it and can't configure it.
+3. **client_metadata defaults to empty in 1.14** (no software fingerprint sent, to resist vendor-identification blocking).
+4. TLS must be `enabled: true`.
+5. Supports TCP+UDP (UDP over UoT), with built-in multiplex.
 
 ---
 
-## 五、链式组合（ss ↔ shadowtls）客户端写法示例
+## 5. Chained combo (ss ↔ shadowtls) client config example
 
-官方测试 `test/shadowtls_test.go`（TestShadowTLSOutbound，version=3）：
+Official test `test/shadowtls_test.go` (TestShadowTLSOutbound, version=3):
 
 ```json
 {
@@ -207,8 +207,8 @@
 }
 ```
 
-要点：
-- `detour` 在 DialerOptions 顶层，值填 shadowtls 的 `tag`。
-- 官方测试中 ss 的 server/server_port 可留空（远端地址由 shadowtls 服务端本地转发）。
-- shadowtls 仅 TCP，ss 的 UDP 此链不支持。
-- 服务端拓扑：shadowtls 监听公网端口 → detour/forward 到本地 ss（如 127.0.0.1:10001）。
+Key points:
+- `detour` sits at the top of DialerOptions; its value is the shadowtls `tag`.
+- In the official test, ss's server/server_port can be left empty (the remote address is forwarded locally by the shadowtls server).
+- shadowtls is TCP only; ss UDP is not supported through this chain.
+- Server topology: shadowtls listens on a public port → detour/forwards to a local ss (e.g. 127.0.0.1:10001).

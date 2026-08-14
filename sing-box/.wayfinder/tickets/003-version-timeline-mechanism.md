@@ -1,13 +1,13 @@
-# T03: 版本时间线机制与 1.15 拦截策略（grilling）
+# T03: Version-timeline mechanism and the 1.15 interception strategy (grilling)
 
 - **label**: `wayfinder:grilling`
-- **类型**: HITL（与用户对话定时间线语义与拦截策略）
-- **blocked by**: 无（frontier）
+- **type**: HITL (talk with the user to fix timeline semantics and the interception strategy)
+- **blocked by**: none (frontier)
 - **blocks**: —
 
 ## Question
 
-用户决策 3：自动检测 sing-box 二进制版本，按**时间线表**（`protocols.lib.sh` 的 `VERSION_TABLE`）确认兼容；将来 1.15 只需拦截/适配新的破坏性写法。现状：
+User decision 3: auto-detect the sing-box binary version and confirm compatibility via the **timeline table** (`VERSION_TABLE` in `protocols.lib.sh`); for future 1.15, only intercepting/adapting new breaking syntax is needed. Current state:
 
 ```bash
 VERSION_TABLE=(
@@ -16,17 +16,17 @@ VERSION_TABLE=(
   "1.15:future:新 transport 写法（xhttp 等）需确认后再生成，见维护清单"
 )
 ```
-`check_version` 对 `future` 行**只 warn 不阻断**，最终由 `sing-box check` 裁决。
+`check_version` only **warns, doesn't block** for `future` rows; `sing-box check` makes the final call.
 
-要拍板的问题：
-1. **状态语义**：`supported` / `deprecated_ok` / `future` 三态够不够？未收录在表里的版本（如 1.10）行为 = warn 后照常生成（check 兜底）？够不够"拦截"？
-2. **拦截 vs 放行**：`future` 版本（1.15 出现后、尚未适配前）应该**警告继续生成**（靠 check 抓字段错），还是**硬停拒绝生成**（退出非 0，要求先适配）？"只需拦截/适配新的破坏性写法"——拦截点在哪里（生成前 / check 后）？
-3. **维护流程**：升 1.15 时的动作清单 = ① VERSION_TABLE 加行 ② 改对应 convert_xxx() ③ 更新 `docs/protocol-maintenance.md` 变更史 ④ 跑 --test + run-test 回归。这张清单还要不要补什么（如 schema 校验、文档 §0 SOP 同步）？
-4. **版本探测降级**：找不到 sing-box 二进制 / `version` 输出解析失败时——warn + 跳过 check 继续生成（现状），还是**要求 --force** 才放行？自检依赖的测试二进制与生产探测路径要不要统一？
-5. **check 的地位**：确认"`sing-box check` 是版本破坏性变更的最终裁决、时间线只是前置提醒"这个分工不变？
+Questions to settle:
+1. **Status semantics**: are the three states `supported` / `deprecated_ok` / `future` enough? For versions not in the table (e.g. 1.10), is the behavior warn-then-generate-normally (check as net) enough as "interception"?
+2. **Block vs pass**: for a `future` version (after 1.15 appears, before adaptation), should we **warn and continue generating** (let check catch field errors), or **hard-stop and refuse to generate** (exit non-zero, requiring adaptation first)? "Only intercept/adapt new breaking syntax" — where does the interception point live (before generation / after check)?
+3. **Maintenance flow**: the action list for upgrading to 1.15 = ① add a row to VERSION_TABLE ② update the corresponding convert_xxx() ③ update the `docs/protocol-maintenance.md` change history ④ run --test + run-test regression. Does this list need anything else (e.g. schema validation, syncing with doc §0 SOP)?
+4. **Version-probe degradation**: when the sing-box binary can't be found / the `version` output fails to parse — warn + skip check and continue generating (current state), or require `--force` to proceed? Should the test binary used by the self-check and the production probe path be unified?
+5. **Status of check**: confirm that the division of labor stays as "`sing-box check` is the final arbiter for version breaking changes; the timeline is just an upfront reminder"?
 
-产出：时间线行格式与状态语义定案 + 1.15 拦截策略（硬停 or 放行+check）+ 升级动作清单 + 无二进制降级契约。
+Output: timeline row format and status semantics finalized + 1.15 interception strategy (hard-stop or pass+check) + upgrade action list + no-binary degradation contract.
 
-## 为什么需要
+## Why needed
 
-版本兼容是用户点名的 destination 支柱之一。时间线的"拦截"语义（warn vs 硬停）直接决定生成器的健壮性与升级安全性，且 1.15 到来前必须定好接法。
+Version compatibility is one of the user-named destination pillars. The timeline's "interception" semantics (warn vs hard-stop) directly determine the generator's robustness and upgrade safety, and the 1.15 hookup must be decided before it arrives.

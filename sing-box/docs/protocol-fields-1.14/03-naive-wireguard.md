@@ -1,70 +1,70 @@
-> ⚠️ research 原始产出（含来源 URL，供复核）；**维护以 `docs/protocol-maintenance.md` §2 字段审计为准**（协议集已演进，本字典可能有已移除协议）。
+> ⚠️ Raw research output (includes source URLs for re-verification); **for maintenance, defer to the `docs/protocol-maintenance.md` §2 field audits** (the protocol set has evolved — this dictionary may include removed protocols).
 
-# sing-box 1.14.0-beta.14 outbound 配置字典：naive / wireguard
+# sing-box 1.14.0-beta.14 outbound config dictionary: naive / wireguard
 
-> 核实来源：v1.14.0-beta.14 官方文档 + GitHub 源码 + 发布资产实测（222 行）
+> Sources verified against: v1.14.0-beta.14 official docs + GitHub source + release artifacts (222 lines)
 
-## 1. Naive outbound（1.14 仍存在，1.13.0 引入）
+## 1. Naive outbound (still present in 1.14; introduced in 1.13.0)
 
-### 字段清单
+### Field list
 
-| 字段 | 类型 | 必填 | 说明 |
+| Field | Type | Required | Notes |
 |---|---|---|---|
-| `server` / `server_port` | string / uint16 | 必填 | |
-| `username` / `password` | string | 必填 | 明文 |
-| `insecure_concurrency` | int | 可选 | 官方警告会破坏抗分析特性 |
-| `extra_headers` | map | 可选 | |
-| `udp_over_tcp` | bool | 可选 | |
-| `quic` / `quic_congestion_control` | — | 可选 | bbr/bbr2/cubic/reno |
-| `tls` | object | 必填 | **无 insecure 选项** |
-| Dial Fields | — | 可选 | |
+| `server` / `server_port` | string / uint16 | required | |
+| `username` / `password` | string | required | plaintext |
+| `insecure_concurrency` | int | optional | officially warned to break anti-analysis features |
+| `extra_headers` | map | optional | |
+| `udp_over_tcp` | bool | optional | |
+| `quic` / `quic_congestion_control` | — | optional | bbr/bbr2/cubic/reno |
+| `tls` | object | required | **no insecure option** |
+| Dial Fields | — | optional | |
 
-### TLS 硬约束（源码 protocol/naive/outbound.go）
+### TLS hard constraints (source protocol/naive/outbound.go)
 
-- **`tls.insecure:true` 直接报错**（无 insecure 选项）
-- 只支持 `server_name` / `certificate` / `certificate_path` / `ech`，其余（utls/reality/alpn/fragment/kernel TLS）全部拒绝
-- **真证书是设计前提**；自签只能走 certificate_path 固定，文档明说不推荐生产
+- **`tls.insecure:true` errors directly** (no insecure option)
+- Only `server_name` / `certificate` / `certificate_path` / `ech` are supported; everything else (utls/reality/alpn/fragment/kernel TLS) is rejected
+- **A real certificate is the design premise**; self-signed only works via a pinned certificate_path, and the docs explicitly say it's not recommended for production
 
-### 依赖（libcronet.so）
+### Dependencies (libcronet.so)
 
-- **无后缀 linux-amd64 包自带 libcronet.so**，需与二进制同目录或系统库路径
-- glibc/musl 变体为 CGO 构建
-- `with_naive_outbound` 默认构建标签仅主流平台有
+- **The suffix-less linux-amd64 package ships libcronet.so**, which must be in the same dir as the binary or on the system library path
+- The glibc/musl variants are CGO builds
+- The `with_naive_outbound` default build tag exists only for mainstream platforms
 
-### 已知性能 bug
+### Known performance bug
 
-- issue #3837（150Mbps→1Mbps）**closed 未修复**（缺最小复现被关），1.13.1 仍复现，1.14 changelog 无修复条目
+- issue #3837 (150Mbps→1Mbps) **closed unfixed** (closed for lack of a minimal repro), still reproducible in 1.13.1, no fix entry in the 1.14 changelog
 
-### 1.14 变化
+### 1.14 changes
 
-- naiveproxy 升级到 v150.0.7871.63-1（1.14.0-beta.5），配置字段与 1.13.0 逐字无差异
+- naiveproxy upgraded to v150.0.7871.63-1 (1.14.0-beta.5); config fields are word-for-word identical to 1.13.0
 
-## 2. WireGuard（1.14 的 outbound 已删除 — 重大变化）
+## 2. WireGuard (the 1.14 outbound has been removed — breaking change)
 
-- `outbounds` 里写 `type: wireguard` 在 1.14 启动报错：**"deprecated in 1.11.0, removed in 1.13.0, use WireGuard endpoint"**
-- 必须改用 `endpoints` 数组的 wireguard endpoint
+- Writing `type: wireguard` in `outbounds` fails at 1.14 startup: **"deprecated in 1.11.0, removed in 1.13.0, use WireGuard endpoint"**
+- Must use the wireguard endpoint form in the `endpoints` array instead
 
-### endpoint 字段
+### endpoint fields
 
-`system` / `name` / `mtu` / `address`（必填）/ `private_key`（必填）/ `listen_port` / `peers`（必填，含 `public_key` 与 `allowed_ips` 必填）/ `reserved` / `workers` + 1.14 新增 `udp_mapping`/`udp_filtering`/`udp_nat_max`
+`system` / `name` / `mtu` / `address` (required) / `private_key` (required) / `listen_port` / `peers` (required; includes `public_key` and `allowed_ips`, both required) / `reserved` / `workers` + new in 1.14 `udp_mapping`/`udp_filtering`/`udp_nat_max`
 
-### 系统 wireguard
+### System wireguard
 
-- `system:true` 需 root，但不是内核模块，是 userspace wireguard-go 跑在 sing-tun 的系统 TUN 上
-- `system:false`（默认）纯用户态 gVisor 栈无需 root
-- 单机客户端场景 = endpoint 被 selector/route 当 outbound 引用
-- 已知 issue #4334：1.14 alpha `system:true` 启动崩溃
+- `system:true` needs root, but it's not a kernel module — it's userspace wireguard-go running on the sing-tun system TUN
+- `system:false` (default) is a pure userspace gVisor stack, no root needed
+- Single-machine client scenario = the endpoint is referenced by the selector/route as an outbound
+- Known issue #4334: 1.14 alpha crashes at startup with `system:true`
 
-## 3. 客户端生成时依赖/警告清单
+## 3. Client-generation dependencies/warning list
 
-| 协议 | 依赖/警告 |
+| Protocol | Dependency/warning |
 |---|---|
-| naive | 必须真证书（无 insecure）、需要 libcronet.so 与二进制同目录、outbound 性能 bug 未修 |
-| wireguard | 必须用 endpoints 形态（outbound 形态已删）、system:true 需 root、1.14 alpha 有崩溃 issue |
+| naive | real cert required (no insecure), needs libcronet.so in the same dir as the binary, outbound performance bug unfixed |
+| wireguard | must use the endpoints form (outbound form removed), system:true needs root, 1.14 alpha has a crash issue |
 
-## 关键来源
+## Key sources
 
-- 官方文档 testing 分支：docs/configuration/{outbound/naive.md, endpoint/wireguard.md}
-- 源码：option/naive.go、protocol/naive/outbound.go、endpoint/wireguard/*、include/registry.go
-- 发布资产实测：linux-amd64 无后缀包含 libcronet.so
-- 本仓库之前的子代理查证（性能 bug #3837 状态）
+- Official docs testing branch: docs/configuration/{outbound/naive.md, endpoint/wireguard.md}
+- Source: option/naive.go, protocol/naive/outbound.go, endpoint/wireguard/*, include/registry.go
+- Release artifact test: linux-amd64 suffix-less package includes libcronet.so
+- Earlier sub-agent verification in this repo (performance bug #3837 status)

@@ -1,30 +1,30 @@
-# T01: 服务端 config inbound 字段形态盘点（research）
+# T01: Server config inbound field form inventory (research)
 
 - **label**: `wayfinder:research`
-- **类型**: AFK，由 /research 子代理解决
-- **blocked by**: 无（frontier）
-- **blocks**: 002（转换覆盖度）
+- **type**: AFK, resolved by the /research sub-agent
+- **blocked by**: none (frontier)
+- **blocks**: 002 (conversion coverage)
 
 ## Question
 
-新架构唯一输入是**服务端** sing-box config.json，转换函数靠点分字段路径（`inb_field`：`users.0.uuid` / `tls.reality.private_key` / `tls.server_name` / `detour` / `listen_port` / `obfs.type` / `handshake.server` …）解析。这些路径在**真实服务端 config** 中的准确形态、可选性、多值变体，目前未系统核对——现有路径是随手写的假设。请按 sing-box 1.14.0-beta.14 官方文档 + 源码 option 包逐协议核对服务端 **inbound** 侧字段：
+The new architecture's only input is the **server's** sing-box config.json, and the conversion functions parse it via dotted field paths (`inb_field`: `users.0.uuid` / `tls.reality.private_key` / `tls.server_name` / `detour` / `listen_port` / `obfs.type` / `handshake.server` …). The exact shape, optionality, and multi-value variants of these paths in a **real server config** have not been systematically verified — the existing paths are assumptions written ad hoc. Please verify each protocol's server-side **inbound** fields against the sing-box 1.14.0-beta.14 official docs + source option packages:
 
-必须覆盖（与转换覆盖度候选一致）：
-1. **vless(reality)**：users（多用户数组，uuid/flow 取哪个）、tls.server_name、tls.reality.private_key/short_id（数组还是字符串）、listen_port 与 listen 的关系
-2. **hysteria2**：users.0.password、obfs.type/password、ignored 的跳端口字段
-3. **shadowtls**：users.0.password、version（默认值）、handshake.server、detour（指向 ss inbound 的 tag）
-4. **shadowsocks**（链式挂 shadowtls 与独立两种形态）：method/password、detour 字段在服务端 ss inbound 上的含义
-5. **tuic**：users.0.uuid/password、congestion_control
-6. **anytls**：users.0.password、padding_scheme 是否服务端字段
-7. **wireguard**：private_key、peers（public_key/allowed_ips/endpoint 在服务端 config 里写不写）、address
+Must cover (aligned with the conversion-coverage candidates):
+1. **vless(reality)**: users (multi-user array — which uuid/flow is taken), tls.server_name, tls.reality.private_key/short_id (array or string), the relation between listen_port and listen
+2. **hysteria2**: users.0.password, obfs.type/password, the ignored port-hopping fields
+3. **shadowtls**: users.0.password, version (default), handshake.server, detour (points to the ss inbound's tag)
+4. **shadowsocks** (both the chained-under-shadowtls and standalone forms): method/password, what detour means on the server-side ss inbound
+5. **tuic**: users.0.uuid/password, congestion_control
+6. **anytls**: users.0.password, whether padding_scheme is a server-side field
+7. **wireguard**: private_key, peers (whether public_key/allowed_ips/endpoint are written in the server config), address
 
-每协议给出：服务端 inbound 关键字段 JSON 示例（1.14 版）、可选字段表、多用户/多 peer 变体，以及**当前 `inb_field` 路径若写错会在哪种 config 上静默取空**的坑。来源：官方 docs + 源码 option 包 + $schema；查不到的明说。
+For each protocol, provide: a JSON example of the server inbound's key fields (1.14 version), a table of optional fields, multi-user/multi-peer variants, and the pitfalls where the **current `inb_field` path, if wrong, silently yields empty** on some config. Sources: official docs + source option packages + $schema; state clearly anything that can't be found.
 
-## 产出落点
+## Output landing spot
 
-- 发现写入 `docs/`（沿用字段字典命名习惯，如 `docs/server-inbound-fields-1.14/`），附来源 URL
-- resolution comment 一句话总结每协议要点 + 需要改的 inb_field 路径清单
+- Findings written into `docs/` (following the field-dictionary naming convention, e.g. `docs/server-inbound-fields-1.14/`), with source URLs
+- A resolution comment: one-sentence summary of each protocol's key points + the list of inb_field paths that need changing
 
-## 为什么需要
+## Why needed
 
-覆盖度决策（002）依赖"这些字段到底解析不解析得出来"；本票先把服务端字段形态钉死，转换函数的解析才可靠。
+The coverage decision (002) depends on "whether these fields can actually be parsed at all"; this ticket pins down the server-side field forms first so the conversion functions parse reliably.

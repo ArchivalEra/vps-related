@@ -1,25 +1,25 @@
-# T05: 客户端连接地址策略（grilling）
+# T05: Client connect-address strategy (grilling)
 
 - **label**: `wayfinder:grilling`
-- **类型**: HITL（与用户对话定地址策略）
-- **blocked by**: 无（frontier）
-- **blocks**: 007（端到端验收矩阵）
+- **type**: HITL (talk with the user to fix the address strategy)
+- **blocked by**: none (frontier)
+- **blocks**: 007 (E2E acceptance matrix)
 
 ## Question
 
-客户端 outbound 的 `server` 字段（连接地址）是**唯一无法从服务端 config 直接取到**的信息——服务端 config 里只有监听端口和 TLS 域名，没有自己的公网地址。现状 `gen-client.sh`：
-- `--server 域名/IP` 显式指定（双栈用域名优先，A+AAAA 自动选路）
-- 缺省用 `curl ifconfig.me / icanhazip` **自动探测公网 IPv4**，失败则 `die1` 要求 `--server`
+The client outbound's `server` field (connect address) is the **only piece of information that can't be taken directly from the server config** — the server config only has the listen port and TLS domain, not its own public address. Current `gen-client.sh`:
+- `--server domain/IP` specified explicitly (prefer a domain for dual-stack; A+AAAA auto-selected)
+- default is to **auto-detect the public IPv4** via `curl ifconfig.me / icanhazip`; on failure `die1` requires `--server`
 
-要拍板的问题：
-1. **默认策略**：不传 `--server` 时自动探测公网 IP 是否仍是合理默认？还是应该反过来——强烈建议传域名（双栈 + CDN 前置），自动探测只作兜底？
-2. **双栈语义**：域名（A+AAAA）自动选路 vs 探测到的单个 IPv4——两条路的行为是否都该支持并写进 runbook？v6 优先 or v4 优先的策略给谁定？
-3. **探测失败行为**：离线/无公网时 `die1 报错` 还是生成 `server="localhost"` 之类占位让用户改？SNI（`tls.server_name`）与 `server` 是否必须解耦（服务端域名 vs 连接地址可以不同）？
-4. **--insecure 自签**：自签证书时 `insecure:true` 自动加还是显式参数？hy2/tuic/anytls 的 `server_name` 现在填的是 `$SERVER`——若 server 是 IP、证书是域名，这里是否该用服务端 config 的域名？
-5. **wireguard peer 地址**：wg 的 `peers[].address` 用哪个（服务端 config 能不能给，还是要 --server）？
+Questions to settle:
+1. **Default policy**: when `--server` isn't passed, is auto-detecting the public IP still a reasonable default? Or should it be the other way around — strongly recommend a domain (dual-stack + CDN fronting), with auto-detection only as a fallback?
+2. **Dual-stack semantics**: domain (A+AAAA) auto-selection vs a single detected IPv4 — should both paths be supported and written into the runbook? Who decides the v6-first or v4-first policy?
+3. **Probe-failure behavior**: when offline / no public IP — `die1 error`, or generate a placeholder like `server="localhost"` for the user to change? Must SNI (`tls.server_name`) and `server` be decoupled (server domain vs connect address can differ)?
+4. **--insecure self-signed**: with a self-signed cert, is `insecure:true` added automatically or via an explicit flag? hy2/tuic/anytls `server_name` currently gets `$SERVER` — if the server is an IP and the cert is for a domain, should this use the server config's domain?
+5. **wireguard peer address**: which `peers[].address` to use (can the server config provide it, or is `--server` required)?
 
-产出：地址策略定案（默认值 + 双栈 + 失败行为 + 与 SNI/insecure 的联动 + wg 地址来源），写入 runbook。
+Output: address strategy finalized (default + dual-stack + failure behavior + interplay with SNI/insecure + wg address source), written into the runbook.
 
-## 为什么需要
+## Why needed
 
-连接地址是单输入流唯一需要外部信息的决策点，也是新手最容易配错的地方；地址与 SNI/insecure 的联动直接决定生成的 client.json 能不能连通。
+The connect address is the only decision point in the single-input flow that needs external information, and the easiest thing for newcomers to misconfigure; the interplay between the address and SNI/insecure directly decides whether the generated client.json can actually connect.

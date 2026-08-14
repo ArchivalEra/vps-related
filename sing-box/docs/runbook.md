@@ -1,11 +1,11 @@
-# sing-box 双节点手动部署手册
+# sing-box Two-Node Manual Deployment Runbook
 
-节点A（node-a）/ 节点B（node-b）两台 VPS，Debian/Ubuntu，root，systemd。
-**每一节都是 SSH 里可直接复制粘贴的命令块。**
+Two VPS nodes (node-a / node-b), Debian/Ubuntu, root, systemd.
+**Every section is a command block you can copy-paste directly into SSH.**
 
 ---
 
-## 0. 流程总览
+## 0. Flow Overview
 
 ```
 服务端 config.json ──▶ gen-client.sh ──▶ client.json（客户端导入）
@@ -14,24 +14,24 @@
 
 ---
 
-## 1. 端口规划（六线全家桶，与客户端生成器 gen-client.sh 默认对齐）
+## 1. Port Plan (six-line family, aligned with the client generator gen-client.sh defaults)
 
-| 端口 | 协议 | 服务 | 角色 |
+| Port | Protocol | Service | Role |
 |---|---|---|---|
-| 443/tcp | VLESS+Reality | 抗封锁主力 | 伪装微软，443 标准 HTTPS 语义 |
-| 443/udp | Hysteria2 | QUIC 高吞吐 | 标准 HTTP/3 端口 + Chrome QUIC 指纹（1.14 默认） |
-| 8443/tcp | ShadowTLS → SS2022 | TCP 伪装线 | SSL 端口伪装 |
-| 8445/udp | TUIC | QUIC 备用 | |
-| 2083/tcp | AnyTLS | 1.14 新贵 | |
-| 8388/tcp+udp | Shadowsocks 2022 | 兜底 | 单协议双栈，保留 |
+| 443/tcp | VLESS+Reality | primary anti-blocking line | impersonates Microsoft; standard 443 HTTPS semantics |
+| 443/udp | Hysteria2 | QUIC high throughput | standard HTTP/3 port + Chrome QUIC fingerprint (1.14 default) |
+| 8443/tcp | ShadowTLS → SS2022 | TCP camouflage line | SSL-port camouflage |
+| 8445/udp | TUIC | QUIC backup | |
+| 2083/tcp | AnyTLS | new in 1.14 | |
+| 8388/tcp+udp | Shadowsocks 2022 | fallback | single protocol, dual stack, kept |
 
-**端口纪律**：443/tcp + 443/udp 是 Reality + Hy2（标准 HTTPS + HTTP/3 组合，真实站点同款）；其余端口每个单一协议，不搞同端口 tcp/udp 双协议。QUIC 线靠协议栈指纹伪装（Hy2 的 Chrome QUIC parrot），不依赖端口号。
+**Port discipline**: 443/tcp + 443/udp carry Reality + Hy2 (standard HTTPS + HTTP/3 combo, same as real sites); every other port hosts a single protocol — no same-port tcp/udp dual protocols. QUIC lines rely on protocol-stack fingerprinting for camouflage (Hy2's Chrome QUIC parrot), not on port numbers.
 
-> 注：服务端 `config.json` 由 VPS 上手动维护（本仓库 `test-env/server/config.json` 是本地测试样例）；gen-client.sh 只读它生成客户端配置，不负责服务端生成。
+> Note: the server `config.json` is maintained manually on the VPS (`test-env/server/config.json` in this repo is a local test sample); gen-client.sh only reads it to generate the client config — it does not generate the server config.
 
 ---
 
-## 2. 客户端配置生成（服务端 config.json → client.json）
+## 2. Client Config Generation (server config.json → client.json)
 
 ```bash
 # 两个脚本放同一目录（scripts/gen-client.sh + scripts/protocols.lib.sh），任一台机器可跑
@@ -43,25 +43,25 @@ SB_OUTPUT=~/client.json bash gen-client.sh --from-server /etc/sing-box/config.js
 #   --test: 跑自检断言（6 项，不依赖 test-env）
 ```
 
-产物：`client.json` —— 官方客户端（SFA/SFI）从文件导入即可。
+Output: `client.json` — import it into the official client (SFA/SFI) from file.
 
-> 零持久化：config 路径、地址、密钥都不落盘；无任何状态文件。
+> Zero persistence: config paths, addresses, and keys are never written to disk; no state files of any kind.
 
 ---
 
-## 3. 部署节点（两台步骤完全一样，以 node-a 为例）
+## 3. Deploy a Node (both nodes are identical; node-a used as the example)
 
-### 3.1 上传服务端配置
+### 3.1 Upload the server config
 
-> 服务端 `config.json` 手动维护（含全部协议/密钥/端口），直接写到 VPS：
+> The server `config.json` is maintained manually (contains all protocols/keys/ports); write it directly to the VPS:
 
 ```bash
 # 本机编辑好后上传（或直接在 VPS 上编辑）
 scp /你的/config.json root@<node-a-ip>:/etc/sing-box/config.json
 ```
-提示目录不存在就先生成：`ssh root@<node-a-ip> 'mkdir -p /etc/sing-box'` 再 scp。
+If the directory doesn't exist, create it first: `ssh root@<node-a-ip> 'mkdir -p /etc/sing-box'` and then scp.
 
-### 3.2 安装 sing-box 1.14.0-beta.14（x86_64，当前为 beta 最新版）
+### 3.2 Install sing-box 1.14.0-beta.14 (x86_64, currently the latest beta)
 
 ```bash
 # VPS 上执行
@@ -72,11 +72,11 @@ install -m 0755 sing-box-1.14.0-beta.14-linux-amd64/sing-box /usr/local/bin/sing
 sing-box version    # 应显示 v1.14.0-beta.14
 ```
 
-### 3.3 Hysteria2 自签证书
+### 3.3 Hysteria2 self-signed certificate
 
-> ⚠️ 1.14 起 Hy2 客户端默认模仿 Chrome 的 QUIC 握手（`disable_chrome_parrot` 可关），
-> **Chrome 不支持 Ed25519 证书，服务端必须用 ECDSA/有效期内的证书**——下面这条命令生成的正是
-> prime256v1 椭圆曲线证书，完美兼容。别手痒改成 Ed25519。
+> ⚠️ Since 1.14, the Hy2 client mimics Chrome's QUIC handshake by default (`disable_chrome_parrot` can turn it off).
+> **Chrome does not support Ed25519 certificates, so the server must use an ECDSA / in-validity-period certificate** — the command below generates exactly that:
+> a prime256v1 elliptic-curve certificate, fully compatible. Don't be tempted to switch to Ed25519.
 
 ```bash
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
@@ -85,7 +85,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
 chmod 600 /etc/sing-box/hy2.key
 ```
 
-### 3.4 systemd 托管
+### 3.4 systemd service
 
 ```bash
 cat > /etc/systemd/system/sing-box.service <<'EOF'
@@ -112,7 +112,7 @@ systemctl daemon-reload
 systemctl enable --now sing-box
 ```
 
-### 3.5 验证
+### 3.5 Verification
 
 ```bash
 systemctl status sing-box --no-pager   # Active: active (running)
@@ -120,12 +120,12 @@ journalctl -u sing-box -n 20 --no-pager
 ss -tlnup | grep -E ':(443|8443|8445|2083|8388)'   # 基础三线至少见 443/tcp+udp、8388；附录线按 §7 添加后各见其端口
 ```
 
-**Reality 回落检查**：从**没走代理**的浏览器访问 `https://<node-a-ip>:443`——应看到真实网站
-（该 IP 的证书错误页/微软页面内容），而不是连接被拒。回落正常 = Reality 伪装生效。
+**Reality fallback check**: from a browser that has **not** gone through the proxy, visit `https://<node-a-ip>:443` — you should see the real site
+(cert-error page for that IP / Microsoft page content), not a connection refused. Fallback working = Reality camouflage in effect.
 
 ---
 
-## 4. 防火墙
+## 4. Firewall
 
 ```bash
 # 若启用了 ufw（其他防火墙/云安全组同理放行）
@@ -135,39 +135,39 @@ ufw reload
 
 ---
 
-## 5. 客户端（官方 sing-box）
+## 5. Client (official sing-box)
 
-1. 把 gen-client.sh 生成的 `client.json` 发到手机/电脑（微信/AirDrop/iCloud 随意）
-2. 导入：
-   - **iOS**：sing-box (SFA) → 右上角 `+` → 从文件导入
-   - **Android**：sing-box 官方应用 → 配置 → 导入文件
-   - **macOS/Windows**：官方应用同上；或 CLI：`sing-box run -c singbox-client.json`
-3. 打开 TUN 开关即全局接管。
-4. `auto` 组会自动在 4 条线路（节点A/节点B × Reality/Hy2）间轮询测延迟，**选最低者；节点挂了自动切到另一台**，无需手动干预。
+1. Send the `client.json` generated by gen-client.sh to your phone/computer (WeChat/AirDrop/iCloud, any way works)
+2. Import:
+   - **iOS**: sing-box (SFA) → `+` in the top-right corner → import from file
+   - **Android**: official sing-box app → Config → import file
+   - **macOS/Windows**: same in the official app; or CLI: `sing-box run -c singbox-client.json`
+3. Turn on the TUN switch to take over all traffic globally.
+4. The `auto` group automatically probes latency across the 4 lines (node-a/node-b × Reality/Hy2) and **picks the lowest; if a node goes down it automatically switches to the other**, no manual intervention needed.
 
-想锁定某条线路：把配置里 `"route"` 的 `"final": "auto"` 改成 `"manual"`，然后在客户端手动选。
+To pin a specific line: change `"final": "auto"` to `"manual"` under `"route"` in the config, then select it manually in the client.
 
 ---
 
-## 6. 日常维护
+## 6. Daily Maintenance
 
-| 操作 | 命令 / 步骤 |
+| Operation | Command / steps |
 |---|---|
-| 看日志 | `journalctl -u sing-box -f` |
-| 升级版本 | 换 sing-box 二进制（3.2）→ 改 `gen-client.sh` 头部 `SINGBOX_VERSION`/`SINGBOX_MAJOR_MINOR`（按维护清单 SOP）→ 重跑 gen-client.sh → `systemctl restart sing-box` |
-| 换 SNI/端口 | 改服务端 `config.json` → `systemctl restart sing-box` → 重跑 gen-client.sh 出新客户端配置 |
-| 加第三个节点 | 服务端 config.json 加对应 inbound → 重跑 gen-client.sh（新线路自动进 auto 组） |
-| 服务器重装 | 重装后按第 3 节重来（配置和密钥手动备份） |
-| 换密钥 | 改服务端 config.json 里的密钥 → 重启 → 重跑 gen-client.sh（老客户端全作废） |
+| View logs | `journalctl -u sing-box -f` |
+| Upgrade version | replace the sing-box binary (3.2) → update `SINGBOX_VERSION`/`SINGBOX_MAJOR_MINOR` at the top of `gen-client.sh` (per the maintenance guide SOP) → rerun gen-client.sh → `systemctl restart sing-box` |
+| Change SNI/port | edit the server `config.json` → `systemctl restart sing-box` → rerun gen-client.sh to produce a new client config |
+| Add a third node | add the corresponding inbound to the server config.json → rerun gen-client.sh (the new line joins the `auto` group automatically) |
+| Server reinstall | after reinstall, redo section 3 (back up config and keys manually) |
+| Rotate keys | change the keys in the server config.json → restart → rerun gen-client.sh (all old client configs become invalid) |
 
 ---
 
-## 7. 附录：加料（可选）
+## 7. Appendix: Extras (optional)
 
-> 以下都需要往 `/etc/sing-box/config.json` 的 `inbounds` 数组里加一段，然后
-> `systemctl restart sing-box`。密钥用你自己生成/保存的值（可参考 `test-env/secrets/env.sh` 的结构）。
+> Each of the following requires adding a block to the `inbounds` array in `/etc/sing-box/config.json`, then
+> `systemctl restart sing-box`. Use keys you generate/save yourself (see the structure of `test-env/secrets/env.sh`).
 
-### 7.1 TUIC（又一个 QUIC 协议，多一份保险）
+### 7.1 TUIC (another QUIC protocol, an extra layer of insurance)
 
 ```json
 {
@@ -181,7 +181,7 @@ ufw reload
 }
 ```
 
-### 7.1b VLESS+WS（WebSocket 传输，真证书或自签均可）
+### 7.1b VLESS+WS (WebSocket transport, real cert or self-signed both fine)
 
 ```json
 {
@@ -195,10 +195,10 @@ ufw reload
 }
 ```
 
-### 7.1c Naive（需真证书 + libcronet.so，cronet 校验严格）
+### 7.1c Naive (needs a real certificate + libcronet.so; cronet validation is strict)
 
-> ⚠️ naive 无 `insecure` 选项（cronet 硬约束），**必须真证书**（自签证书 CN 须与 server_name 匹配）；
-> 依赖 `libcronet.so` 与 sing-box 二进制同目录（1.14 无后缀包自带）。
+> ⚠️ naive has no `insecure` option (cronet hard constraint), **a real certificate is mandatory** (a self-signed cert's CN must match server_name);
+> depends on `libcronet.so` sitting in the same dir as the sing-box binary (included in the 1.14 suffix-less package).
 
 ```json
 {
@@ -211,9 +211,9 @@ ufw reload
 }
 ```
 
-### 7.2 Trojan（需要域名 + 正规证书）
+### 7.2 Trojan (needs a domain + proper certificate)
 
-域名解析到 VPS 并签发证书（acme.sh / caddy 都行）后：
+After the domain resolves to the VPS and a certificate is issued (acme.sh / caddy either works):
 
 ```json
 {
@@ -231,7 +231,7 @@ ufw reload
 }
 ```
 
-### 7.3 VMess+WS（需域名证书，套 CDN 已被验证为死路，仅直连备用）
+### 7.3 VMess+WS (needs a domain certificate; CDN fronting has been proven a dead end, direct connection only as backup)
 
 ```json
 {
@@ -250,4 +250,4 @@ ufw reload
 }
 ```
 
-> 7.2 / 7.3 需要"你的域名"（另一项目里的域名，不在本仓库范围），等域名配置好后补不迟。
+> 7.2 / 7.3 require "your domain" (a domain from another project, out of this repo's scope); add them later once the domain is configured.
