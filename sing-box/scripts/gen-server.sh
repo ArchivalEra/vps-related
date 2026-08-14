@@ -402,7 +402,9 @@ render_shadowtls() {
   out="{ \"type\": \"shadowtls\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"version\": 3, \"users\": [ { \"name\": \"sb\", \"password\": \"$GEN_ST_PASS\" } ],
     \"handshake\": { \"server\": \"$REALITY_SNI\", \"server_port\": 443 }, \"strict_mode\": true$detour }"
-  if [[ $CHAIN_SS -eq 1 && $(( ${INST_SHADOWTLS_N:-0} - 1 )) -eq 1 ]]; then
+  # chain ss binds to the FIRST shadowtls instance only: INST_SHADOWTLS_N was 0
+  # before the increment above, so after it the first instance reads 1-1==0.
+  if [[ $CHAIN_SS -eq 1 && $(( ${INST_SHADOWTLS_N:-0} - 1 )) -eq 0 ]]; then
     out+=", { \"type\": \"shadowsocks\", \"tag\": \"ss-chain-in\", \"listen\": \"::\", \"listen_port\": $CHAIN_SS_PORT_VAL,
       \"method\": \"2022-blake3-aes-256-gcm\", \"password\": \"$GEN_SS_CHAIN_PASS\" }"
   fi
