@@ -11,9 +11,9 @@ User decision 3: auto-detect the sing-box binary version and confirm compatibili
 
 ```bash
 VERSION_TABLE=(
-  "1.13:deprecated_ok:legacy DNS address 简写等字段已弃用但可解析，1.14 起移除"
-  "1.14:supported:基线版本 1.14.0-beta.14"
-  "1.15:future:新 transport 写法（xhttp 等）需确认后再生成，见维护清单"
+  "1.13:deprecated_ok:legacy DNS address shorthand and similar fields are deprecated but still parseable; removed from 1.14"
+  "1.14:supported:baseline version 1.14.0-beta.14"
+  "1.15:future:new transport syntax (xhttp etc.) must be confirmed before generating; see the maintenance guide"
 )
 ```
 `check_version` only **warns, doesn't block** for `future` rows; `sing-box check` makes the final call.

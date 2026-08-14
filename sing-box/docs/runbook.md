@@ -8,8 +8,8 @@ Two VPS nodes (node-a / node-b), Debian/Ubuntu, root, systemd.
 ## 0. Flow Overview
 
 ```
-服务端 config.json ──▶ gen-client.sh ──▶ client.json（客户端导入）
-     （VPS 上手动维护，含全部协议/密钥/端口）
+Server config.json ──▶ gen-client.sh ──▶ client.json (imported by client)
+     (manually maintained on the VPS, contains all protocols/keys/ports)
 ```
 
 ---
@@ -34,13 +34,13 @@ Two VPS nodes (node-a / node-b), Debian/Ubuntu, root, systemd.
 ## 2. Client Config Generation (server config.json → client.json)
 
 ```bash
-# 两个脚本放同一目录（scripts/gen-client.sh + scripts/protocols.lib.sh），任一台机器可跑
-SB_OUTPUT=~/client.json bash gen-client.sh --from-server /etc/sing-box/config.json --server 你的域名
-#   --from-server: 服务端 sing-box config.json（唯一输入，含全部协议/密钥/端口）
-#   --server: 客户端连接地址（域名双栈 / IPv4 / IPv6）；省略则交互输入
-#   --insecure: 证书为自签时加；真证书不用
-#   --debug: 诊断输出（默认完全静默）
-#   --test: 跑自检断言（6 项，不依赖 test-env）
+# Put the two scripts in the same directory (scripts/gen-client.sh + scripts/protocols.lib.sh); runnable on any machine
+SB_OUTPUT=~/client.json bash gen-client.sh --from-server /etc/sing-box/config.json --server your-domain.com
+#   --from-server: server-side sing-box config.json (sole input, contains all protocols/keys/ports)
+#   --server: client connection address (dual-stack domain / IPv4 / IPv6); omitted -> prompted interactively
+#   --insecure: add when the certificate is self-signed; not needed for a real certificate
+#   --debug: diagnostic output (fully silent by default)
+#   --test: run the self-check assertions (6 items, no test-env dependency)
 ```
 
 Output: `client.json` — import it into the official client (SFA/SFI) from file.
@@ -56,20 +56,20 @@ Output: `client.json` — import it into the official client (SFA/SFI) from file
 > The server `config.json` is maintained manually (contains all protocols/keys/ports); write it directly to the VPS:
 
 ```bash
-# 本机编辑好后上传（或直接在 VPS 上编辑）
-scp /你的/config.json root@<node-a-ip>:/etc/sing-box/config.json
+# Edit locally then upload (or edit directly on the VPS)
+scp /your/config.json root@<node-a-ip>:/etc/sing-box/config.json
 ```
 If the directory doesn't exist, create it first: `ssh root@<node-a-ip> 'mkdir -p /etc/sing-box'` and then scp.
 
 ### 3.2 Install sing-box 1.14.0-beta.14 (x86_64, currently the latest beta)
 
 ```bash
-# VPS 上执行
+# Run on the VPS
 cd /tmp
 curl -fL -o sb.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.14.0-beta.14/sing-box-1.14.0-beta.14-linux-amd64.tar.gz
 tar -xzf sb.tar.gz
 install -m 0755 sing-box-1.14.0-beta.14-linux-amd64/sing-box /usr/local/bin/sing-box
-sing-box version    # 应显示 v1.14.0-beta.14
+sing-box version    # should show v1.14.0-beta.14
 ```
 
 ### 3.3 Hysteria2 self-signed certificate
@@ -117,7 +117,7 @@ systemctl enable --now sing-box
 ```bash
 systemctl status sing-box --no-pager   # Active: active (running)
 journalctl -u sing-box -n 20 --no-pager
-ss -tlnup | grep -E ':(443|8443|8445|2083|8388)'   # 基础三线至少见 443/tcp+udp、8388；附录线按 §7 添加后各见其端口
+ss -tlnup | grep -E ':(443|8443|8445|2083|8388)'   # base three lines: at least 443/tcp+udp and 8388; appendix lines each show their port after being added per §7
 ```
 
 **Reality fallback check**: from a browser that has **not** gone through the proxy, visit `https://<node-a-ip>:443` — you should see the real site
@@ -128,7 +128,7 @@ ss -tlnup | grep -E ':(443|8443|8445|2083|8388)'   # 基础三线至少见 443/t
 ## 4. Firewall
 
 ```bash
-# 若启用了 ufw（其他防火墙/云安全组同理放行）
+# If ufw is enabled (open the same ports on other firewalls / cloud security groups)
 ufw allow 443/tcp && ufw allow 443/udp && ufw allow 8388/tcp && ufw allow 8388/udp
 ufw reload
 ```
@@ -175,7 +175,7 @@ To pin a specific line: change `"final": "auto"` to `"manual"` under `"route"` i
   "tag": "tuic-in",
   "listen": "::",
   "listen_port": 8445,
-  "users": [ { "uuid": "SERVER_UUID 的值", "password": "ST_PASS 的值（secrets.env 的 SHADOWTLS_PASSWORD，与客户端 gen-client.sh 的 ST_PASS 同键）" } ],
+  "users": [ { "uuid": "value of SERVER_UUID", "password": "value of ST_PASS (SHADOWTLS_PASSWORD in secrets.env, same key as ST_PASS in the client gen-client.sh)" } ],
   "congestion_control": "bbr",
   "tls": { "enabled": true, "certificate_path": "/etc/sing-box/hy2.crt", "key_path": "/etc/sing-box/hy2.key" }
 }
@@ -189,8 +189,8 @@ To pin a specific line: change `"final": "auto"` to `"manual"` under `"route"` i
   "tag": "vless-ws-in",
   "listen": "::",
   "listen_port": 8446,
-  "users": [ { "uuid": "SERVER_UUID 的值" } ],
-  "tls": { "enabled": true, "server_name": "你的域名", "certificate_path": "/etc/sing-box/hy2.crt", "key_path": "/etc/sing-box/hy2.key" },
+  "users": [ { "uuid": "value of SERVER_UUID" } ],
+  "tls": { "enabled": true, "server_name": "your-domain.com", "certificate_path": "/etc/sing-box/hy2.crt", "key_path": "/etc/sing-box/hy2.key" },
   "transport": { "type": "ws", "path": "/ws" }
 }
 ```
@@ -206,8 +206,8 @@ To pin a specific line: change `"final": "auto"` to `"manual"` under `"route"` i
   "tag": "naive-in",
   "listen": "::",
   "listen_port": 8449,
-  "users": [ { "username": "sb", "password": "NAIVE_PASS 的值" } ],
-  "tls": { "enabled": true, "server_name": "你的域名", "certificate_path": "/etc/letsencrypt/live/你的域名/fullchain.pem", "key_path": "/etc/letsencrypt/live/你的域名/privkey.pem" }
+  "users": [ { "username": "sb", "password": "value of NAIVE_PASS" } ],
+  "tls": { "enabled": true, "server_name": "your-domain.com", "certificate_path": "/etc/letsencrypt/live/your-domain.com/fullchain.pem", "key_path": "/etc/letsencrypt/live/your-domain.com/privkey.pem" }
 }
 ```
 
@@ -221,12 +221,12 @@ After the domain resolves to the VPS and a certificate is issued (acme.sh / cadd
   "tag": "trojan-in",
   "listen": "::",
   "listen_port": 8447,
-  "users": [ { "password": "TROJAN_PASS 的值" } ],
+  "users": [ { "password": "value of TROJAN_PASS" } ],
   "tls": {
     "enabled": true,
-    "server_name": "你的域名",
-    "certificate_path": "/etc/letsencrypt/live/你的域名/fullchain.pem",
-    "key_path": "/etc/letsencrypt/live/你的域名/privkey.pem"
+    "server_name": "your-domain.com",
+    "certificate_path": "/etc/letsencrypt/live/your-domain.com/fullchain.pem",
+    "key_path": "/etc/letsencrypt/live/your-domain.com/privkey.pem"
   }
 }
 ```
@@ -239,13 +239,13 @@ After the domain resolves to the VPS and a certificate is issued (acme.sh / cadd
   "tag": "vmess-ws-in",
   "listen": "::",
   "listen_port": 8448,
-  "users": [ { "uuid": "SERVER_UUID 的值", "alterId": 0 } ],
+  "users": [ { "uuid": "value of SERVER_UUID", "alterId": 0 } ],
   "transport": { "type": "ws", "path": "/ws" },
   "tls": {
     "enabled": true,
-    "server_name": "你的域名",
-    "certificate_path": "/etc/letsencrypt/live/你的域名/fullchain.pem",
-    "key_path": "/etc/letsencrypt/live/你的域名/privkey.pem"
+    "server_name": "your-domain.com",
+    "certificate_path": "/etc/letsencrypt/live/your-domain.com/fullchain.pem",
+    "key_path": "/etc/letsencrypt/live/your-domain.com/privkey.pem"
   }
 }
 ```

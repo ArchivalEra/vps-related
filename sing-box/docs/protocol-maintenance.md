@@ -9,12 +9,12 @@
 ## 0. Upgrade SOP (run in order for every version bump)
 
 ```bash
-# 1. 下载新版本二进制到脚本实际查找的位置（gen-client.sh 依次找：PATH 的 sing-box → /opt/sing-box/sing-box → test-env/bin/sing-box）
-# 2. 改 scripts/gen-client.sh 头部的 SINGBOX_VERSION / SINGBOX_MAJOR_MINOR
-# 3. 用 test-env 配置跑 gen-client.sh，看 sing-box check 是否报 unknown field
-#    → 报错字段去下方【字段审计】对应协议找，改 scripts/protocols.lib.sh 对应 convert_* 模板
-# 4. 跑全场景回归（--test 自检 + 六线链路 + 新协议）
-# 5. 把新版本再变的字段记进本清单【变更史】，标注版本
+# 1. Download the new binary to the location the script actually looks in (gen-client.sh tries, in order: sing-box on PATH → /opt/sing-box/sing-box → test-env/bin/sing-box)
+# 2. Update SINGBOX_VERSION / SINGBOX_MAJOR_MINOR at the top of scripts/gen-client.sh
+# 3. Run gen-client.sh with the test-env config and check whether sing-box check reports unknown field
+#    -> for a reported field, look it up under the corresponding protocol in the Field Audit tables below, then fix the convert_* template in scripts/protocols.lib.sh
+# 4. Run the full-scenario regression (--test self-check + six-line links + new protocols)
+# 5. Record the fields that changed again in this guide's Change History section, annotated with the version
 ```
 
 **Binary discovery** (`find_sb_bin` in `scripts/protocols.lib.sh`, the single source of truth shared by gen-client.sh / assert_gen / e2e-all.sh): `SB_BIN` env (must be executable) → `sing-box` in `PATH` → `test-env/bin/sing-box`.
@@ -148,9 +148,9 @@
 ## 3. Mapping between templates and binary
 
 ```
-scripts/protocols.lib.sh   ← 协议转换库唯一真源（convert_* + render_from_server 遍历表 + assert_gen 自检）
-scripts/gen-client.sh      ← 编排（--from-server 解析/版本探测/渲染/check）+ 版本速查注释
-docs/protocol-fields-1.14/ ← 字段字典（子代理 research 落盘，含来源 URL，升级时可复核）
+scripts/protocols.lib.sh   ← single source of truth for the protocol conversion library (convert_* + render_from_server traversal table + assert_gen self-check)
+scripts/gen-client.sh      ← orchestration (--from-server parsing / version probe / render / check) + version quick-reference comments
+docs/protocol-fields-1.14/ ← field dictionary (sub-agent research output, includes source URLs, re-checkable on upgrade)
 ```
 
 **Linked points when editing a template** (miss one and it breaks):
