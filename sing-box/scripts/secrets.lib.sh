@@ -7,13 +7,9 @@
 #
 # Requires: sing-box (generate uuid / reality-keypair), openssl
 
-# ---------- Output tiers (mirror protocols.lib.sh; debug fully silent unless --debug) ----------
-DEBUG="${DEBUG:-0}"
-ok()    { echo "$@"; }
-warn()  { echo "⚠ $@" >&2; }
-err()   { echo "✗ $@" >&2; }
-die1()  { err "$@"; exit 1; }
-debug() { [[ $DEBUG -eq 1 ]] && echo "[debug] $@" >&2; }
+# ---------- Output tiers (single source: common.lib.sh) ----------
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.lib.sh"
 
 # ---------- Credential generators (stdout only; failures return non-zero) ----------
 

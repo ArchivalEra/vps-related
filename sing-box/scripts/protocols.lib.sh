@@ -10,14 +10,9 @@
 #   3. If a new protocol was added: add convert_xxx() + register it in render_from_server()'s dispatch table
 # Full field audit + breaking-change history + upgrade SOP: docs/protocol-maintenance.md
 
-# ---------- Output tiers (ok/warn/err/debug; debug is fully silent unless --debug) ----------
-DEBUG="${DEBUG:-0}"
-ok()    { echo "$@"; }                        # success/result line → stdout
-warn()  { echo "⚠ $@" >&2; }                  # warning → stderr
-err()   { echo "✗ $@" >&2; }                  # error → stderr
-die1()  { err "$@"; exit 1; }                 # error + exit 1 (argument/dependency contract)
-die2()  { err "$@"; exit 2; }                 # error + exit 2 (conversion/check contract)
-debug() { [[ $DEBUG -eq 1 ]] && echo "[debug] $@" >&2; }   # only with --debug
+# ---------- Output tiers (single source: common.lib.sh) ----------
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.lib.sh"
 
 # ═══════════════════════════════════════════════════════════════════════
 # 【Version compatibility timeline】— auto-detect sing-box version, confirm compatibility
