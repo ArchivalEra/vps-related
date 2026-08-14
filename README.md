@@ -12,8 +12,34 @@ Everything VPS-related (scripts / configs / deployment notes), organized by proj
 
 | Script | Location | Purpose |
 |---|---|---|
-| `gen-client.sh` + `protocols.lib.sh` | `sing-box/scripts/` (same dir) | server `config.json` → client `client.json` converter (single input/output, no intermediate config) |
+| `gen-server.sh` + `secrets.lib.sh` | `sing-box/scripts/` | server config generator: interactive/flag-driven protocols (any protocol repeatable), fresh credentials each run, single output, zero persistence |
+| `gen-client.sh` + `protocols.lib.sh` | `sing-box/scripts/` | server `config.json` → client `client.json` converter (single input/output, no intermediate config) |
+| `common.lib.sh` | `sing-box/scripts/` | shared output tiers (ok/warn/err/die1/die2/debug), sourced by both libs |
 | `otd.py` | `share/` (top-level, independent) | one-time HTTPS file sharing — serve a file once via an 8-char key link |
+
+Two independent domains: `gen-server.sh` + `secrets.lib.sh` → server config.json (its only output);
+`gen-client.sh` + `protocols.lib.sh` reads that server config → client config.json. The domains
+do not cross-import; common.lib.sh is the shared output layer inside both libs.
+
+### 0. Server config generator
+
+```bash
+bash gen-server.sh --domain your.domain \
+  --certpath /etc/ssl/your/cert.pem --keypath /etc/ssl/your/key.pem \
+  --protocols reality,hysteria2,vless-ws,vless-grpc,anytls,shadowtls,shadowsocks,shadowsocks \
+  --ports 443,443,8443,8444,8445,8446,8388,8390 \
+  --ss-methods 2022-blake3-aes-256-gcm,aes-128-gcm \
+  --outputname config-server.json
+#   --protocols: comma list, ANY protocol repeatable (multi-instance, unique tags <proto>-N)
+#   --ports: comma list positionally aligned with --protocols (tcp/udp may share a port)
+#   --ss-methods: per-ss-instance methods (positional)
+#   --certpath/--keypath: ONE cert/key shared by all TLS inbounds (wildcard cert design)
+#   omit --protocols → interactive: numbered picker, repeats allowed, per-instance ports
+#   credentials are FRESH every run and embedded in the output — nothing persisted,
+#   re-run to rotate everything. Output exists → refuses to overwrite.
+#   --test: self-check (8-instance set incl. dual ss → temp, sing-box check)
+#   then: bash gen-client.sh --from-server config-server.json --server your.domain
+```
 
 ### 1. Client config converter
 

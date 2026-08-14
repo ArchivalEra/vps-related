@@ -132,10 +132,6 @@ fi
 # ---------- insecure ----------
 [[ $ARG_INSECURE -eq 1 ]] && INSECURE=1
 
-# ---------- TLS suffix & SNI (for conversion library) ----------
-TLS_SUFFIX=""
-[[ $INSECURE -eq 1 ]] && TLS_SUFFIX=', "insecure": true'
-
 # ---------- Convert: server inbounds → client outbounds ----------
 render_from_server
 

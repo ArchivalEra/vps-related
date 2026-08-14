@@ -5,7 +5,7 @@
 # Usage:
 #   bash gen-server.sh [--domain D] [--reality-sni S] [--certpath P] [--keypath P]
 #                      [--protocols a,a,b,...] [--ports "port,port,..."] [--ss-methods "m1,m2,..."]
-#                      [--chain-ss-port N] [--ss-port N]
+#                      [--chain-ss-port N]
 #                      [--outputname NAME] [--outputpath DIR] [--debug] [--test]
 #
 # Output: ONE server sing-box config.json. ANY protocol can appear multiple times —
@@ -33,7 +33,6 @@
 #   --ports P,P,...   non-interactive: comma port list, positionally aligned with --protocols
 #   --ss-methods M    non-interactive: comma method list for ss instances (positional)
 #   --chain-ss-port N shadowtls chained ss port (default 8389; 0 = no chain)
-#   --ss-port N       default port for ss instances when --ports omits them (default 8388)
 #   --outputname N    output filename (default config-server.json; filename only, no path)
 #   --outputpath D    output directory (default: this script's own dir)
 #   --debug           diagnostic output (fully silent by default)
@@ -59,7 +58,6 @@ PROTOCOLS_ARG=""
 PORTS_ARG=""
 SS_METHODS_ARG=""
 CHAIN_SS_PORT=""
-SS_PORT=""
 TEST_MODE=0
 DEBUG="${DEBUG:-0}"
 
@@ -85,12 +83,11 @@ while [[ $# -gt 0 ]]; do
     --ports) shift; PORTS_ARG="${1:-}" ;;
     --ss-methods) shift; SS_METHODS_ARG="${1:-}" ;;
     --chain-ss-port) shift; CHAIN_SS_PORT="${1:-}" ;;
-    --ss-port) shift; SS_PORT="${1:-}" ;;
     --outputname) shift; OUTPUT_NAME="${1:-}" ;;
     --outputpath) shift; OUTPUT_PATH="${1:-}" ;;
     --debug) DEBUG=1 ;;
     --test) TEST_MODE=1 ;;
-    *) die1 "unknown argument: $1 (supported: --domain / --reality-sni / --certpath / --keypath / --protocols / --ports / --ss-methods / --chain-ss-port / --ss-port / --outputname / --outputpath / --debug / --test)" ;;
+    *) die1 "unknown argument: $1 (supported: --domain / --reality-sni / --certpath / --keypath / --protocols / --ports / --ss-methods / --chain-ss-port / --outputname / --outputpath / --debug / --test)" ;;
   esac
   shift
 done
@@ -119,7 +116,6 @@ declare -A INST_PORTS=()   # instance tag → port
 declare -A INST_LAYER=()   # instance tag → tcp/udp
 CHAIN_SS=0              # first shadowtls binds an internal ss (detour)
 CHAIN_SS_PORT_VAL=8389
-SS_PORT_VAL=8388
 
 # ---------- IDN (non-ASCII domain) warning — TLS SNI needs punycode ----------
 check_domain() {
@@ -274,7 +270,6 @@ elif [[ -n "$PROTOCOLS_ARG" ]]; then
       CHAIN_SS=1
     fi
   fi
-  [[ -n "$SS_PORT" ]] && { [[ "$SS_PORT" =~ ^[0-9]+$ ]] || die1 "bad --ss-port: $SS_PORT"; SS_PORT_VAL="$SS_PORT"; }
 else
   ask_protocols
   instantiate
@@ -354,7 +349,7 @@ render_anytls() {
 }
 render_shadowtls() {
   # tag must be unique per instance; the server may have several shadowtls inbounds
-  local out detour chain_frag
+  local out detour
   detour=""
   if [[ $CHAIN_SS -eq 1 && "${INST_SHADOWTLS_N:-0}" -eq 0 ]]; then
     detour=", \"detour\": \"ss-chain-in\""
@@ -409,7 +404,7 @@ render_config() {
     proto="${t%%-*}"
     [[ -n "${PROTO_DEFAULT_PORT[$proto]+x}" ]] || proto="$t"
     local frag
-    frag="$(render_${proto//-/_})" || die1 "render failed for instance: $t"
+    frag="$(render_"${proto//-/_}")" || die1 "render failed for instance: $t"
     inbounds+="${inbounds:+, }$frag"
   done
   cat > "$out" <<JSON

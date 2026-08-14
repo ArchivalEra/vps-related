@@ -20,7 +20,6 @@
 #   status: supported=baseline / deprecated_ok=parseable but deprecated fields / future=intercept new syntax
 # To upgrade to 1.15+: add a row here + adapt convert_xxx() to new fields; check is the final arbiter
 # ═══════════════════════════════════════════════════════════════════════
-SINGBOX_VERSION="1.14.0-beta.14"     # baseline version
 SINGBOX_MAJOR_MINOR="1.14"
 VERSION_TABLE=(
   "1.13:deprecated_ok:legacy DNS address shorthand etc. deprecated but parseable, removed in 1.14"
@@ -127,7 +126,7 @@ PY
 inb_field() { # $1=inbound index  $2=dotted field path → stdout value (from fields.lst)
   local f="${TMPD:-/tmp}/fields.lst" line
   line="$(grep -m1 -F -e "$1	$2	" "$f" 2>/dev/null)" || { echo ''; return; }
-  echo "${line#*	$2	}"
+  echo "${line#*	"$2"	}"
 }
 
 convert_vless() { # $1=inbound index — server vless → client vless (reality or ws/grpc transport variant)
