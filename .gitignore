@@ -17,6 +17,10 @@
 !share/
 !share/**
 
+# 3c) Allow config-delivery (thin dufs wrapper script; binaries excluded below)
+!config-delivery/
+!config-delivery/**
+
 # 4) Local exclusions (sensitive/generated; note: gitignore has no inline comments — keep them on their own line)
 # Generated configs & keys (incl. server private keys), never upload
 sing-box/out/

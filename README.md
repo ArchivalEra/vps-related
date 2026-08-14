@@ -15,7 +15,7 @@ Everything VPS-related (scripts / configs / deployment notes), organized by proj
 | `gen-server.sh` + `secrets.lib.sh` | `sing-box/scripts/` | server config generator: interactive/flag-driven protocols (any protocol repeatable), fresh credentials each run, single output, zero persistence |
 | `gen-client.sh` + `protocols.lib.sh` | `sing-box/scripts/` | server `config.json` → client `client.json` converter (single input/output, no intermediate config) |
 | `common.lib.sh` | `sing-box/scripts/` | shared output tiers (ok/warn/err/die1/die2/debug), sourced by both libs |
-| `config-delivery` | `config-delivery/` (Go) | one-time HTTPS file sharing — single static binary, zero deps, serve a file N times via an 8-char key link |
+| `config-delivery.sh` + `dufs` | `config-delivery/` | one-time HTTPS file sharing — thin wrapper (random-key URL + TTL auto-delete) over dufs (TLS/streaming, single static binary) |
 
 Two independent domains: `gen-server.sh` + `secrets.lib.sh` → server config.json (its only output);
 `gen-client.sh` + `protocols.lib.sh` reads that server config → client config.json. The domains
@@ -53,24 +53,24 @@ SB_OUTPUT=~/client.json bash gen-client.sh --from-server /etc/sing-box/config.js
 #   --debug: diagnostics (fully silent by default); --test: self-check
 ```
 
-### 2. One-time config delivery (config-delivery, Go)
+### 2. One-time config delivery (config-delivery.sh + dufs)
 
 ```bash
-# build once, deploy anywhere (single static binary, zero deps, no runtime):
-cd config-delivery
-go build -o config-delivery .                    # or cross-compile:
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o config-delivery-linux-arm64 .
+# deploy: grab a dufs musl static binary (x86_64 + arm64 prebuilt) + this script
+#   https://github.com/sigoden/dufs/releases  → dufs-linux-{x86_64,aarch64} / set DUFS_BIN
 
-# server side — deliver the generated client json N times (default 1 = one-time):
-./config-delivery serve ./config-client.json --port 443 --name client-config.json
-#   → prints: one-time download link:  https://<host>:443/<8-char-key>
-#   --count N: allow N downloads (default 1; <1 rejected); exhausted → HTTP 410
-#   --cert/--key: real cert+key (default: fresh self-signed ECDSA → clients use -k)
+# server side — deliver the client json via a random-key link that self-destructs:
+./config-delivery.sh serve ./config-client.json --port 443 --ttl 600 --host your.domain
+#   → prints: one-time download link:  https://your.domain:443/<8-char-key>
+#   --ttl SEC: file auto-deletes after N seconds (default 600; key URL is one-shot by design)
+#   --cert/--key: real PEM cert+key (default: fresh self-signed ECDSA → clients use -k)
 # client side — open the link in a browser (downloads with the given name), or:
-curl -kOJ https://<host>:443/<8-char-key>     # self-signed → -k
+curl -kOJ https://your.domain:443/<8-char-key>     # self-signed → -k
 ```
 
-Old Python implementation archived at `archived/otd/otd.py` (superseded — no runtime, no deps needed now).
+`dufs` provides TLS/streaming/static serving (MIT, active, no CVEs); the wrapper adds the
+random-key URL + TTL auto-expiry. Zero extra deps, single static binary + one script.
+Earlier Go prototype archived at `archived/config-delivery-go/`; original Python at `archived/otd/`.
 
 See `sing-box/docs/runbook.md` (deployment) + `sing-box/docs/protocol-maintenance.md` (maintenance).
 
