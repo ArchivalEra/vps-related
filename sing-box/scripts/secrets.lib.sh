@@ -7,8 +7,27 @@
 #
 # Requires: sing-box (generate uuid / reality-keypair), openssl
 
-# Output tiers (ok/warn/err/die1/debug) come from common.lib.sh, sourced directly
-# by the entry script (gen-server.sh) — do NOT re-source here (single ownership).
+# Output tiers (ok/warn/err/die1/die2/debug + afterglow colors) are defined inline —
+# deliberately duplicated from protocols.lib.sh so each domain can evolve independently
+# (server/client behavior diverges often). Keep in sync with protocols.lib.sh when touching.
+DEBUG="${DEBUG:-0}"
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_GREEN="\033[38;2;144;169;89m"    # afterglow green  #90a959
+  C_YELLOW="\033[38;2;244;191;117m"  # afterglow yellow #f4bf75
+  C_RED="\033[38;2;172;65;66m"       # afterglow red    #ac4142
+  C_BLUE="\033[38;2;106;159;181m"    # afterglow blue   #6a9fb5
+  C_RESET="\033[0m"
+else
+  C_GREEN=""; C_YELLOW=""; C_RED=""; C_BLUE=""; C_RESET=""
+fi
+
+ok()    { echo -e "${C_GREEN}$*${C_RESET}"; }                          # success/result → stdout (green)
+warn()  { echo -e "${C_YELLOW}⚠ $*${C_RESET}" >&2; }                   # warning → stderr (yellow)
+err()   { echo -e "${C_RED}✗ $*${C_RESET}" >&2; }                      # error → stderr (red)
+die1()  { err "$@"; exit 1; }                                          # error + exit 1 (argument/dependency)
+die2()  { err "$@"; exit 2; }                                          # error + exit 2 (conversion/check)
+debug() { [[ $DEBUG -eq 1 ]] && echo -e "${C_BLUE}[debug] $*${C_RESET}" >&2; }   # only with --debug
 
 # ---------- Credential generators (stdout only; failures return non-zero) ----------
 

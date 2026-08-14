@@ -1,30 +1,35 @@
 #!/usr/bin/env bash
 # config-delivery.sh — one-time file delivery over dufs (thin wrapper, zero deps)
 #
-# dufs (https://github.com/sigoden/dufs) provides the heavy lifting: static file
-# serving, native TLS, streaming, cross-compiled musl binaries (x86_64 + arm64).
-# This wrapper adds what dufs lacks: a random key URL + TTL auto-expiry.
+# dufs (https://github.com/sigoden/dufs) does the heavy lifting — static file
+# serving, native TLS, streaming — as a single static musl binary (x86_64 + arm64).
+# We wrap it instead of writing our own server because dufs already owns all the
+# hard parts; the wrapper only adds the one-time semantics dufs lacks: a random
+# key URL that auto-destructs after a TTL.
 #
-# Guardrails:
-#   --port validated (1-65535) and pre-checked for availability before dufs starts
-#   --cert/--key must be given together (else refused); missing cert → self-signed
-#   file must exist and be readable; empty file warns
-#   --host is USER-SUPPLIED only — this script NEVER probes the local IP
-#   (connect host shown in the link; default localhost)
+# Key decisions, and why:
+#   - Random 8-char key URL: the key IS the secret. A path without it is a 404 and
+#     the directory listing is hidden, so the link is effectively private and
+#     one-time without any auth setup.
+#   - TTL auto-expiry: after N seconds the server process is killed and the temp
+#     dir removed, so the delivered file does not linger on the machine.
+#   - Port pre-check via bash /dev/tcp: pure-bash (no nc dependency) and loopback
+#     only — it checks availability, it never probes anything external.
+#   - --host is user-supplied only, never auto-probed: the script cannot know which
+#     host/IP the client can actually reach (public IP, NAT, DNS, interfaces). The
+#     operator knows; we just print the link with the host they give.
 #
-# Usage:
-#   config-delivery.sh serve <file> [--port N] [--ttl SEC] [--host HOST] [--cert C] [--key K]
-#     --port  default 443 (1-65535; <1024 needs root)
-#     --ttl   auto-delete the file after N seconds (default 600)
-#     --host  host/IP shown in the link (default localhost; never auto-probed)
-#     --cert/--key  real PEM cert+key (default: fresh self-signed ECDSA, clients use -k)
-#
-# Env: DUFS_BIN (path to dufs binary; default: dufs in PATH)
+# Usage: config-delivery.sh [serve] <file> [--port N] [--ttl SEC] [--host HOST]
+#                           [--cert FILE] [--key FILE]   (details: --help)
+# Env: DUFS_BIN (path to dufs binary; default: dufs on PATH)
 
 set -uo pipefail
 
-DUFS_BIN="${DUFS_BIN:-dufs}"
-command -v "$DUFS_BIN" >/dev/null 2>&1 || { echo "error: dufs binary not found (set DUFS_BIN or add to PATH)"; exit 1; }
+# No arguments at all → point at --help instead of failing later with a mystery.
+if [[ $# -eq 0 ]]; then
+  echo "try config-delivery.sh --help"
+  exit 1
+fi
 
 PORT=443
 TTL=600
@@ -33,11 +38,25 @@ CERT=""
 KEY=""
 FILE=""
 
+print_help() {
+  cat <<'HELP'
+##help##
+  --port N        listen port (default 443, 1-65535, <1024 needs root)
+  --ttl SEC       auto-delete the file after N seconds (default 600, >= 1)
+  --host HOST     host/IP shown in the link (default localhost, never auto-probed)
+  --cert FILE     PEM certificate; must be paired with --key (default: self-signed ECDSA)
+  --key FILE      PEM private key; must be paired with --cert
+  FILE            file to deliver (positional, e.g. serve ./config-client.json)
+##help##
+HELP
+}
+
 args=("$@")
 i=0
 while [[ $i -lt ${#args[@]} ]]; do
   a="${args[$i]}"
   case "$a" in
+    --help) print_help; exit 0 ;;
     --port) PORT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --ttl)  TTL="${args[$((i+1))]}";  i=$((i+2)) ;;
     --host) HOST="${args[$((i+1))]}"; i=$((i+2)) ;;
@@ -46,6 +65,35 @@ while [[ $i -lt ${#args[@]} ]]; do
     *)      FILE="$a"; i=$((i+1)) ;;
   esac
 done
+
+# dufs is the only runtime this script needs; if it is missing, print the full
+# install guide instead of a one-line dead end. Version note: v0.46.0 below is the
+# pinned default — swap in the latest release number from the dufs releases page.
+DUFS_BIN="${DUFS_BIN:-dufs}"
+if ! command -v "$DUFS_BIN" >/dev/null 2>&1; then
+  echo "error: dufs binary not found (looked for: $DUFS_BIN)"
+  case "$(uname -m)" in
+    x86_64)  DUF_TARGET="x86_64-unknown-linux-musl" ;;
+    aarch64) DUF_TARGET="aarch64-unknown-linux-musl" ;;
+    *)
+      echo "error: unsupported architecture: $(uname -m)"
+      echo "dufs publishes prebuilt musl binaries for x86_64 and aarch64 only;"
+      echo "build from source (cargo install dufs) or run this on a supported machine."
+      exit 1
+      ;;
+  esac
+  echo "install dufs for your arch: $(uname -m) -> $DUF_TARGET"
+  echo
+  echo "  1. Download (v0.46.0 — replace with the latest from"
+  echo "     https://github.com/sigoden/dufs/releases if you prefer):"
+  echo "     curl -fL -o /tmp/dufs.tar.gz https://github.com/sigoden/dufs/releases/download/v0.46.0/dufs-v0.46.0-$DUF_TARGET.tar.gz"
+  echo "  2. Extract the dufs binary into /usr/local/bin:"
+  echo "     tar -xzf /tmp/dufs.tar.gz -C /usr/local/bin"
+  echo "  3. Verify:"
+  echo "     dufs --version"
+  echo "  4. Re-run this script."
+  exit 1
+fi
 
 # ---------- Input guards ----------
 [[ -n "$FILE" && -f "$FILE" && -r "$FILE" ]] || { echo "error: file not readable: ${FILE:-<none>}"; exit 1; }
@@ -59,26 +107,31 @@ if [[ -n "$CERT" || -n "$KEY" ]]; then
   [[ -r "$CERT" && -r "$KEY" ]] || { echo "error: cert/key not readable"; exit 1; }
 fi
 
-# ---------- Port pre-check (bash /dev/tcp, zero-dep; no IP probing — loopback only) ----------
+# Port pre-check via bash /dev/tcp — pure-bash (no nc), loopback only, so it checks
+# availability without probing anything on the network.
 if (echo > /dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
   echo "error: port $PORT already in use — pick another with --port (or free the port)"
   exit 1
 fi
 
-# ---------- Random 8-char key (a-zA-Z0-9_-) ----------
+# Random 8-char key (a-zA-Z0-9_-) — the key IS the secret, see header. Using the key
+# as the filename means the URL path itself carries the access control.
 KEYSTR=""
 while [[ ${#KEYSTR} -lt 8 ]]; do
   KEYSTR+="$(printf '%s' "$(openssl rand -base64 9 | tr -dc 'A-Za-z0-9_-')")"
 done
 KEYSTR="${KEYSTR:0:8}"
 
-# ---------- Serve dir + file placement (key = URL) ----------
+# Serve from a throwaway temp dir so nothing is persisted on disk past the TTL
+# window; the trap removes it on every exit path (incl. SIGTERM'ed dufs).
 SRV_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$SRV_DIR"; }
 trap cleanup EXIT
 cp "$FILE" "$SRV_DIR/$KEYSTR"
 
-# ---------- TLS: real cert (paired, validated above) or fresh self-signed ECDSA ----------
+# TLS: use the caller's cert/key when both are given (paired + validated above),
+# else mint a fresh self-signed ECDSA one — dufs requires a cert for HTTPS and a
+# throwaway self-signed cert keeps delivery zero-config (clients just add -k).
 if [[ -n "$CERT" && -n "$KEY" ]]; then
   :
 else
@@ -99,7 +152,8 @@ echo "one-time download link: https://$SH:$PORT/$KEYSTR"
 echo "file auto-deletes after ${TTL}s; dir listing hidden; host is user-supplied (never auto-probed)"
 echo "client: curl -kOJ https://$SH:$PORT/$KEYSTR"
 
-# ---------- TTL auto-expiry (one-time semantics: file/service vanish after the window) ----------
+# TTL auto-expiry: kill the server after the window so the file and the process
+# both vanish — that is what makes the link one-time, not best-effort.
 ( sleep "$TTL"; kill "$DUFS_PID" 2>/dev/null ) &
 TTL_PID=$!
 trap 'kill $DUFS_PID $TTL_PID 2>/dev/null; rm -rf "$SRV_DIR"' EXIT

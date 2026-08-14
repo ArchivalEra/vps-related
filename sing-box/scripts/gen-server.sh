@@ -3,10 +3,18 @@
 # (fresh credentials, single output, zero persistence, multi-instance)
 #
 # Usage:
+#   bash gen-server.sh --help
 #   bash gen-server.sh [--domain D] [--reality-sni S] [--certpath P] [--keypath P]
 #                      [--protocols a,a,b,...] [--ports "port,port,..."] [--ss-methods "m1,m2,..."]
 #                      [--chain-ss-port N]
 #                      [--outputname NAME] [--outputpath DIR] [--debug] [--test]
+#
+# No flags: interactive prompts (TTY). No flags + non-TTY stdin (piped) prints
+# "try gen-server.sh --help" and exits 1 — flags are the only batch entry point.
+# --help prints the ##help## flag reference and exits 0.
+#
+# Default ports: reality 443/tcp, hysteria2 443/udp, vless-ws 8443, vless-grpc 8444,
+# anytls 8445, shadowtls 8446 (+ chained ss 8389), tuic 8447, shadowsocks 8388, naive 8448.
 #
 # Output: ONE server sing-box config.json. ANY protocol can appear multiple times —
 # each instance gets a unique tag (<proto> for the 1st, <proto>-N for repeats) and its
@@ -14,9 +22,9 @@
 # all credentials; nothing is persisted.
 #
 # Two domains (independent):
-#   gen-server.sh + secrets.lib.sh  → server config.json   (this script's only output)
+#   gen-server.sh + secrets.lib.sh → server config.json   (this script's only output)
 #   gen-client.sh + protocols.lib.sh → client config.json  (reads that server config)
-#   common.lib.sh is the shared output layer both libs source; the two domains do not
+#   Each lib ships its own output layer (ok/warn/err/die/debug); the two domains do not
 #   cross-import each other.
 #
 # Interactive mode (no --protocols): prompts for domain, protocol selection (numbers,
@@ -25,6 +33,7 @@
 # requires punycode.
 #
 # Args:
+#   --help            print the ##help## flag reference and exit 0
 #   --domain D        SNI for ws/grpc/naive (and connect address); default prompts
 #   --reality-sni S   reality handshake server SNI (default www.microsoft.com)
 #   --certpath P      TLS cert path (all TLS inbounds share it; default /your/cert/at/here)
@@ -73,9 +82,41 @@ declare -A PROTO_LAYER=(
   [shadowtls]=tcp [shadowsocks]=tcp [tuic]=udp [naive]=tcp
 )
 
+# ---------- --help: compact flag reference (##help## block, one flag per line) ----------
+help() {
+  cat <<'HELP'
+gen-server.sh — flag-driven server config generator (flags only; no positional args)
+
+##help##
+  --domain D        SNI for ws/grpc/naive (and connect address); default: interactive prompt
+  --reality-sni S   reality handshake server SNI (default: www.microsoft.com)
+  --certpath P      TLS cert path (default: /your/cert/at/here)
+  --keypath P       TLS key path (default: /your/key/at/here)
+  --protocols L     comma list, repeats allowed (e.g. shadowsocks,shadowsocks)
+  --ports P,P,...   comma port list, aligned positionally with --protocols
+  --ss-methods M    comma method list for ss instances (positional)
+  --chain-ss-port N shadowtls chained ss port (default: 8389; 0 = no chain)
+  --ech             add ECH (Encrypted Client Hello) to TLS-terminating inbounds
+  --outputname N    output filename (default: config-server.json; filename only, no path)
+  --outputpath D    output directory (default: this script's own dir)
+  --debug           diagnostic output (fully silent by default)
+  --test            self-check: generate to temp, sing-box check, exit
+##help##
+HELP
+}
+
+# ---------- No flags: TTY → interactive; non-TTY (piped) → point at --help ----------
+# `! -t 0` tells a human terminal apart from piped stdin: a pipe can never answer the
+# interactive prompts below, so fail fast instead of hanging until EOF.
+if [[ $# -eq 0 && ! -t 0 ]]; then
+  echo "try gen-server.sh --help"
+  exit 1
+fi
+
 # ---------- Parse args ----------
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --help) help; exit 0 ;;
     --domain) shift; DOMAIN="${1:-}" ;;
     --reality-sni) shift; REALITY_SNI="${1:-}" ;;
     --certpath) shift; CERT_FILE="${1:-}" ;;
@@ -94,10 +135,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# ---------- Source: common output layer first, then secrets library ----------
+# ---------- Source: secrets library (credentials + output layer) ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/common.lib.sh"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/secrets.lib.sh"
 
@@ -312,7 +351,8 @@ if [[ $TEST_MODE -ne 1 ]]; then
   if [[ "$OUTPUT_NAME" == */* ]]; then
     die1 "outputname must be a plain filename (no path): $OUTPUT_NAME"
   fi
-  # Overwrite protection: never clobber an existing config (the current one may be live on a server)
+  # Overwrite protection: never clobber an existing config — that file may be the live
+  # config a server is currently running, so replacing it silently would break the inbounds.
   if [[ -e "$SB_OUTPUT" ]]; then
     die1 "refusing to overwrite existing file: $SB_OUTPUT (delete it first, then re-run)"
   fi

@@ -2,14 +2,19 @@
 # gen-client.sh — server config.json → client client.json converter
 #
 # Usage:
+#   bash gen-client.sh --help
 #   bash gen-client.sh --from-server /path/config.json [--server host] [--outputname NAME] [--outputpath DIR] [--insecure] [--inbound tun|socks[:port]] [--debug]
 #   bash gen-client.sh --test                                    # run self-check assertions
+#
+# No flags: prompts for the connect address interactively (TTY). No flags + non-TTY
+# stdin (piped) prints "try gen-client.sh --help" and exits 1 — flags are the only batch mode.
 #
 # Input: server sing-box config.json (single input; contains all protocols/keys/ports)
 # Output: client client.json (import into official SFA/SFI from file)
 # No intermediate config file (config.gen.json / secrets.env removed).
 #
 # Args:
+#   --help            print the ##help## flag reference and exit 0
 #   --from-server PATH  server config.json path (required unless --test)
 #   --server host/IP    client connect address (domain for dual-stack; default prompts interactively, never probes local IP)
 #   --outputname NAME   output filename (default config-client.json; spaces/non-ASCII OK, filename only, no path)
@@ -44,9 +49,38 @@ ARG_INSECURE=0
 TEST_MODE=0
 DEBUG="${DEBUG:-0}"
 
+# ---------- --help: compact flag reference (##help## block, one flag per line) ----------
+# Converter: server config.json → client config.json (single input, single output).
+help() {
+  cat <<'HELP'
+gen-client.sh — converter: server config.json → client config.json (single input, single output)
+
+##help##
+  --from-server PATH  server config.json path (required unless --test)
+  --server host       client connect address (domain for dual-stack; default: interactive prompt)
+  --outputname NAME   output filename (default: config-client.json; filename only, no path)
+  --outputpath DIR    output directory (default: this script's own dir)
+  --insecure          add insecure:true when the cert is self-signed (omit with a real cert)
+  --inbound tun|socks[:port]
+                      inbound: tun (global) or socks:1080 for a local socks5 listener
+  --debug             diagnostic output (fully silent by default)
+  --test              run the assert_gen self-check then exit
+##help##
+HELP
+}
+
+# ---------- No flags: TTY → interactive; non-TTY (piped) → point at --help ----------
+# `! -t 0` tells a human terminal apart from piped stdin: a pipe can never answer the
+# connect-address prompt below, so fail fast instead of hanging until EOF.
+if [[ $# -eq 0 && ! -t 0 ]]; then
+  echo "try gen-client.sh --help"
+  exit 1
+fi
+
 # ---------- Parse args ----------
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --help) help; exit 0 ;;
     --from-server) shift; CONFIG_PATH="${1:-}" ;;
     --server) shift; SERVER="${1:-}" ;;
     --outputname) shift; OUTPUT_NAME="${1:-}" ;;
@@ -64,10 +98,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# ---------- Source: common output layer first, then conversion library ----------
+# ---------- Source: conversion library (helpers + render_from_server) ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/common.lib.sh"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/protocols.lib.sh"
 
@@ -128,6 +160,8 @@ if [[ -n "$SB_BIN" ]]; then
 fi
 
 # ---------- Client connect address (--server or interactive; never probes local IP; domain/IPv4/IPv6 all accepted) ----------
+# The connect address is a *client-side* fact: probing "our own" IP would only discover the
+# machine we happen to run on, not how the client will reach the server — so we always ask.
 if [[ -z "$SERVER" ]]; then
   read -r -p "Enter client connect address (domain dual-stack / IPv4 / IPv6): " SERVER
   [[ -n "$SERVER" ]] || die1 "must provide connect address (--server arg or interactive input)"
