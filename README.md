@@ -15,7 +15,7 @@ Everything VPS-related (scripts / configs / deployment notes), organized by proj
 | `gen-server.sh` + `secrets.lib.sh` | `sing-box/scripts/` | server config generator: interactive/flag-driven protocols (any protocol repeatable), fresh credentials each run, single output, zero persistence |
 | `gen-client.sh` + `protocols.lib.sh` | `sing-box/scripts/` | server `config.json` → client `client.json` converter (single input/output, no intermediate config) |
 | `common.lib.sh` | `sing-box/scripts/` | shared output tiers (ok/warn/err/die1/die2/debug), sourced by both libs |
-| `otd.py` | `share/` (top-level, independent) | one-time HTTPS file sharing — serve a file once via an 8-char key link |
+| `config-delivery` | `config-delivery/` (Go) | one-time HTTPS file sharing — single static binary, zero deps, serve a file N times via an 8-char key link |
 
 Two independent domains: `gen-server.sh` + `secrets.lib.sh` → server config.json (its only output);
 `gen-client.sh` + `protocols.lib.sh` reads that server config → client config.json. The domains
@@ -53,18 +53,24 @@ SB_OUTPUT=~/client.json bash gen-client.sh --from-server /etc/sing-box/config.js
 #   --debug: diagnostics (fully silent by default); --test: self-check
 ```
 
-### 2. One-time HTTPS file sharing (QUIC preferred)
+### 2. One-time config delivery (config-delivery, Go)
 
 ```bash
-# server side — serve the generated client json once:
-cd share
-python3 otd.py serve ./config-client.json --port 443 --name client-config.json
+# build once, deploy anywhere (single static binary, zero deps, no runtime):
+cd config-delivery
+go build -o config-delivery .                    # or cross-compile:
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o config-delivery-linux-arm64 .
+
+# server side — deliver the generated client json N times (default 1 = one-time):
+./config-delivery serve ./config-client.json --port 443 --name client-config.json
 #   → prints: one-time download link:  https://<host>:443/<8-char-key>
+#   --count N: allow N downloads (default 1; <1 rejected); exhausted → HTTP 410
+#   --cert/--key: real cert+key (default: fresh self-signed ECDSA → clients use -k)
 # client side — open the link in a browser (downloads with the given name), or:
 curl -kOJ https://<host>:443/<8-char-key>     # self-signed → -k
-#   one-time: the key works exactly once (2nd request → 410), then invalidated
-#   QUIC/HTTP3 preferred (aioquic installed → HTTP/3 on 443/udp), else HTTPS fallback with a warning
 ```
+
+Old Python implementation archived at `archived/otd/otd.py` (superseded — no runtime, no deps needed now).
 
 See `sing-box/docs/runbook.md` (deployment) + `sing-box/docs/protocol-maintenance.md` (maintenance).
 

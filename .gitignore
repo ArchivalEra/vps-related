@@ -37,3 +37,9 @@ sing-box/scripts/config-client.json
 sing-box/scripts/config-server.json
 # Python bytecode cache (otd.py in share/)
 share/__pycache__/
+# Archived otd.py (kept for reference; old one-time sharing, superseded by config-delivery)
+archived/
+# config-delivery built binaries (source tracked, cross-compiled artifacts are downloads)
+config-delivery/config-delivery
+config-delivery/config-delivery-linux-amd64
+config-delivery/config-delivery-linux-arm64
