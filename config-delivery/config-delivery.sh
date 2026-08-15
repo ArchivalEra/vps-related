@@ -176,17 +176,19 @@ else
     -keyout "$KEY" -out "$CERT" -days 1 -subj "/CN=config-delivery" >/dev/null 2>&1
 fi
 
-"$DUFS_BIN" "$SRV_DIR" -A --tls-cert "$CERT" --tls-key "$KEY" --port "$PORT" --hidden '*' \
+# dufs is detached (setsid) so the script can exit without taking the terminal
+# down with it — the TTL steward below owns killing dufs + cleaning the temp dir.
+setsid "$DUFS_BIN" "$SRV_DIR" -A --tls-cert "$CERT" --tls-key "$KEY" --port "$PORT" --hidden '*' \
   >"$SRV_DIR/dufs.log" 2>&1 &
 DUFS_PID=$!
-trap 'kill $DUFS_PID 2>/dev/null; rm -rf "$SRV_DIR"' EXIT
 # Startup self-check: the process being alive is not enough, and neither is the
 # port answering — the LINK must actually serve. curl downloads the key URL
-# locally (self-signed cert → -k, loopback) and only then is the link printed.
+# locally (self-signed cert → -k, loopback) with a hard timeout so a stuck
+# handshake cannot hang the script silently. Only on 200 is the link printed.
 SELFCHECK_URL="https://127.0.0.1:$PORT/$KEYSTR"
 SELF_OK=0
 for _ in 1 2 3 4 5; do
-  if curl -ks -o /dev/null -w "%{http_code}" "$SELFCHECK_URL" 2>/dev/null | grep -q "^200"; then
+  if curl -ks --max-time 2 -o /dev/null -w "%{http_code}" "$SELFCHECK_URL" 2>/dev/null | grep -q "^200"; then
     SELF_OK=1; break
   fi
   sleep 0.3
@@ -194,6 +196,8 @@ done
 if [[ $SELF_OK -eq 0 ]] || ! kill -0 "$DUFS_PID" 2>/dev/null; then
   echo "error: dufs failed to serve the link on port $PORT (self-check):" >&2
   cat "$SRV_DIR/dufs.log" >&2
+  kill "$DUFS_PID" 2>/dev/null
+  rm -rf "$SRV_DIR"
   exit 1
 fi
 
@@ -201,12 +205,10 @@ SH="${HOST:-localhost}"
 echo "one-time download link: https://$SH:$PORT/$KEYSTR"
 echo "file auto-deletes after ${TTL}s; dir listing hidden; host is user-supplied (never auto-probed)"
 echo "client: curl -kOJ https://$SH:$PORT/$KEYSTR"
-# TTL auto-expiry: kill the server after the window so the file and the process
-# both vanish — that is what makes the link one-time, not best-effort.
-( sleep "$TTL"; kill "$DUFS_PID" 2>/dev/null ) &
-TTL_PID=$!
-trap 'kill $DUFS_PID $TTL_PID 2>/dev/null; rm -rf "$SRV_DIR"' EXIT
-
-wait "$DUFS_PID" 2>/dev/null
-kill "$TTL_PID" 2>/dev/null
-rm -rf "$SRV_DIR"
+# TTL steward: sleep the window, then kill dufs and remove the temp dir (the file,
+# the throwaway cert, the log) — this is what makes the link one-time and the
+# delivery zero-residue. Runs detached so the script can exit and free the terminal.
+trap - EXIT
+( sleep "$TTL"; kill "$DUFS_PID" 2>/dev/null; rm -rf "$SRV_DIR" ) &
+disown 2>/dev/null || true
+exit 0
