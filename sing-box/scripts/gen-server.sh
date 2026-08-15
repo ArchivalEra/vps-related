@@ -147,6 +147,17 @@ fi
 [[ -r "$SCRIPT_DIR/secrets.lib.sh" ]] || die1 "secrets.lib.sh not readable (permission): $SCRIPT_DIR/secrets.lib.sh"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/secrets.lib.sh"
+# The lib may exist but be an OLD version (pre-output-layer) — then die1/ok etc.
+# are undefined and every later call fails with a cryptic "command not found".
+# Fail once, right here, with the actual fix (re-fetch the latest pair).
+if ! declare -F die1 >/dev/null 2>&1 || ! declare -F ok >/dev/null 2>&1; then
+  echo "error: $SCRIPT_DIR/secrets.lib.sh is outdated — it lacks the output layer" >&2
+  echo "  (ok/warn/err/die1/die2/debug). Re-fetch the latest scripts from the repo:" >&2
+  echo "  curl -fsSL -o /tmp/vps.tar.gz https://codeload.github.com/ArchivalEra/vps-related/tar.gz/refs/heads/main" >&2
+  echo "  rm -rf /tmp/vps-related-main && tar xzf /tmp/vps.tar.gz -C /tmp" >&2
+  echo "  cp /tmp/vps-related-main/sing-box/scripts/gen-server.sh /tmp/vps-related-main/sing-box/scripts/secrets.lib.sh \$SCRIPT_DIR/" >&2
+  exit 1
+fi
 
 # ---------- Temp dir (isolates check stderr; zero residue on exit) ----------
 TMPD="$(mktemp -d)" || die1 "cannot create temp dir"

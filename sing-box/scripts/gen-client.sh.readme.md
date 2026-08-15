@@ -30,6 +30,9 @@ bash gen-client.sh --from-server /path/config-server.json \
 
 - `sing-box` binary (version detection + `sing-box check`)
 - `python3` (parses the server config.json)
+- `protocols.lib.sh` MUST be the same-version sibling — the entry script checks after
+  sourcing that the output layer (ok/warn/err/die1/die2/debug) exists, and fails with
+  a re-fetch command if the lib is an outdated pre-output-layer version.
 
 ## Notes
 
