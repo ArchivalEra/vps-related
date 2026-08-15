@@ -67,8 +67,8 @@ while [[ $i -lt ${#args[@]} ]]; do
     --port) PORT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --ttl)  TTL="${args[$((i+1))]}";  i=$((i+2)) ;;
     --host) HOST="${args[$((i+1))]}"; i=$((i+2)) ;;
-    --v4) [[ -n "$FAMILY" && "$FAMILY" != "v4" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v4" ;;
-    --v6) [[ -n "$FAMILY" && "$FAMILY" != "v6" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v6" ;;
+    --v4) [[ -n "$FAMILY" && "$FAMILY" != "v4" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v4"; i=$((i+1)) ;;
+    --v6) [[ -n "$FAMILY" && "$FAMILY" != "v6" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v6"; i=$((i+1)) ;;
     --cert) CERT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --key)  KEY="${args[$((i+1))]}";  i=$((i+2)) ;;
     *)      FILE="$a"; i=$((i+1)) ;;
@@ -131,11 +131,11 @@ if [[ -n "$HOST" ]]; then
   elif [[ -n "$FAMILY" ]]; then
     # explicit family requested → resolve the domain to an IP
     if [[ "$FAMILY" == "v6" ]]; then
-      HOST="$(getent ahosts "$HOST" 2>/dev/null | awk '!seen[$1]++ { if ($1 ~ /:/) print $1 }' | head -1)"
+      HOST="$(timeout 5 getent ahosts "$HOST" 2>/dev/null | awk '!seen[$1]++ { if ($1 ~ /:/) print $1 }' | head -1)"
       [[ -n "$HOST" ]] || { echo "error: cannot resolve an IPv6 for $HOST (getent ahosts)"; exit 1; }
       HOST="[$HOST]"
     else
-      HOST="$(getent ahosts "$HOST" 2>/dev/null | awk '!seen[$1]++ { if ($1 !~ /:/) print $1 }' | head -1)"
+      HOST="$(timeout 5 getent ahosts "$HOST" 2>/dev/null | awk '!seen[$1]++ { if ($1 !~ /:/) print $1 }' | head -1)"
       [[ -n "$HOST" ]] || { echo "error: cannot resolve an IPv4 for $HOST (getent ahosts)"; exit 1; }
     fi
   fi
