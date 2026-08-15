@@ -5,16 +5,17 @@
 # serving, native TLS, streaming — as a single static musl binary (x86_64 + arm64).
 # We wrap it instead of writing our own server because dufs already owns all the
 # hard parts; the wrapper only adds the one-time semantics dufs lacks: a random
-# key URL, with an optional TTL auto-destruct or an infinite share until Ctrl+C.
+# key URL, with a TTL auto-destruct (default 60s) or an infinite --hold share until
+# Ctrl+C.
 #
 # Key decisions, and why:
 #   - Random 8-char key URL: the key IS the secret. A path without it is a 404 and
 #     the directory listing is hidden, so the link is effectively private and
 #     one-time without any auth setup.
-#   - Optional TTL auto-expiry: with --ttl N the served processes are killed and the
-#     temp dir removed after N seconds, so the delivered file does not linger. Without
-#     --ttl the share is infinite — the script holds the terminal until Ctrl+C, then
-#     cleans up identically (zero residue either way).
+#   - TTL auto-expiry by default: after TTL seconds (default 60, or --ttl N) the dufs
+#     we started is killed and the temp dir removed, so the delivered file does not
+#     linger. With --hold the share is infinite — the script holds the terminal until
+#     Ctrl+C, then cleans up identically (zero residue either way).
 #   - Port pre-check via bash /dev/tcp: pure-bash (no nc dependency) and loopback
 #     only — it checks availability, it never probes anything external.
 #   - --host is user-supplied only, never auto-probed: the script cannot know which
@@ -27,7 +28,7 @@
 #     browsers show zero warnings) — no domain or open inbound port needed. The
 #     local dufs backend then stays plain HTTP on a random loopback port.
 #
-# Usage: config-delivery.sh [serve] <file> [--port N] [--ttl SEC] [--host HOST [--v4|--v6]]
+# Usage: config-delivery.sh [serve] <file> [--port N] [--ttl SEC|--hold] [--host HOST [--v4|--v6]]
 #                           [--cert FILE] [--key FILE] [--argo]   (details: --help)
 # Env: DUFS_BIN (path to dufs binary; default: dufs on PATH)
 
@@ -40,7 +41,9 @@ if [[ $# -eq 0 ]]; then
 fi
 
 PORT=443
-TTL=""             # unset = infinite share (Ctrl+C to stop); --ttl N = auto-delete
+TTL=60             # default = 60s auto-delete; --ttl N overrides
+TTL_SET=0          # 1 = --ttl given explicitly (mutually exclusive with --hold)
+HOLD=0             # 1 = --hold: infinite share until Ctrl+C
 HOST=""
 FAMILY=""          # "" = auto (IPv4 first), "v4" = force IPv4, "v6" = force IPv6
 CERT=""
@@ -53,8 +56,9 @@ print_help() {
 ##help##
   --port N        listen port (default 443, 1-65535, <1024 needs root; ignored in
                   --argo mode, where the backend binds a random loopback port)
-  --ttl SEC       auto-delete the file after N seconds (>= 1); omitted = infinite
-                  share — the script holds the terminal until Ctrl+C
+  --ttl SEC       auto-delete the file after N seconds (default 60)
+  --hold          hold the terminal until Ctrl+C (infinite share; mutually
+                  exclusive with --ttl)
   --host NAME     host in the link — an IP literal (v6 bracketed automatically), or a
                   domain kept as-is (dual-stack: each client resolves it with its own
                   DNS). never auto-probed, user-supplied only. disabled in --argo mode.
@@ -90,7 +94,7 @@ pick_random_port() {
   done
 }
 
-# dufs is the only runtime this script needs (besides cloudflared in --argo mode);
+# dufs is the only runtime this script needs (cloudflared only when --argo is active);
 # if it is missing, print the full install guide instead of a one-line dead end.
 # Version note: v0.46.0 below is the pinned default — swap in the latest release
 # number from the dufs releases page.
@@ -119,14 +123,24 @@ dufs_install_guide() {
   exit 1
 }
 
-# Zero-residue cleanup: kill dufs (+cloudflared in --argo mode) and remove the temp
-# dir. This is the single cleanup used by the INT/TERM trap (infinite-mode Ctrl+C)
-# and by every failure path. Idempotent, so it is safe to run twice.
+# Zero-residue cleanup: kill only the dufs we started (never cloudflared — a quick
+# tunnel is meant to outlive this script, the user removes it manually) and remove
+# the temp dir. One cleanup for the INT/TERM trap (--hold ^C), the TTL steward and
+# every failure path. Idempotent, so it is safe to run twice. In --argo mode it ends
+# with a blue reminder to clean the tunnel up manually.
 cleanup() {
   local code="${1:-130}"
-  [[ -n "${DUFS_PID:-}" ]] && kill "$DUFS_PID" 2>/dev/null
-  [[ -n "${CFD_PID:-}" ]] && kill "$CFD_PID" 2>/dev/null
+  if [[ -n "${DUFS_PID:-}" ]]; then
+    if kill -0 "$DUFS_PID" 2>/dev/null; then
+      kill "$DUFS_PID" 2>/dev/null
+    else
+      printf "\033[34mcan't find dufs started by config-delivery.sh (if you killed it that's fine)\033[0m\n"
+    fi
+  fi
   [[ -n "${SRV_DIR:-}" ]] && rm -rf "$SRV_DIR"
+  if [[ $ARGO -eq 1 ]]; then
+    printf "\033[34margo quick tunnel may still be running — remove manually, or try: sudo systemctl restart cloudflared\033[0m\n"
+  fi
   exit "$code"
 }
 
@@ -164,16 +178,23 @@ while [[ $i -lt ${#args[@]} ]]; do
   case "$a" in
     --help) print_help; exit 0 ;;
     --port) PORT="${args[$((i+1))]}"; i=$((i+2)) ;;
-    --ttl)  TTL="${args[$((i+1))]}";  i=$((i+2)) ;;
+    --ttl)  TTL="${args[$((i+1))]}"; TTL_SET=1; i=$((i+2)) ;;
     --host) HOST="${args[$((i+1))]}"; i=$((i+2)) ;;
     --v4) [[ -n "$FAMILY" && "$FAMILY" != "v4" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v4"; i=$((i+1)) ;;
     --v6) [[ -n "$FAMILY" && "$FAMILY" != "v6" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v6"; i=$((i+1)) ;;
     --cert) CERT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --key)  KEY="${args[$((i+1))]}";  i=$((i+2)) ;;
     --argo) ARGO=1; i=$((i+1)) ;;
+    --hold) HOLD=1; i=$((i+1)) ;;
     *)      FILE="$a"; i=$((i+1)) ;;
   esac
 done
+
+# --hold and --ttl are the two sharing modes; both given is a contradiction.
+if [[ $HOLD -eq 1 && $TTL_SET -eq 1 ]]; then
+  echo "error: --hold and --ttl are mutually exclusive — pick one"
+  exit 1
+fi
 
 # ---------- --argo mode: guards first ----------
 # The quick tunnel owns the public URL + cert, so flags that steer a direct link or
@@ -212,10 +233,8 @@ fi
 # ---------- Input guards ----------
 [[ -n "$FILE" && -f "$FILE" && -r "$FILE" ]] || { echo "error: file not readable: ${FILE:-<none>}"; exit 1; }
 [[ -s "$FILE" ]] || echo "warning: file is empty: $FILE"
-if [[ -n "$TTL" ]]; then
-  [[ "$TTL" =~ ^[0-9]+$ && "$TTL" -ge 1 ]] || { echo "error: --ttl must be an integer >= 1 (got: $TTL)"; exit 1; }
-  [[ "$TTL" -gt 3600 ]] && echo "warning: TTL ${TTL}s is long — the link stays live until then"
-fi
+[[ "$TTL" =~ ^[0-9]+$ && "$TTL" -ge 1 ]] || { echo "error: --ttl must be an integer >= 1 (got: $TTL)"; exit 1; }
+[[ "$TTL" -gt 3600 ]] && echo "warning: TTL ${TTL}s is long — the link stays live until then"
 [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1 && "$PORT" -le 65535 ]] || { echo "error: --port must be an integer 1-65535 (got: ${PORT:-<none>})"; exit 1; }
 [[ "$PORT" -lt 1024 ]] && echo "note: port $PORT < 1024 — dufs may need root to bind"
 # TLS three-state — --cert/--key are no longer required:
@@ -276,7 +295,7 @@ done
 KEYSTR="${KEYSTR:0:8}"
 
 # Serve from a throwaway temp dir so nothing is persisted on disk past the share —
-# the TTL steward (TTL mode) or the INT/TERM cleanup (infinite mode) removes it.
+# the TTL steward (TTL mode) or the INT/TERM cleanup (--hold mode) removes it.
 SRV_DIR="$(mktemp -d)"
 cp "$FILE" "$SRV_DIR/$KEYSTR"
 
@@ -290,7 +309,7 @@ if [[ "$TLS_MODE" == "self-signed" ]]; then
 fi
 
 # dufs is detached (setsid) so the TTL path can hand the terminal back immediately;
-# in infinite mode the script keeps the terminal foreground and waits on this PID.
+# in --hold mode the script keeps the terminal foreground and waits on this PID.
 # TLS states "http" (plaintext — also the --argo backend) run dufs without any
 # --tls-cert/--tls-key; in --argo mode the backend additionally binds loopback only.
 if [[ "$TLS_MODE" == "http" && $ARGO -eq 1 ]]; then
@@ -302,13 +321,15 @@ else
 fi
 setsid "${DUF_CMD[@]}" >"$SRV_DIR/dufs.log" 2>&1 &
 DUFS_PID=$!
-# From here on, ^C (infinite mode) and every failure path run the same zero-residue
-# cleanup: kill dufs (+cloudflared in --argo mode) and remove the temp dir.
+# From here on, ^C (--hold mode), the TTL steward and every failure path run the same
+# zero-residue cleanup: kill dufs (cloudflared is left to the user) and remove the
+# temp dir.
 trap 'cleanup 130' INT TERM
 
 # ---------- --argo mode: cloudflared quick tunnel ----------
 # dufs is up (plain HTTP, loopback); now hand the public side to cloudflared. It is
-# detached with setsid so it outlives this script; the TTL steward kills it.
+# detached with setsid so it outlives this script and is never killed here — the
+# cleanup reminder tells the user to remove the tunnel manually.
 CFD_PID=""
 PUB_URL=""
 if [[ $ARGO -eq 1 ]]; then
@@ -361,25 +382,24 @@ if ! verify_link "$LINK_URL"; then
 fi
 
 # Two sharing modes, one cleanup:
-#   --ttl N  -> TTL self-destruct: detach a steward that sleeps N seconds, then
-#               kills the served processes and removes the temp dir. The script
-#               returns 0 immediately and hands the terminal back.
-#   no --ttl -> infinite share: the script stays in the foreground and waits on the
-#               served processes, holding the terminal until the user hits ^C — the
-#               INT/TERM trap above then runs the same cleanup (kill + rm + exit 130).
-if [[ -n "$TTL" ]]; then
-  echo "file auto-deletes after ${TTL}s"
-  PROCS=( "$DUFS_PID" )
-  [[ $ARGO -eq 1 ]] && PROCS+=( "$CFD_PID" )
-  ( sleep "$TTL"; kill "${PROCS[@]}" 2>/dev/null; rm -rf "$SRV_DIR" ) &
-  disown 2>/dev/null || true
-  exit 0
+#   --hold   -> infinite share: the script stays in the foreground and waits on dufs
+#               (and on cloudflared when --argo is active), holding the terminal
+#               until the user hits ^C — the INT/TERM trap above then runs the same
+#               cleanup (kill dufs + rm + exit 130).
+#   default  -> TTL self-destruct (60s or --ttl N): detach a steward that sleeps N
+#               seconds, then kills dufs, removes the temp dir and (in --argo mode)
+#               prints the tunnel cleanup reminder. The script returns 0 immediately
+#               and hands the terminal back.
+if [[ $HOLD -eq 1 ]]; then
+  echo "Ctrl+C to stop sharing (--hold)"
+  wait "$DUFS_PID"
+  [[ $ARGO -eq 1 ]] && wait "$CFD_PID"
+  # Reaching this line means the server exited on its own (e.g. killed externally);
+  # clean the temp dir and hand the terminal back.
+  cleanup 0
 fi
 
-# Infinite share — hold the terminal until Ctrl+C.
-echo "Ctrl+C to stop sharing (no TTL)"
-wait "$DUFS_PID"
-[[ $ARGO -eq 1 ]] && wait "$CFD_PID"
-# Reaching this line means the server exited on its own (e.g. killed externally);
-# clean the temp dir and hand the terminal back.
-cleanup 0
+echo "file auto-deletes after ${TTL}s"
+( sleep "$TTL"; cleanup 0 ) &
+disown 2>/dev/null || true
+exit 0

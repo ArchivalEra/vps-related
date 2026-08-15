@@ -1,20 +1,22 @@
 # config-delivery.sh — one-time file delivery over dufs
 
 **config-delivery.sh + dufs exists for one thing only: one-time file delivery via a
-random-key URL that self-destructs after a TTL — or, with no `--ttl`, runs as an
-infinite share you stop with `Ctrl+C`.**
+random-key URL that self-destructs after a TTL (default 60s, or `--ttl N`) — or,
+with `--hold`, runs as an infinite share you stop with `Ctrl+C`.**
 
 ## Usage
 
 ```
 config-delivery.sh serve ./config-client.json --port 443 --ttl 600 --host your.domain   # TTL self-destruct
-config-delivery.sh serve ./config-client.json --port 443 --host your.domain             # infinite share (Ctrl+C)
+config-delivery.sh serve ./config-client.json --port 443 --hold --host your.domain      # infinite share (Ctrl+C)
+config-delivery.sh serve ./config-client.json --port 443 --host your.domain             # default: 60s TTL self-destruct
 ```
 
 | flag | meaning |
 |------|---------|
 | `--port N` | listen port (default 443, 1-65535; < 1024 needs root). Ignored in `--argo` mode, where the backend binds a random loopback port. |
-| `--ttl SEC` | optional auto-delete: the file is served for N seconds (>= 1) and then self-destructs. Omitted → **infinite share** — the script holds the terminal until `Ctrl+C` stops sharing (and cleans up). |
+| `--ttl SEC` | auto-delete: the file is served for N seconds (>= 1) and then self-destructs. Default **60** when neither `--ttl` nor `--hold` is given. Mutually exclusive with `--hold`. |
+| `--hold` | **infinite share** — the script holds the terminal until `Ctrl+C` stops sharing (and cleans up). Mutually exclusive with `--ttl`. |
 | `--host NAME` | host in the link — an IP literal (v6 bracketed automatically), or a domain kept as-is (dual-stack: each client resolves it with its own DNS); never auto-probed. Disabled in `--argo` mode. |
 | `--v4` | with `--host DOMAIN`: force-resolve to an IPv4 for an IP link (errors if no IPv4); mutually exclusive with `--v6`. Disabled in `--argo` mode. |
 | `--v6` | with `--host DOMAIN`: force-resolve to an IPv6 for an IP link (errors if no IPv6); mutually exclusive with `--v4`. Disabled in `--argo` mode. |
@@ -83,13 +85,15 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
 - **Why a random key URL?** The 8-char key (`a-zA-Z0-9_-`) is the secret: without it
   the path is a 404 and the directory listing is hidden, so the link is effectively
   private and one-time without any auth setup.
-- **TTL self-destruct vs infinite share.** With `--ttl N`, after N seconds the served
-  processes (dufs, plus cloudflared in `--argo` mode) are killed and the temp dir is
-  removed, so the delivered file does not linger on the machine after delivery. With
-  no `--ttl`, the share is **infinite**: the script stays in the foreground, holds
-  the terminal, and prints `Ctrl+C to stop sharing (no TTL)`. `^C` runs the same
-  cleanup (kill dufs/cloudflared + remove the temp dir + exit 130), so both paths end
-  with zero residue. Nothing is persisted beyond the temp dir either way.
+- **TTL self-destruct vs `--hold` infinite share.** By default the file is served for
+  60s and then self-destructs; `--ttl N` changes the window (N >= 1). After the TTL
+  elapses, a detached steward kills only the dufs this script started and removes the
+  temp dir, so the delivered file does not linger on the machine after delivery; the
+  script returns to the shell immediately. With `--hold`, the share is **infinite**:
+  the script stays in the foreground, holds the terminal, and prints
+  `Ctrl+C to stop sharing (--hold)`. `^C` runs the same cleanup (kill dufs + remove
+  the temp dir + exit 130), so both paths end with zero residue. Nothing is persisted
+  beyond the temp dir either way. `--ttl` and `--hold` are mutually exclusive.
 - **Why an `--argo` quick-tunnel mode?** A direct link needs a reachable host/IP and
   an open inbound port (often 443 — root — for the cert to match). A cloudflared
   quick tunnel removes both: `cloudflared tunnel --url http://127.0.0.1:PORT` gives
@@ -100,7 +104,14 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
   reachable solely through the tunnel. Because the tunnel owns the public URL and
   cert, `--host`/`--v4`/`--v6`/`--cert`/`--key` are refused with an error in
   `--argo` mode. The trycloudflare URL is polled from the cloudflared log (up to
-  ~20s); if it never appears, the log tail is printed and everything is cleaned up.
+  ~20s); if it never appears, the log tail is printed and the failure path cleans up
+  (dufs + temp dir, with the tunnel reminder).
+- **This script never kills cloudflared.** The quick tunnel is launched detached
+  (`setsid`) on purpose — it is allowed to outlive config-delivery.sh, because the
+  tunnel may keep serving other things. Cleanup (the TTL steward, `^C`, or a failure
+  path) kills only the dufs this script started. In `--argo` mode every cleanup ends
+  with a blue reminder: `argo quick tunnel may still be running — remove manually, or
+  try: sudo systemctl restart cloudflared`.
 - **TLS three states.** `--cert`/`--key` are optional, and there are three outcomes:
   1. **Real cert** — both paths are given and readable: dufs serves HTTPS with them
      end to end. Clients trust the cert directly (no `-k`).
