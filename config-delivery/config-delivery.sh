@@ -118,8 +118,11 @@ if [[ -n "$RESOLVE" && -n "$HOST" ]]; then
 fi
 # --resolve: turn the user's domain into an IP (getent is glibc, no new deps) so the
 # link carries an IP instead of a sniffable domain SNI. v6 links need [brackets].
+# Prefer IPv4, fall back to IPv6: a v4-less host still gets a working link, and a
+# v6-only client can still use the v6 result if that is all the host has.
 if [[ -n "$RESOLVE" ]]; then
-  RESOLVED_IP="$(getent ahosts "$RESOLVE" 2>/dev/null | awk 'NR==1{print $1}')"
+  RESOLVED_IP="$(getent ahosts "$RESOLVE" 2>/dev/null | awk '!seen[$1]++ { if ($1 !~ /:/) print $1 }' | head -1)"
+  [[ -z "$RESOLVED_IP" ]] && RESOLVED_IP="$(getent ahosts "$RESOLVE" 2>/dev/null | awk '!seen[$1]++ { print $1 }' | head -1)"
   [[ -n "$RESOLVED_IP" ]] || { echo "error: cannot resolve $RESOLVE (getent ahosts)"; exit 1; }
   HOST="$RESOLVED_IP"
   [[ "$HOST" == *:* ]] && HOST="[$HOST]"   # IPv6 → [2001:db8::1]
@@ -163,8 +166,19 @@ fi
   >"$SRV_DIR/dufs.log" 2>&1 &
 DUFS_PID=$!
 trap 'kill $DUFS_PID 2>/dev/null; rm -rf "$SRV_DIR"' EXIT
-sleep 0.5
-kill -0 "$DUFS_PID" 2>/dev/null || { echo "error: dufs failed to start:"; cat "$SRV_DIR/dufs.log"; exit 1; }
+# Startup self-check: the process being alive is not enough (dufs can survive a
+# failed bind for a moment) — the link is only printed once the port actually
+# answers. Loopback /dev/tcp, same zero-dep style as the port pre-check.
+UP=0
+for _ in 1 2 3 4 5; do
+  if (echo > /dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then UP=1; break; fi
+  sleep 0.3
+done
+if [[ $UP -eq 0 ]] || ! kill -0 "$DUFS_PID" 2>/dev/null; then
+  echo "error: dufs failed to start on port $PORT:" >&2
+  cat "$SRV_DIR/dufs.log" >&2
+  exit 1
+fi
 
 SH="${HOST:-localhost}"
 echo "one-time download link: https://$SH:$PORT/$KEYSTR"
