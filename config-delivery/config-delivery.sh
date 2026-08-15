@@ -5,14 +5,16 @@
 # serving, native TLS, streaming — as a single static musl binary (x86_64 + arm64).
 # We wrap it instead of writing our own server because dufs already owns all the
 # hard parts; the wrapper only adds the one-time semantics dufs lacks: a random
-# key URL that auto-destructs after a TTL.
+# key URL, with an optional TTL auto-destruct or an infinite share until Ctrl+C.
 #
 # Key decisions, and why:
 #   - Random 8-char key URL: the key IS the secret. A path without it is a 404 and
 #     the directory listing is hidden, so the link is effectively private and
 #     one-time without any auth setup.
-#   - TTL auto-expiry: after N seconds the server process is killed and the temp
-#     dir removed, so the delivered file does not linger on the machine.
+#   - Optional TTL auto-expiry: with --ttl N the served processes are killed and the
+#     temp dir removed after N seconds, so the delivered file does not linger. Without
+#     --ttl the share is infinite — the script holds the terminal until Ctrl+C, then
+#     cleans up identically (zero residue either way).
 #   - Port pre-check via bash /dev/tcp: pure-bash (no nc dependency) and loopback
 #     only — it checks availability, it never probes anything external.
 #   - --host is user-supplied only, never auto-probed: the script cannot know which
@@ -38,7 +40,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 PORT=443
-TTL=600
+TTL=""             # unset = infinite share (Ctrl+C to stop); --ttl N = auto-delete
 HOST=""
 FAMILY=""          # "" = auto (IPv4 first), "v4" = force IPv4, "v6" = force IPv6
 CERT=""
@@ -51,7 +53,8 @@ print_help() {
 ##help##
   --port N        listen port (default 443, 1-65535, <1024 needs root; ignored in
                   --argo mode, where the backend binds a random loopback port)
-  --ttl SEC       auto-delete the file after N seconds (default 600, >= 1)
+  --ttl SEC       auto-delete the file after N seconds (>= 1); omitted = infinite
+                  share — the script holds the terminal until Ctrl+C
   --host NAME     host in the link — an IP literal (v6 bracketed automatically), or a
                   domain kept as-is (dual-stack: each client resolves it with its own
                   DNS). never auto-probed, user-supplied only. disabled in --argo mode.
@@ -116,6 +119,44 @@ dufs_install_guide() {
   exit 1
 }
 
+# Zero-residue cleanup: kill dufs (+cloudflared in --argo mode) and remove the temp
+# dir. This is the single cleanup used by the INT/TERM trap (infinite-mode Ctrl+C)
+# and by every failure path. Idempotent, so it is safe to run twice.
+cleanup() {
+  local code="${1:-130}"
+  [[ -n "${DUFS_PID:-}" ]] && kill "$DUFS_PID" 2>/dev/null
+  [[ -n "${CFD_PID:-}" ]] && kill "$CFD_PID" 2>/dev/null
+  [[ -n "${SRV_DIR:-}" ]] && rm -rf "$SRV_DIR"
+  exit "$code"
+}
+
+# Unified link verification for the FINAL url — http, https and argo all funnel
+# through here before the link is printed. Three steps:
+#   1) a live 3s countdown, which also doubles as the argo edge warm-up window (a
+#      fresh trycloudflare URL is typically unreachable for the first ~1-2s: 530,
+#      then 200);
+#   2) up to 3 curl probes for HTTP 200 — curl is always -k because we verify the
+#      link ANSWERS, not that its cert is trusted, and --max-time 2 keeps each probe
+#      from hanging;
+#   3) ~2s between failed probes.
+# Returns 0 on the first 200, 1 when all three attempts fail.
+verify_link() {
+  local url="$1"
+  local i code
+  for i in 3 2 1; do
+    echo "checking link in $i..."
+    sleep 1
+  done
+  for i in 1 2 3; do
+    code="$(curl -k --max-time 2 -sS -o /dev/null -w '%{http_code}' "$url")"
+    if [[ "$code" == "200" ]]; then
+      return 0
+    fi
+    [[ $i -lt 3 ]] && { echo "link check attempt $i/3 returned $code — retrying"; sleep 2; }
+  done
+  return 1
+}
+
 args=("$@")
 i=0
 while [[ $i -lt ${#args[@]} ]]; do
@@ -171,8 +212,10 @@ fi
 # ---------- Input guards ----------
 [[ -n "$FILE" && -f "$FILE" && -r "$FILE" ]] || { echo "error: file not readable: ${FILE:-<none>}"; exit 1; }
 [[ -s "$FILE" ]] || echo "warning: file is empty: $FILE"
-[[ "$TTL" =~ ^[0-9]+$ && "$TTL" -ge 1 ]] || { echo "error: --ttl must be an integer >= 1 (got: ${TTL:-<none>})"; exit 1; }
-[[ "$TTL" -gt 3600 ]] && echo "warning: TTL ${TTL}s is long — the link stays live until then"
+if [[ -n "$TTL" ]]; then
+  [[ "$TTL" =~ ^[0-9]+$ && "$TTL" -ge 1 ]] || { echo "error: --ttl must be an integer >= 1 (got: $TTL)"; exit 1; }
+  [[ "$TTL" -gt 3600 ]] && echo "warning: TTL ${TTL}s is long — the link stays live until then"
+fi
 [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1 && "$PORT" -le 65535 ]] || { echo "error: --port must be an integer 1-65535 (got: ${PORT:-<none>})"; exit 1; }
 [[ "$PORT" -lt 1024 ]] && echo "note: port $PORT < 1024 — dufs may need root to bind"
 # TLS three-state — --cert/--key are no longer required:
@@ -232,9 +275,8 @@ while [[ ${#KEYSTR} -lt 8 ]]; do
 done
 KEYSTR="${KEYSTR:0:8}"
 
-# Serve from a throwaway temp dir so nothing is persisted on disk past the TTL
-# window — the detached TTL steward below removes it. (The early EXIT trap was
-# replaced by `trap - EXIT` so the script can return without killing dufs.)
+# Serve from a throwaway temp dir so nothing is persisted on disk past the share —
+# the TTL steward (TTL mode) or the INT/TERM cleanup (infinite mode) removes it.
 SRV_DIR="$(mktemp -d)"
 cp "$FILE" "$SRV_DIR/$KEYSTR"
 
@@ -247,8 +289,8 @@ if [[ "$TLS_MODE" == "self-signed" ]]; then
     -keyout "$KEY" -out "$CERT" -days 1 -subj "/CN=config-delivery" >/dev/null 2>&1
 fi
 
-# dufs is detached (setsid) so the script can exit without taking the terminal
-# down with it — the TTL steward below owns killing dufs + cleaning the temp dir.
+# dufs is detached (setsid) so the TTL path can hand the terminal back immediately;
+# in infinite mode the script keeps the terminal foreground and waits on this PID.
 # TLS states "http" (plaintext — also the --argo backend) run dufs without any
 # --tls-cert/--tls-key; in --argo mode the backend additionally binds loopback only.
 if [[ "$TLS_MODE" == "http" && $ARGO -eq 1 ]]; then
@@ -260,30 +302,9 @@ else
 fi
 setsid "${DUF_CMD[@]}" >"$SRV_DIR/dufs.log" 2>&1 &
 DUFS_PID=$!
-# Startup self-check: the process being alive is not enough, and neither is the
-# port answering — the LINK must actually serve. curl downloads the key URL
-# locally (self-signed cert → -k, loopback) with a hard timeout so a stuck
-# handshake cannot hang the script silently. Only on 200 is the link printed.
-# The scheme is parameterized: https + -k for cert/self-signed, http for plain.
-if [[ "$TLS_MODE" == "http" ]]; then
-  SELF_CURL=( curl --max-time 2 -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/$KEYSTR" )
-else
-  SELF_CURL=( curl -k --max-time 2 -o /dev/null -w "%{http_code}" "https://127.0.0.1:$PORT/$KEYSTR" )
-fi
-SELF_OK=0
-for _ in 1 2 3 4 5; do
-  if "${SELF_CURL[@]}" 2>/dev/null | grep -q "^200"; then
-    SELF_OK=1; break
-  fi
-  sleep 0.3
-done
-if [[ $SELF_OK -eq 0 ]] || ! kill -0 "$DUFS_PID" 2>/dev/null; then
-  echo "error: dufs failed to serve the link on port $PORT (self-check):" >&2
-  cat "$SRV_DIR/dufs.log" >&2
-  kill "$DUFS_PID" 2>/dev/null
-  rm -rf "$SRV_DIR"
-  exit 1
-fi
+# From here on, ^C (infinite mode) and every failure path run the same zero-residue
+# cleanup: kill dufs (+cloudflared in --argo mode) and remove the temp dir.
+trap 'cleanup 130' INT TERM
 
 # ---------- --argo mode: cloudflared quick tunnel ----------
 # dufs is up (plain HTTP, loopback); now hand the public side to cloudflared. It is
@@ -304,39 +325,61 @@ if [[ $ARGO -eq 1 ]]; then
   if [[ -z "$PUB_URL" ]]; then
     echo "error: no trycloudflare URL within ~20s — cloudflared log tail:" >&2
     tail -20 "$SRV_DIR/cfd.log" >&2
-    kill "$DUFS_PID" "$CFD_PID" 2>/dev/null
-    rm -rf "$SRV_DIR"
-    exit 1
+    cleanup 1
   fi
 fi
 
 # Print the link — argo prints the public tunnel URL (HTTPS via public CA, so no -k);
 # direct mode prints the --host link with the scheme the TLS state dictates.
+# LINK_URL is the FINAL url the client will hit; verify_link() probes exactly that
+# (not a loopback stand-in), so the check is as real as the delivery.
 if [[ $ARGO -eq 1 ]]; then
   echo "one-time download link: $PUB_URL/$KEYSTR"
-  echo "file auto-deletes after ${TTL}s; tunnel cert is a public CA (browser-trusted, zero warnings); no domain or open inbound port needed"
+  echo "tunnel cert is a public CA (browser-trusted, zero warnings); no domain or open inbound port needed"
   echo "client: curl -OJ $PUB_URL/$KEYSTR"
+  LINK_URL="$PUB_URL/$KEYSTR"
 else
   SH="${HOST:-localhost}"
   if [[ "$TLS_MODE" == "http" ]]; then
     echo "one-time download link: http://$SH:$PORT/$KEYSTR"
     echo "warning: plain HTTP — the config contains secrets; anyone on the network path can read it"
-    echo "file auto-deletes after ${TTL}s; dir listing hidden; host is user-supplied (never auto-probed)"
+    echo "dir listing hidden; host is user-supplied (never auto-probed)"
     echo "client: curl -OJ http://$SH:$PORT/$KEYSTR"
+    LINK_URL="http://$SH:$PORT/$KEYSTR"
   else
     echo "one-time download link: https://$SH:$PORT/$KEYSTR"
-    echo "file auto-deletes after ${TTL}s; dir listing hidden; host is user-supplied (never auto-probed)"
+    echo "dir listing hidden; host is user-supplied (never auto-probed)"
     echo "client: curl -kOJ https://$SH:$PORT/$KEYSTR"
+    LINK_URL="https://$SH:$PORT/$KEYSTR"
   fi
 fi
-# TTL steward: sleep the window, then kill the served processes and remove the temp
-# dir (the file, the throwaway cert, the logs) — this is what makes the link
-# one-time and the delivery zero-residue. The process list is parameterized: dufs
-# always, plus cloudflared in --argo mode. Runs detached so the script can exit and
-# free the terminal.
-trap - EXIT
-PROCS=( "$DUFS_PID" )
-[[ $ARGO -eq 1 ]] && PROCS+=( "$CFD_PID" )
-( sleep "$TTL"; kill "${PROCS[@]}" 2>/dev/null; rm -rf "$SRV_DIR" ) &
-disown 2>/dev/null || true
-exit 0
+# Unified link verification: 3s countdown, then up to 3 curl probes for HTTP 200.
+# All three failed → report + zero-residue cleanup + exit 1 (no link echoed again).
+if ! verify_link "$LINK_URL"; then
+  echo "error: link did not return HTTP 200 after 3 attempts — not printing the link" >&2
+  cleanup 1
+fi
+
+# Two sharing modes, one cleanup:
+#   --ttl N  -> TTL self-destruct: detach a steward that sleeps N seconds, then
+#               kills the served processes and removes the temp dir. The script
+#               returns 0 immediately and hands the terminal back.
+#   no --ttl -> infinite share: the script stays in the foreground and waits on the
+#               served processes, holding the terminal until the user hits ^C — the
+#               INT/TERM trap above then runs the same cleanup (kill + rm + exit 130).
+if [[ -n "$TTL" ]]; then
+  echo "file auto-deletes after ${TTL}s"
+  PROCS=( "$DUFS_PID" )
+  [[ $ARGO -eq 1 ]] && PROCS+=( "$CFD_PID" )
+  ( sleep "$TTL"; kill "${PROCS[@]}" 2>/dev/null; rm -rf "$SRV_DIR" ) &
+  disown 2>/dev/null || true
+  exit 0
+fi
+
+# Infinite share — hold the terminal until Ctrl+C.
+echo "Ctrl+C to stop sharing (no TTL)"
+wait "$DUFS_PID"
+[[ $ARGO -eq 1 ]] && wait "$CFD_PID"
+# Reaching this line means the server exited on its own (e.g. killed externally);
+# clean the temp dir and hand the terminal back.
+cleanup 0

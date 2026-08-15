@@ -1,18 +1,20 @@
 # config-delivery.sh — one-time file delivery over dufs
 
 **config-delivery.sh + dufs exists for one thing only: one-time file delivery via a
-random-key URL that self-destructs after a TTL.**
+random-key URL that self-destructs after a TTL — or, with no `--ttl`, runs as an
+infinite share you stop with `Ctrl+C`.**
 
 ## Usage
 
 ```
-config-delivery.sh serve ./config-client.json --port 443 --ttl 600 --host your.domain
+config-delivery.sh serve ./config-client.json --port 443 --ttl 600 --host your.domain   # TTL self-destruct
+config-delivery.sh serve ./config-client.json --port 443 --host your.domain             # infinite share (Ctrl+C)
 ```
 
 | flag | meaning |
 |------|---------|
 | `--port N` | listen port (default 443, 1-65535; < 1024 needs root). Ignored in `--argo` mode, where the backend binds a random loopback port. |
-| `--ttl SEC` | auto-delete the file after N seconds (default 600, >= 1) |
+| `--ttl SEC` | optional auto-delete: the file is served for N seconds (>= 1) and then self-destructs. Omitted → **infinite share** — the script holds the terminal until `Ctrl+C` stops sharing (and cleans up). |
 | `--host NAME` | host in the link — an IP literal (v6 bracketed automatically), or a domain kept as-is (dual-stack: each client resolves it with its own DNS); never auto-probed. Disabled in `--argo` mode. |
 | `--v4` | with `--host DOMAIN`: force-resolve to an IPv4 for an IP link (errors if no IPv4); mutually exclusive with `--v6`. Disabled in `--argo` mode. |
 | `--v6` | with `--host DOMAIN`: force-resolve to an IPv6 for an IP link (errors if no IPv6); mutually exclusive with `--v4`. Disabled in `--argo` mode. |
@@ -81,10 +83,13 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
 - **Why a random key URL?** The 8-char key (`a-zA-Z0-9_-`) is the secret: without it
   the path is a 404 and the directory listing is hidden, so the link is effectively
   private and one-time without any auth setup.
-- **Why TTL self-destruct?** After N seconds the served processes (dufs, plus
-  cloudflared in `--argo` mode) are killed and the temp dir is removed, so the
-  delivered file does not linger on the machine after delivery. Nothing is persisted
-  beyond the temp dir.
+- **TTL self-destruct vs infinite share.** With `--ttl N`, after N seconds the served
+  processes (dufs, plus cloudflared in `--argo` mode) are killed and the temp dir is
+  removed, so the delivered file does not linger on the machine after delivery. With
+  no `--ttl`, the share is **infinite**: the script stays in the foreground, holds
+  the terminal, and prints `Ctrl+C to stop sharing (no TTL)`. `^C` runs the same
+  cleanup (kill dufs/cloudflared + remove the temp dir + exit 130), so both paths end
+  with zero residue. Nothing is persisted beyond the temp dir either way.
 - **Why an `--argo` quick-tunnel mode?** A direct link needs a reachable host/IP and
   an open inbound port (often 443 — root — for the cert to match). A cloudflared
   quick tunnel removes both: `cloudflared tunnel --url http://127.0.0.1:PORT` gives
@@ -121,7 +126,14 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
   exclusive; `--host` is the input they modify.
 - **Port pre-check**: done with pure-bash `/dev/tcp` on loopback only — no `nc`
   dependency, and it checks availability without probing anything external.
-- **Startup self-check**: the link is printed only after the key URL actually
-  returns 200 — the script downloads it over loopback (curl -k for HTTPS states,
-  plain curl for HTTP, up to 1.5s) before announcing it. A dead bind surfaces as
-  `dufs failed to serve the link` instead of a link nobody can open.
+- **Unified link verification**: before the link is printed, the **final URL** (the
+  one the client will actually hit — http/https direct or the trycloudflare tunnel)
+  is verified with a live `checking link in 3... 2... 1...` countdown, then up to 3
+  curl probes for HTTP 200 (curl is always `-k` because we verify the link answers,
+  not that its cert is trusted; `--max-time 2` keeps each probe from hanging; ~2s
+  between retries). The countdown also doubles as the argo edge warm-up window — a
+  fresh trycloudflare URL is typically unreachable for its first ~1-2s (530, then
+  200), so the 3s countdown plus the 3 retries covers that. All 3 attempts failed →
+  the error is reported and everything is cleaned up with exit 1, and no link is
+  printed. This replaces the old loopback self-check: it probes the exact URL the
+  client will use, so the check is as real as the delivery.
