@@ -159,10 +159,9 @@ done
 KEYSTR="${KEYSTR:0:8}"
 
 # Serve from a throwaway temp dir so nothing is persisted on disk past the TTL
-# window; the trap removes it on every exit path (incl. SIGTERM'ed dufs).
+# window — the detached TTL steward below removes it. (The early EXIT trap was
+# replaced by `trap - EXIT` so the script can return without killing dufs.)
 SRV_DIR="$(mktemp -d)"
-cleanup() { rm -rf "$SRV_DIR"; }
-trap cleanup EXIT
 cp "$FILE" "$SRV_DIR/$KEYSTR"
 
 # TLS: use the caller's cert/key when both are given (paired + validated above),
