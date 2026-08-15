@@ -19,7 +19,7 @@
 #     host/IP the client can actually reach (public IP, NAT, DNS, interfaces). The
 #     operator knows; we just print the link with the host they give.
 #
-# Usage: config-delivery.sh [serve] <file> [--port N] [--ttl SEC] [--host HOST]
+# Usage: config-delivery.sh [serve] <file> [--port N] [--ttl SEC] [--host HOST [--v4|--v6]]
 #                           [--cert FILE] [--key FILE]   (details: --help)
 # Env: DUFS_BIN (path to dufs binary; default: dufs on PATH)
 

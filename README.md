@@ -37,7 +37,7 @@ Usage: see `config-delivery/config-delivery.sh.readme.md`.
 
 `dufs` provides TLS/streaming/static serving (MIT, active, no CVEs); the wrapper adds the
 random-key URL + TTL auto-expiry. Zero extra deps, single static binary + one script.
-Earlier Go prototype archived at `archived/config-delivery-go/`; original Python at `archived/otd/`.
+Original Python implementation archived at `archived/otd/`.
 
 See `sing-box/docs/runbook.md` (deployment) + `sing-box/docs/protocol-maintenance.md` (maintenance).
 
