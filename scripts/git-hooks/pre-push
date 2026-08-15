@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# pre-push hook — refuse the push if any tracked .sh/.md contains Chinese.
+#
+# This repo enforces "zero Chinese" (comments, errors, docs). The check is the
+# same pattern used by the cleanup sweeps: PCRE CJK range over .sh and .md,
+# excluding the gitignored test binary dir.
+#
+# Enable on a clone (hook file is versioned under scripts/git-hooks):
+#   git config core.hooksPath scripts/git-hooks
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "pre-push: not a git repo" >&2; exit 1; }
+cd "$ROOT" || exit 1
+
+# Tracked files only (untracked garbage is not pushed anyway).
+DIRTY="$(git ls-files -z '*.sh' '*.md' | tr '\0' '\n' \
+  | grep -v '^sing-box/test-env/bin/' \
+  | xargs grep -lP '[\x{4e00}-\x{9fff}]' 2>/dev/null || true)"
+
+if [[ -n "$DIRTY" ]]; then
+  echo "pre-push REJECTED: Chinese characters found in tracked files:" >&2
+  echo "$DIRTY" | sed 's/^/  /' >&2
+  echo "Translate them to English before pushing (repo rule: zero Chinese)." >&2
+  exit 1
+fi
+
+exit 0
