@@ -14,7 +14,8 @@ config-delivery.sh serve ./config-client.json --port 443 --ttl 600 --host your.d
 | `--port N` | listen port (default 443, 1-65535; < 1024 needs root) |
 | `--ttl SEC` | auto-delete the file after N seconds (default 600, >= 1) |
 | `--host HOST` | host/IP shown in the download link (default localhost; never auto-probed) |
-| `--resolve NAME` | resolve NAME to an IP and build the link with that IP — no domain SNI to sniff; IPv4 preferred, IPv6 fallback; mutually exclusive with `--host` |
+| `--v4 NAME` | resolve NAME to an IPv4 and build the link with it — errors if the name has no IPv4; mutually exclusive with `--host` and `--v6` |
+| `--v6 NAME` | resolve NAME to an IPv6 and build the link with it (bracketed) — errors if the name has no IPv6; mutually exclusive with `--host` and `--v4` |
 | `--cert FILE` | PEM certificate; must be given with `--key` (default: fresh self-signed ECDSA) |
 | `--key FILE` | PEM private key; must be given with `--cert` |
 | `FILE` | the file to deliver (positional) |
@@ -62,11 +63,13 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
 - **Why never auto-probe the IP?** The script cannot know which host/IP the client
   can actually reach (public IP, NAT, DNS, multiple interfaces). The operator knows;
   the script prints whatever `--host` is given (default localhost).
-- **Why `--resolve`?** A domain in the link puts the SNI in plaintext — sniffable at
-  the border. `--resolve NAME` resolves the user's domain to an IP (getent, no new
-  deps) and builds an IP link; IPv4 is preferred and IPv6 is the fallback (a v4-less
-  host still gets a working link); IPv6 addresses get `[brackets]` automatically. This
-  is user-supplied too: the script resolves what the caller names, never itself.
+- **Why `--v4`/`--v6`?** A domain in the link puts the SNI in plaintext — sniffable at
+  the border. Each flag resolves the user's domain to the requested address family
+  (getent, no new deps) and builds an IP link; the family is explicit, no fallback —
+  `--v4` errors if the name has no IPv4, `--v6` if no IPv6. IPv6 links get
+  `[brackets]` automatically. This is user-supplied too: the script resolves what the
+  caller names, never itself. The three host pickers (`--host`/`--v4`/`--v6`) are
+  mutually exclusive.
 - **Port pre-check**: done with pure-bash `/dev/tcp` on loopback only — no `nc`
   dependency, and it checks availability without probing anything external.
 - **Startup self-check**: the link is printed only after the port actually answers

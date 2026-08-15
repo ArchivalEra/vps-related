@@ -34,7 +34,8 @@ fi
 PORT=443
 TTL=600
 HOST=""
-RESOLVE=""
+V4=""
+V6=""
 CERT=""
 KEY=""
 FILE=""
@@ -45,9 +46,10 @@ print_help() {
   --port N        listen port (default 443, 1-65535, <1024 needs root)
   --ttl SEC       auto-delete the file after N seconds (default 600, >= 1)
   --host HOST     host/IP shown in the link (default localhost, never auto-probed)
-  --resolve NAME  resolve NAME to an IP and build the link with that IP — the link
-                  then carries no domain SNI to sniff (IPv4 preferred, IPv6 fallback;
-                  mutually exclusive with --host)
+  --v4 NAME       resolve NAME to an IPv4 and build the link with it — errors if
+                  the name has no IPv4; mutually exclusive with --host and --v6
+  --v6 NAME       resolve NAME to an IPv6 and build the link with it (bracketed) —
+                  errors if the name has no IPv6; mutually exclusive with --host and --v4
   --cert FILE     PEM certificate; must be paired with --key (default: self-signed ECDSA)
   --key FILE      PEM private key; must be paired with --cert
   FILE            file to deliver (positional, e.g. serve ./config-client.json)
@@ -64,7 +66,8 @@ while [[ $i -lt ${#args[@]} ]]; do
     --port) PORT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --ttl)  TTL="${args[$((i+1))]}";  i=$((i+2)) ;;
     --host) HOST="${args[$((i+1))]}"; i=$((i+2)) ;;
-    --resolve) RESOLVE="${args[$((i+1))]}"; i=$((i+2)) ;;
+    --v4) V4="${args[$((i+1))]}"; i=$((i+2)) ;;
+    --v6) V6="${args[$((i+1))]}"; i=$((i+2)) ;;
     --cert) CERT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --key)  KEY="${args[$((i+1))]}";  i=$((i+2)) ;;
     *)      FILE="$a"; i=$((i+1)) ;;
@@ -111,23 +114,30 @@ if [[ -n "$CERT" || -n "$KEY" ]]; then
   [[ -n "$CERT" && -n "$KEY" ]] || { echo "error: --cert and --key must be given together (or neither)"; exit 1; }
   [[ -r "$CERT" && -r "$KEY" ]] || { echo "error: cert/key not readable"; exit 1; }
 fi
-# --resolve and --host are two ways to pick the link host — refusing both at once
-# keeps the tool unambiguous (never guess which one the caller meant).
-if [[ -n "$RESOLVE" && -n "$HOST" ]]; then
-  echo "error: --resolve and --host are mutually exclusive — pick one"
+# --host / --v4 / --v6 are three ways to pick the link host — refusing combos at
+# once keeps the tool unambiguous (never guess which one the caller meant).
+if [[ -n "$V4" && -n "$V6" ]]; then
+  echo "error: --v4 and --v6 are mutually exclusive — pick one"
   exit 1
 fi
-# --resolve: turn the user's domain into an IP (getent is glibc, no new deps) so the
-# link carries an IP instead of a sniffable domain SNI. v6 links need [brackets].
-# Prefer IPv4, fall back to IPv6: a v4-less host still gets a working link, and a
-# v6-only client can still use the v6 result if that is all the host has.
-if [[ -n "$RESOLVE" ]]; then
-  RESOLVED_IP="$(getent ahosts "$RESOLVE" 2>/dev/null | awk '!seen[$1]++ { if ($1 !~ /:/) print $1 }' | head -1)"
-  [[ -z "$RESOLVED_IP" ]] && RESOLVED_IP="$(getent ahosts "$RESOLVE" 2>/dev/null | awk '!seen[$1]++ { print $1 }' | head -1)"
-  [[ -n "$RESOLVED_IP" ]] || { echo "error: cannot resolve $RESOLVE (getent ahosts)"; exit 1; }
-  HOST="$RESOLVED_IP"
-  [[ "$HOST" == *:* ]] && HOST="[$HOST]"   # IPv6 → [2001:db8::1]
-  echo "resolved $RESOLVE → $HOST"
+if [[ -n "$HOST" && ( -n "$V4" || -n "$V6" ) ]]; then
+  echo "error: --host conflicts with --v4/--v6 — pick one"
+  exit 1
+fi
+# --v4/--v6: resolve the user's domain to the requested address family (getent is
+# glibc, no new deps) so the link carries an IP instead of a sniffable domain SNI.
+# Family is explicit — no fallback: --v4 errors if the name has no IPv4, --v6 if no
+# IPv6. This is user-supplied too: the script resolves what the caller names, never itself.
+if [[ -n "$V4" ]]; then
+  HOST="$(getent ahosts "$V4" 2>/dev/null | awk '!seen[$1]++ { if ($1 !~ /:/) print $1 }' | head -1)"
+  [[ -n "$HOST" ]] || { echo "error: cannot resolve an IPv4 for $V4 (getent ahosts)"; exit 1; }
+  echo "resolved $V4 → $HOST (IPv4)"
+fi
+if [[ -n "$V6" ]]; then
+  HOST="$(getent ahosts "$V6" 2>/dev/null | awk '!seen[$1]++ { if ($1 ~ /:/) print $1 }' | head -1)"
+  [[ -n "$HOST" ]] || { echo "error: cannot resolve an IPv6 for $V6 (getent ahosts)"; exit 1; }
+  HOST="[$HOST]"
+  echo "resolved $V6 → $HOST (IPv6)"
 fi
 
 # Port pre-check via bash /dev/tcp — pure-bash (no nc), loopback only, so it checks
