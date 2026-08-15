@@ -13,9 +13,9 @@ config-delivery.sh serve ./config-client.json --port 443 --ttl 600 --host your.d
 |------|---------|
 | `--port N` | listen port (default 443, 1-65535; < 1024 needs root) |
 | `--ttl SEC` | auto-delete the file after N seconds (default 600, >= 1) |
-| `--host HOST` | host/IP shown in the download link (default localhost; never auto-probed) |
-| `--v4 NAME` | resolve NAME to an IPv4 and build the link with it — errors if the name has no IPv4; mutually exclusive with `--host` and `--v6` |
-| `--v6 NAME` | resolve NAME to an IPv6 and build the link with it (bracketed) — errors if the name has no IPv6; mutually exclusive with `--host` and `--v4` |
+| `--host NAME` | host in the link — an IP literal (v6 bracketed automatically), or a domain kept as-is (dual-stack: each client resolves it with its own DNS); never auto-probed |
+| `--v4` | with `--host DOMAIN`: force-resolve to an IPv4 for an IP link (errors if no IPv4); mutually exclusive with `--v6` |
+| `--v6` | with `--host DOMAIN`: force-resolve to an IPv6 for an IP link (errors if no IPv6); mutually exclusive with `--v4` |
 | `--cert FILE` | PEM certificate; must be given with `--key` (default: fresh self-signed ECDSA) |
 | `--key FILE` | PEM private key; must be given with `--cert` |
 | `FILE` | the file to deliver (positional) |
@@ -63,15 +63,16 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
 - **Why never auto-probe the IP?** The script cannot know which host/IP the client
   can actually reach (public IP, NAT, DNS, multiple interfaces). The operator knows;
   the script prints whatever `--host` is given (default localhost).
-- **Why `--v4`/`--v6`?** A domain in the link puts the SNI in plaintext — sniffable at
-  the border. Each flag resolves the user's domain to the requested address family
-  (getent, no new deps) and builds an IP link; the family is explicit, no fallback —
-  `--v4` errors if the name has no IPv4, `--v6` if no IPv6. IPv6 links get
-  `[brackets]` automatically. This is user-supplied too: the script resolves what the
-  caller names, never itself. The three host pickers (`--host`/`--v4`/`--v6`) are
-  mutually exclusive.
+- **Why keep `--host DOMAIN` as a domain?** The link is dual-stack by default — each
+  client resolves the domain with its own DNS, so a v4-only device gets the A record
+  and a v6-only device the AAAA. `--v4`/`--v6` only force-resolve to an IP link when
+  the caller explicitly needs one (a no-DNS client, or avoiding a sniffable SNI).
+  This is user-supplied too: the script resolves what the caller names, never itself.
+  The three host pickers (`--host`/`--v4`/`--v6`) — `--v4` and `--v6` are mutually
+  exclusive; `--host` is the input they modify.
 - **Port pre-check**: done with pure-bash `/dev/tcp` on loopback only — no `nc`
   dependency, and it checks availability without probing anything external.
-- **Startup self-check**: the link is printed only after the port actually answers
-  (loopback `/dev/tcp` probe, up to 1.5s), not just after the dufs process spawns —
-  a failed bind surfaces as `dufs failed to start` instead of a dead link.
+- **Startup self-check**: the link is printed only after the key URL actually
+  returns 200 — the script downloads it over loopback (curl -k, up to 1.5s) before
+  announcing it. A dead bind surfaces as `dufs failed to serve the link` instead of
+  a link nobody can open.

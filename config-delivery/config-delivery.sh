@@ -34,8 +34,7 @@ fi
 PORT=443
 TTL=600
 HOST=""
-V4=""
-V6=""
+FAMILY=""          # "" = auto (IPv4 first), "v4" = force IPv4, "v6" = force IPv6
 CERT=""
 KEY=""
 FILE=""
@@ -45,11 +44,13 @@ print_help() {
 ##help##
   --port N        listen port (default 443, 1-65535, <1024 needs root)
   --ttl SEC       auto-delete the file after N seconds (default 600, >= 1)
-  --host HOST     host/IP shown in the link (default localhost, never auto-probed)
-  --v4 NAME       resolve NAME to an IPv4 and build the link with it — errors if
-                  the name has no IPv4; mutually exclusive with --host and --v6
-  --v6 NAME       resolve NAME to an IPv6 and build the link with it (bracketed) —
-                  errors if the name has no IPv6; mutually exclusive with --host and --v4
+  --host NAME     host in the link — an IP literal (v6 bracketed automatically), or a
+                  domain kept as-is (dual-stack: each client resolves it with its own
+                  DNS). never auto-probed, user-supplied only.
+  --v4            with --host DOMAIN: force-resolve to an IPv4 for an IP link
+                  (errors if no IPv4). mutually exclusive with --v6
+  --v6            with --host DOMAIN: force-resolve to an IPv6 for an IP link
+                  (errors if no IPv6). mutually exclusive with --v4
   --cert FILE     PEM certificate; must be paired with --key (default: self-signed ECDSA)
   --key FILE      PEM private key; must be paired with --cert
   FILE            file to deliver (positional, e.g. serve ./config-client.json)
@@ -66,8 +67,8 @@ while [[ $i -lt ${#args[@]} ]]; do
     --port) PORT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --ttl)  TTL="${args[$((i+1))]}";  i=$((i+2)) ;;
     --host) HOST="${args[$((i+1))]}"; i=$((i+2)) ;;
-    --v4) V4="${args[$((i+1))]}"; i=$((i+2)) ;;
-    --v6) V6="${args[$((i+1))]}"; i=$((i+2)) ;;
+    --v4) [[ -n "$FAMILY" && "$FAMILY" != "v4" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v4" ;;
+    --v6) [[ -n "$FAMILY" && "$FAMILY" != "v6" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v6" ;;
     --cert) CERT="${args[$((i+1))]}"; i=$((i+2)) ;;
     --key)  KEY="${args[$((i+1))]}";  i=$((i+2)) ;;
     *)      FILE="$a"; i=$((i+1)) ;;
@@ -114,30 +115,32 @@ if [[ -n "$CERT" || -n "$KEY" ]]; then
   [[ -n "$CERT" && -n "$KEY" ]] || { echo "error: --cert and --key must be given together (or neither)"; exit 1; }
   [[ -r "$CERT" && -r "$KEY" ]] || { echo "error: cert/key not readable"; exit 1; }
 fi
-# --host / --v4 / --v6 are three ways to pick the link host — refusing combos at
-# once keeps the tool unambiguous (never guess which one the caller meant).
-if [[ -n "$V4" && -n "$V6" ]]; then
-  echo "error: --v4 and --v6 are mutually exclusive — pick one"
-  exit 1
-fi
-if [[ -n "$HOST" && ( -n "$V4" || -n "$V6" ) ]]; then
-  echo "error: --host conflicts with --v4/--v6 — pick one"
-  exit 1
-fi
-# --v4/--v6: resolve the user's domain to the requested address family (getent is
-# glibc, no new deps) so the link carries an IP instead of a sniffable domain SNI.
-# Family is explicit — no fallback: --v4 errors if the name has no IPv4, --v6 if no
-# IPv6. This is user-supplied too: the script resolves what the caller names, never itself.
-if [[ -n "$V4" ]]; then
-  HOST="$(getent ahosts "$V4" 2>/dev/null | awk '!seen[$1]++ { if ($1 !~ /:/) print $1 }' | head -1)"
-  [[ -n "$HOST" ]] || { echo "error: cannot resolve an IPv4 for $V4 (getent ahosts)"; exit 1; }
-  echo "resolved $V4 → $HOST (IPv4)"
-fi
-if [[ -n "$V6" ]]; then
-  HOST="$(getent ahosts "$V6" 2>/dev/null | awk '!seen[$1]++ { if ($1 ~ /:/) print $1 }' | head -1)"
-  [[ -n "$HOST" ]] || { echo "error: cannot resolve an IPv6 for $V6 (getent ahosts)"; exit 1; }
-  HOST="[$HOST]"
-  echo "resolved $V6 → $HOST (IPv6)"
+# --v4 and --v6 are family selectors; the parse loop above already rejects giving
+# both (mutual exclusion enforced at parse time).
+# --host: an IP literal is used as-is (v6 gets [brackets]). A DOMAIN stays a domain
+# by default — the link is dual-stack, each client resolves it with its own DNS
+# (a v4-only device gets the A record, a v6-only device the AAAA). Only when the
+# caller EXPLICITLY wants an IP link (no-DNS client, avoid a sniffable SNI) does
+# --v4/--v6 force-resolve the domain to that family. Never probed — user-supplied.
+if [[ -n "$HOST" ]]; then
+  if [[ "$HOST" == *:* ]]; then
+    # already an IPv6 literal
+    HOST="[$HOST]"
+  elif [[ "$HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    : # already an IPv4 literal
+  elif [[ -n "$FAMILY" ]]; then
+    # explicit family requested → resolve the domain to an IP
+    if [[ "$FAMILY" == "v6" ]]; then
+      HOST="$(getent ahosts "$HOST" 2>/dev/null | awk '!seen[$1]++ { if ($1 ~ /:/) print $1 }' | head -1)"
+      [[ -n "$HOST" ]] || { echo "error: cannot resolve an IPv6 for $HOST (getent ahosts)"; exit 1; }
+      HOST="[$HOST]"
+    else
+      HOST="$(getent ahosts "$HOST" 2>/dev/null | awk '!seen[$1]++ { if ($1 !~ /:/) print $1 }' | head -1)"
+      [[ -n "$HOST" ]] || { echo "error: cannot resolve an IPv4 for $HOST (getent ahosts)"; exit 1; }
+    fi
+  fi
+  # a domain with no family flag stays a domain (dual-stack link)
+  echo "link host: $HOST"
 fi
 
 # Port pre-check via bash /dev/tcp — pure-bash (no nc), loopback only, so it checks
@@ -177,16 +180,19 @@ fi
   >"$SRV_DIR/dufs.log" 2>&1 &
 DUFS_PID=$!
 trap 'kill $DUFS_PID 2>/dev/null; rm -rf "$SRV_DIR"' EXIT
-# Startup self-check: the process being alive is not enough (dufs can survive a
-# failed bind for a moment) — the link is only printed once the port actually
-# answers. Loopback /dev/tcp, same zero-dep style as the port pre-check.
-UP=0
+# Startup self-check: the process being alive is not enough, and neither is the
+# port answering — the LINK must actually serve. curl downloads the key URL
+# locally (self-signed cert → -k, loopback) and only then is the link printed.
+SELFCHECK_URL="https://127.0.0.1:$PORT/$KEYSTR"
+SELF_OK=0
 for _ in 1 2 3 4 5; do
-  if (echo > /dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then UP=1; break; fi
+  if curl -ks -o /dev/null -w "%{http_code}" "$SELFCHECK_URL" 2>/dev/null | grep -q "^200"; then
+    SELF_OK=1; break
+  fi
   sleep 0.3
 done
-if [[ $UP -eq 0 ]] || ! kill -0 "$DUFS_PID" 2>/dev/null; then
-  echo "error: dufs failed to start on port $PORT:" >&2
+if [[ $SELF_OK -eq 0 ]] || ! kill -0 "$DUFS_PID" 2>/dev/null; then
+  echo "error: dufs failed to serve the link on port $PORT (self-check):" >&2
   cat "$SRV_DIR/dufs.log" >&2
   exit 1
 fi
