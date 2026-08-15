@@ -105,6 +105,14 @@ done
 
 # ---------- Source: conversion library (helpers + render_from_server) ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fail loudly if the companion lib is missing — a broken source would otherwise
+# surface later as a confusing "command not found" from a lib function.
+if [[ ! -f "$SCRIPT_DIR/protocols.lib.sh" ]]; then
+  echo "error: protocols.lib.sh not found next to gen-client.sh ($SCRIPT_DIR)" >&2
+  echo "  deploy both files together (see gen-client.sh.readme.md)" >&2
+  exit 1
+fi
+[[ -r "$SCRIPT_DIR/protocols.lib.sh" ]] || die1 "protocols.lib.sh not readable (permission): $SCRIPT_DIR/protocols.lib.sh"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/protocols.lib.sh"
 
