@@ -46,7 +46,8 @@ print_help() {
   --ttl SEC       auto-delete the file after N seconds (default 600, >= 1)
   --host HOST     host/IP shown in the link (default localhost, never auto-probed)
   --resolve NAME  resolve NAME to an IP and build the link with that IP — the link
-                  then carries no domain SNI to sniff (mutually exclusive with --host)
+                  then carries no domain SNI to sniff (IPv4 preferred, IPv6 fallback;
+                  mutually exclusive with --host)
   --cert FILE     PEM certificate; must be paired with --key (default: self-signed ECDSA)
   --key FILE      PEM private key; must be paired with --cert
   FILE            file to deliver (positional, e.g. serve ./config-client.json)
