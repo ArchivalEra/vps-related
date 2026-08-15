@@ -480,14 +480,15 @@ render_config() {
     [[ -n "${PROTO_DEFAULT_PORT[$proto]+x}" ]] || proto="$t"
     local frag
     frag="$(render_"${proto//-/_}")" || die1 "render failed for instance: $t"
-    inbounds+="${inbounds:+, }$frag"
+    inbounds+="${inbounds:+,
+        }$frag"
   done
   cat > "$out" <<JSON
 {
   "log": { "level": "warn" },
   "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
   "inbounds": [
-    $inbounds
+        $inbounds
   ],
   "outbounds": [ { "type": "direct" } ],
   "route": { "default_domain_resolver": { "server": "local" } }

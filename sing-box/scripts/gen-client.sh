@@ -194,8 +194,11 @@ render_from_server
 [[ -n "$OUTS" ]] || die2 "no lines converted"
 
 # ---------- Validate: duplicate tags ----------
-if [[ $(echo "$TAGS" | tr ' ' '\n' | sort | uniq -d | wc -l) -gt 0 ]]; then
-  die2 "duplicate tags: $(echo "$TAGS" | tr ' ' '\n' | sort | uniq -d | tr '\n' ' ')"
+if [[ $(echo "$TAGS" | tr ' ' '
+' | sort | uniq -d | wc -l) -gt 0 ]]; then
+  die2 "duplicate tags: $(echo "$TAGS" | tr ' ' '
+' | sort | uniq -d | tr '
+' ' ')"
 fi
 
 # ---------- Assemble outbounds ----------
@@ -203,13 +206,18 @@ fi
 QUOTED_TAGS="$(echo "$TAGS" | awk '{for(i=1;i<=NF;i++) printf "\"%s\"%s", $i, (i==NF?"\n":", ") }')"
 AUTO_REFS="$QUOTED_TAGS"
 MANUAL_REFS="\"auto\"${QUOTED_TAGS:+, $QUOTED_TAGS}"
-OUTBOUNDS_ALL="${OUTS:+$OUTS, }"
-OUTBOUNDS_ALL+="{ \"type\": \"urltest\", \"tag\": \"auto\", \"outbounds\": [ ${AUTO_REFS} ], \"url\": \"https://www.gstatic.com/generate_204\", \"interval\": \"3m\" }, "
-OUTBOUNDS_ALL+="{ \"type\": \"selector\", \"tag\": \"manual\", \"outbounds\": [ ${MANUAL_REFS} ], \"default\": \"auto\" }, "
-OUTBOUNDS_ALL+="{ \"type\": \"direct\", \"tag\": \"direct\" }, { \"type\": \"block\", \"tag\": \"block\" }"
+OUTBOUNDS_ALL="${OUTS:+$OUTS,
+        }"
+OUTBOUNDS_ALL+="{ \"type\": \"urltest\", \"tag\": \"auto\", \"outbounds\": [ ${AUTO_REFS} ], \"url\": \"https://www.gstatic.com/generate_204\", \"interval\": \"3m\" }"
+OUTBOUNDS_ALL+=",
+        { \"type\": \"selector\", \"tag\": \"manual\", \"outbounds\": [ ${MANUAL_REFS} ], \"default\": \"auto\" }"
+OUTBOUNDS_ALL+=",
+        { \"type\": \"direct\", \"tag\": \"direct\" },
+        { \"type\": \"block\", \"tag\": \"block\" }"
 
 DNS_DETOUR="reality"
-echo "$TAGS" | tr ' ' '\n' | grep -q '^reality$' || DNS_DETOUR="$(echo "$TAGS" | cut -d' ' -f1)"
+echo "$TAGS" | tr ' ' '
+' | grep -q '^reality$' || DNS_DETOUR="$(echo "$TAGS" | cut -d' ' -f1)"
 
 # ---------- inbound ----------
 if [[ "$INBOUND_TYPE" == "tun" ]]; then
@@ -263,7 +271,7 @@ if ! cat > "$SB_OUTPUT" <<EOF
     $INBOUND_BLOCK
   ],
   "outbounds": [
-    $OUTBOUNDS_ALL
+        $OUTBOUNDS_ALL
   ],
   "route": {
     "auto_detect_interface": true,
