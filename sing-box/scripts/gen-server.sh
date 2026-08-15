@@ -469,7 +469,6 @@ render_config() {
   GEN_TU_PASS="$(gen_hex_pass)"
   GEN_NAIVE_PASS="$(gen_hex_pass)"
   GEN_ECH_KEY_ARR=""
-  GEN_ECH_CONFIGS=""
   [[ $ECH -eq 1 ]] && gen_ech
   INST_SHADOWTLS_N=0
   debug "domain=$DOMAIN reality_sni=$REALITY_SNI instances=$INST_TAGS ech=$ECH"
