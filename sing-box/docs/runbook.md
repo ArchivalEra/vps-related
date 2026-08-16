@@ -66,7 +66,7 @@ If the directory doesn't exist, create it first: `ssh root@<node-a-ip> 'mkdir -p
 ```bash
 # Run on the VPS
 cd /tmp
-curl -fL -o sb.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.14.0-beta.14/sing-box-1.14.0-beta.14-linux-amd64.tar.gz
+wget -O sb.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.14.0-beta.14/sing-box-1.14.0-beta.14-linux-amd64.tar.gz
 tar -xzf sb.tar.gz
 install -m 0755 sing-box-1.14.0-beta.14-linux-amd64/sing-box /usr/local/bin/sing-box
 sing-box version    # should show v1.14.0-beta.14

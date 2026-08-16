@@ -45,7 +45,7 @@
 #   --outputname N    output filename (default config-server.json; filename only, no path)
 #   --outputpath D    output directory (default: this script's own dir)
 #   --debug           diagnostic output (fully silent by default)
-#   --test            self-check: 8-inbound set incl. dual ss → temp, sing-box check, exit
+#   --test            self-check: default 6-protocol set + shadowtls chain (no ss) → temp, sing-box check, exit
 #
 # Protocols (repeatable): reality / hysteria2 / vless-ws / vless-grpc / anytls /
 # shadowtls (+chained ss) / shadowsocks / tuic / naive
@@ -153,7 +153,7 @@ fi
 if ! declare -F die1 >/dev/null 2>&1 || ! declare -F ok >/dev/null 2>&1; then
   echo "error: $SCRIPT_DIR/secrets.lib.sh is outdated — it lacks the output layer" >&2
   echo "  (ok/warn/err/die1/die2/debug). Re-fetch the latest scripts from the repo:" >&2
-  echo "  curl -fsSL -o /tmp/vps.tar.gz https://codeload.github.com/ArchivalEra/vps-related/tar.gz/refs/heads/main" >&2
+  echo "  wget -O /tmp/vps.tar.gz https://codeload.github.com/ArchivalEra/vps-related/tar.gz/refs/heads/main" >&2
   echo "  rm -rf /tmp/vps-related-main && tar xzf /tmp/vps.tar.gz -C /tmp" >&2
   echo "  cp /tmp/vps-related-main/sing-box/scripts/gen-server.sh /tmp/vps-related-main/sing-box/scripts/secrets.lib.sh \$SCRIPT_DIR/" >&2
   exit 1
