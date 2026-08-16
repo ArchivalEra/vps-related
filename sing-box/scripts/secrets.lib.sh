@@ -54,3 +54,20 @@ gen_hex_pass() { openssl rand -hex 12; }
 
 # SS2022 password: 32 raw bytes → standard base64 WITH padding (Go decoder requires len%4==0)
 gen_ss_pass() { openssl rand -base64 32 | tr -d '\n'; }
+
+# Output path resolution — SB_OUTPUT env (full path) > outputpath+outputname >
+# outputname > outputpath > default $SCRIPT_DIR/$OUTPUT_NAME_DEFAULT.
+# Reads the script's OUTPUT_NAME / OUTPUT_PATH / OUTPUT_NAME_DEFAULT globals.
+resolve_output_path() {
+  if [[ -z "${SB_OUTPUT:-}" ]]; then
+    if [[ -n "$OUTPUT_NAME" && -n "$OUTPUT_PATH" ]]; then
+      SB_OUTPUT="$OUTPUT_PATH/$OUTPUT_NAME"
+    elif [[ -n "$OUTPUT_NAME" ]]; then
+      SB_OUTPUT="$SCRIPT_DIR/$OUTPUT_NAME"
+    elif [[ -n "$OUTPUT_PATH" ]]; then
+      SB_OUTPUT="$OUTPUT_PATH/$OUTPUT_NAME_DEFAULT"
+    else
+      SB_OUTPUT="$SCRIPT_DIR/$OUTPUT_NAME_DEFAULT"
+    fi
+  fi
+}

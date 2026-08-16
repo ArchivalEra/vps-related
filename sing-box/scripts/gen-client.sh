@@ -40,6 +40,7 @@
 set -uo pipefail
 
 # ---------- Defaults ----------
+# shellcheck disable=SC2034  # OUTPUT_NAME_DEFAULT/OUTPUT_PATH read by resolve_output_path() in protocols.lib.sh
 OUTPUT_NAME_DEFAULT="config-client.json"
 OUTPUT_NAME=""
 OUTPUT_PATH=""
@@ -83,6 +84,8 @@ fi
 
 # ---------- Parse args ----------
 while [[ $# -gt 0 ]]; do
+  # shellcheck disable=SC2034
+  # OUTPUT_NAME/OUTPUT_PATH are read by resolve_output_path() in protocols.lib.sh
   case "$1" in
     --help) help; exit 0 ;;
     --from-server) shift; CONFIG_PATH="${1:-}" ;;
@@ -243,17 +246,7 @@ fi
 
 # ---------- Output path resolution ----------
 # Priority: SB_OUTPUT env (full path) > --outputpath + --outputname > --outputname > --outputpath > default $SCRIPT_DIR/config-client.json
-if [[ -z "${SB_OUTPUT:-}" ]]; then
-  if [[ -n "$OUTPUT_NAME" && -n "$OUTPUT_PATH" ]]; then
-    SB_OUTPUT="$OUTPUT_PATH/$OUTPUT_NAME"
-  elif [[ -n "$OUTPUT_NAME" ]]; then
-    SB_OUTPUT="$SCRIPT_DIR/$OUTPUT_NAME"
-  elif [[ -n "$OUTPUT_PATH" ]]; then
-    SB_OUTPUT="$OUTPUT_PATH/$OUTPUT_NAME_DEFAULT"
-  else
-    SB_OUTPUT="$SCRIPT_DIR/$OUTPUT_NAME_DEFAULT"
-  fi
-fi
+resolve_output_path
 if [[ "$OUTPUT_NAME" == */* ]]; then
   die1 "outputname must be a plain filename (no path): $OUTPUT_NAME"
 fi

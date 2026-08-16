@@ -57,6 +57,7 @@
 set -uo pipefail
 
 # ---------- Defaults ----------
+# shellcheck disable=SC2034  # OUTPUT_NAME_DEFAULT/OUTPUT_PATH read by resolve_output_path() in secrets.lib.sh
 OUTPUT_NAME_DEFAULT="config-server.json"
 OUTPUT_NAME=""
 OUTPUT_PATH=""
@@ -129,6 +130,8 @@ fi
 
 # ---------- Parse args ----------
 while [[ $# -gt 0 ]]; do
+  # shellcheck disable=SC2034
+  # OUTPUT_NAME/OUTPUT_PATH are read by resolve_output_path() in secrets.lib.sh
   case "$1" in
     --help) help; exit 0 ;;
     --domain) shift; DOMAIN="${1:-}" ;;
@@ -302,12 +305,11 @@ ask_chain_ss() {
 
 declare -A INST_SS_METHOD=()   # instance tag → ss method (flag or interactive)
 
-# ---------- Selection: --test bypasses; else flag-driven (non-interactive) or interactive ----------
-if [[ $TEST_MODE -eq 1 ]]; then
-  : # --test sets its own selection below (same render path as production)
-elif [[ -n "$PROTOCOLS_ARG" ]]; then
-  p=""
-  IFS=',' read -ra list <<< "$PROTOCOLS_ARG"
+# ---------- Protocol/ports list parsing (shared by flag and --test paths) ----------
+parse_protocols_list() { # $1=comma list → $PROTOCOLS (validated, space-separated)
+  local p
+  PROTOCOLS=""
+  IFS=',' read -ra list <<< "$1"
   for p in "${list[@]}"; do
     p="$(echo "$p" | xargs)"
     [[ -n "$p" ]] || continue
@@ -315,19 +317,29 @@ elif [[ -n "$PROTOCOLS_ARG" ]]; then
     PROTOCOLS+=" $p"
   done
   PROTOCOLS="${PROTOCOLS# }"
+}
+
+apply_ports_arg() { # $1=comma port list → INST_PORTS, positionally aligned with instances
+  local e n tags pv
+  read -ra tags <<< "$INST_TAGS"
+  IFS=',' read -ra pv <<< "$1"
+  [[ ${#pv[@]} -eq ${#tags[@]} ]] || die1 "--ports has ${#pv[@]} entries but ${#tags[@]} instances (must align with --protocols)"
+  n=0
+  for e in "${pv[@]}"; do
+    [[ "$e" =~ ^[0-9]+$ ]] || die1 "bad --ports entry: $e"
+    INST_PORTS[${tags[$n]}]="$e"
+    n=$((n+1))
+  done
+}
+
+# ---------- Selection: --test bypasses; else flag-driven (non-interactive) or interactive ----------
+if [[ $TEST_MODE -eq 1 ]]; then
+  : # --test sets its own selection below (same render path as production)
+elif [[ -n "$PROTOCOLS_ARG" ]]; then
+  parse_protocols_list "$PROTOCOLS_ARG"
   [[ -n "$PROTOCOLS" ]] || die1 "--protocols resolved to empty list"
   instantiate
-  if [[ -n "$PORTS_ARG" ]]; then
-    e=""; n=0
-    read -ra tags <<< "$INST_TAGS"
-    IFS=',' read -ra pv <<< "$PORTS_ARG"
-    [[ ${#pv[@]} -eq ${#tags[@]} ]] || die1 "--ports has ${#pv[@]} entries but ${#tags[@]} instances (must align with --protocols)"
-    for e in "${pv[@]}"; do
-      [[ "$e" =~ ^[0-9]+$ ]] || die1 "bad --ports entry: $e"
-      INST_PORTS[${tags[$n]}]="$e"
-      n=$((n+1))
-    done
-  fi
+  [[ -n "$PORTS_ARG" ]] && apply_ports_arg "$PORTS_ARG"
   # ss methods (positional across ss instances in selection order)
   if [[ -n "$SS_METHODS_ARG" ]]; then
     e=""; n=0
@@ -371,18 +383,8 @@ if [[ $TEST_MODE -ne 1 ]]; then
   [[ -r "$CERT_FILE" ]] || die1 "certificate not readable: $CERT_FILE"
   [[ -r "$KEY_FILE" ]] || die1 "private key not readable: $KEY_FILE"
 
-  # ---------- Output path resolution (same tiers as gen-client.sh) ----------
-  if [[ -z "${SB_OUTPUT:-}" ]]; then
-    if [[ -n "$OUTPUT_NAME" && -n "$OUTPUT_PATH" ]]; then
-      SB_OUTPUT="$OUTPUT_PATH/$OUTPUT_NAME"
-    elif [[ -n "$OUTPUT_NAME" ]]; then
-      SB_OUTPUT="$SCRIPT_DIR/$OUTPUT_NAME"
-    elif [[ -n "$OUTPUT_PATH" ]]; then
-      SB_OUTPUT="$OUTPUT_PATH/$OUTPUT_NAME_DEFAULT"
-    else
-      SB_OUTPUT="$SCRIPT_DIR/$OUTPUT_NAME_DEFAULT"
-    fi
-  fi
+  # Output path resolution (tiers shared with gen-client, defined in secrets.lib)
+  resolve_output_path
   if [[ "$OUTPUT_NAME" == */* ]]; then
     die1 "outputname must be a plain filename (no path): $OUTPUT_NAME"
   fi
@@ -552,32 +554,14 @@ if [[ $TEST_MODE -eq 1 ]]; then
   # default self-check set mirrors the deployment shape (6 protocols, no ss);
   # pass --protocols (and --ports for repeats) to self-check your own set
   if [[ -n "$PROTOCOLS_ARG" ]]; then
-    p=""
-    IFS=',' read -ra list <<< "$PROTOCOLS_ARG"
-    for p in "${list[@]}"; do
-      p="$(echo "$p" | xargs)"
-      [[ -n "$p" ]] || continue
-      [[ -n "${PROTO_DEFAULT_PORT[$p]+x}" ]] || die1 "unknown protocol: $p (available: ${PROTO_ORDER[*]})"
-      PROTOCOLS+=" $p"
-    done
-    PROTOCOLS="${PROTOCOLS# }"
+    parse_protocols_list "$PROTOCOLS_ARG"
   else
     PROTOCOLS="reality hysteria2 vless-ws vless-grpc tuic shadowtls"
   fi
   [[ -n "$PROTOCOLS" ]] || die1 "--test: empty protocol set"
   instantiate
-  # apply --ports when given (needed e.g. multi-ss self-check: --protocols shadowsocks,shadowsocks --ports 8388,8390)
-  if [[ -n "$PORTS_ARG" ]]; then
-    e=""; n=0
-    read -ra tags <<< "$INST_TAGS"
-    IFS=',' read -ra pv <<< "$PORTS_ARG"
-    [[ ${#pv[@]} -eq ${#tags[@]} ]] || die1 "--ports has ${#pv[@]} entries but ${#tags[@]} instances"
-    for e in "${pv[@]}"; do
-      [[ "$e" =~ ^[0-9]+$ ]] || die1 "bad --ports entry: $e"
-      INST_PORTS[${tags[$n]}]="$e"
-      n=$((n+1))
-    done
-  fi
+  # apply --ports when given (e.g. multi-ss self-check: --protocols shadowsocks,shadowsocks --ports 8388,8390)
+  [[ -n "$PORTS_ARG" ]] && apply_ports_arg "$PORTS_ARG"
   CHAIN_SS=1; CHAIN_SS_PORT_VAL=8389
   test_out="$TMPD/config-server.json"
   render_config "$TMPD/cert.pem" "$TMPD/key.pem" "$test_out" || { err "self-check: generation failed"; exit 1; }
