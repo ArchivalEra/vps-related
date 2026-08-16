@@ -6,7 +6,7 @@
 #   bash gen-server.sh --help
 #   bash gen-server.sh [--domain D] [--reality-sni S] [--certpath P] [--keypath P]
 #                      [--protocols a,a,b,...] [--ports "port,port,..."] [--ss-methods "m1,m2,..."]
-#                      [--chain-ss-port N]
+#                      [--chain-ss-port N] [--ech]
 #                      [--outputname NAME] [--outputpath DIR] [--debug] [--test]
 #
 # No flags: interactive prompts (TTY). No flags + non-TTY stdin (piped) prints
@@ -42,6 +42,7 @@
 #   --ports P,P,...   non-interactive: comma port list, positionally aligned with --protocols
 #   --ss-methods M    non-interactive: comma method list for ss instances (positional)
 #   --chain-ss-port N shadowtls chained ss port (default 8389; 0 = no chain)
+#   --ech             add ECH (Encrypted Client Hello) to TLS-terminating inbounds
 #   --outputname N    output filename (default config-server.json; filename only, no path)
 #   --outputpath D    output directory (default: this script's own dir)
 #   --debug           diagnostic output (fully silent by default)
@@ -80,6 +81,19 @@ declare -A PROTO_DEFAULT_PORT=(
 declare -A PROTO_LAYER=(
   [reality]=tcp [hysteria2]=udp [vless-ws]=tcp [vless-grpc]=tcp [anytls]=tcp
   [shadowtls]=tcp [shadowsocks]=tcp [tuic]=udp [naive]=tcp
+)
+
+# Per-protocol credential needs beyond the cross-protocol set (GEN_UUID / GEN_PRIV /
+# GEN_PUB / GEN_SID): each row maps a protocol to its credential generator and the
+# GEN_* variable it fills. Adding a protocol = one row here + its renderer; no manual
+# credential lines in render_config. gen_hex_pass = 12-byte hex, gen_ss_pass = base64 32B.
+declare -A PROTO_CRED_GEN=(
+  [hysteria2]=gen_hex_pass [anytls]=gen_hex_pass [shadowtls]=gen_hex_pass [tuic]=gen_hex_pass
+  [shadowsocks]=gen_ss_pass [naive]=gen_hex_pass
+)
+declare -A PROTO_CRED_VAR=(
+  [hysteria2]=GEN_HY2_PASS [anytls]=GEN_ANYTLS_PASS [shadowtls]=GEN_ST_PASS [tuic]=GEN_TU_PASS
+  [shadowsocks]=GEN_SS_PASS [naive]=GEN_NAIVE_PASS
 )
 
 # ---------- --help: compact flag reference (##help## block, one flag per line) ----------
@@ -175,7 +189,6 @@ fi
 PROTOCOLS=""            # ordered proto list (repeats allowed)
 INST_TAGS=""            # ordered unique instance tags ("reality hy2 vless-ws ... ss2022 ss2022-2")
 declare -A INST_PORTS=()   # instance tag → port
-declare -A INST_LAYER=()   # instance tag → tcp/udp
 CHAIN_SS=0              # first shadowtls binds an internal ss (detour)
 CHAIN_SS_PORT_VAL=8389
 
@@ -186,7 +199,7 @@ check_domain() {
   fi
 }
 
-# ---------- Instantiate: PROTOCOLS (repeats ok) → INST_TAGS/INST_PORTS/INST_LAYER ----------
+# ---------- Instantiate: PROTOCOLS (repeats ok) → INST_TAGS/INST_PORTS ----------
 instantiate() {
   local p tag count
   declare -A _cnt=()
@@ -197,18 +210,21 @@ instantiate() {
     if [[ $count -eq 1 ]]; then tag="$p"; else tag="${p}-${count}"; fi
     INST_TAGS+=" $tag"
     INST_PORTS[$tag]="${PROTO_DEFAULT_PORT[$p]}"
-    INST_LAYER[$tag]="${PROTO_LAYER[$p]}"
   done
   INST_TAGS="${INST_TAGS# }"
 }
 
 # ---------- Port conflict check (TCP and UDP each must be unique; TCP/UDP may share) ----------
 check_port_conflicts() {
-  local layer seen t
+  local layer seen t p
   for layer in tcp udp; do
     seen=""
     for t in $INST_TAGS; do
-      if [[ "${INST_LAYER[$t]}" == "$layer" ]]; then
+      # instance tag → protocol: try the full tag (reality / vless-ws), else strip the
+      # -N repeat suffix (reality-2 / vless-ws-2). Never strip a hyphen inside a
+      # protocol name (vless-ws is one protocol, not vless + ws).
+      p="$t"; [[ -n "${PROTO_LAYER[$p]+x}" ]] || p="${t%%-*}"
+      if [[ "${PROTO_LAYER[$p]}" == "$layer" ]]; then
         if [[ " $seen " == *" ${INST_PORTS[$t]} "* ]]; then
           die1 "port ${INST_PORTS[$t]} used by two $layer instances ($t) — TCP and UDP may share a port, but two $layer cannot"
         fi
@@ -464,19 +480,22 @@ ech_json() {
 
 # ---------- Render server config (fresh credentials; $1=cert $2=key $3=out) ----------
 render_config() {
-  local cert="$1" key="$2" out="$3" inbounds="" t proto
+  local cert="$1" key="$2" out="$3" inbounds="" t proto c
   GEN_CERT="$cert"; GEN_KEY="$key"
   GEN_UUID="$(gen_uuid)" || die1 "failed to generate uuid"
   local kp; kp="$(gen_reality_keypair)" || die1 "failed to generate reality keypair"
   GEN_PRIV="${kp%% *}"; GEN_PUB="${kp#* }"
   GEN_SID="$(gen_short_id)"
-  GEN_HY2_PASS="$(gen_hex_pass)"
-  GEN_ANYTLS_PASS="$(gen_hex_pass)"
-  GEN_ST_PASS="$(gen_hex_pass)"
-  GEN_SS_PASS="$(gen_ss_pass)"
+  # per-protocol credentials driven by the registry (PROTO_CRED_GEN/VAR) — the
+  # reality keypair above is cross-protocol and stays explicit
+  for c in "${PROTO_ORDER[@]}"; do
+    [[ -n "${PROTO_CRED_GEN[$c]+x}" ]] || continue
+    # PROTO_CRED_VAR values (GEN_HY2_PASS etc.) are read by the render_* functions;
+    # the name is dynamic so shellcheck can't see the assignment.
+    # shellcheck disable=SC2034
+    printf -v "${PROTO_CRED_VAR[$c]}" '%s' "$(${PROTO_CRED_GEN[$c]})"
+  done
   GEN_SS_CHAIN_PASS="$(gen_ss_pass)"
-  GEN_TU_PASS="$(gen_hex_pass)"
-  GEN_NAIVE_PASS="$(gen_hex_pass)"
   GEN_ECH_KEY_ARR=""
   [[ $ECH -eq 1 ]] && gen_ech
   INST_ST_N=0
@@ -519,7 +538,6 @@ JSON
       sed 's/^/\/\/ /' "$TMPD/ech.configs"
     } >> "$out"
   fi
-  echo "$GEN_PUB"
 }
 
 # ---------- --test: self-check (default set = deployment shape; --protocols overrides) ----------
@@ -562,7 +580,7 @@ if [[ $TEST_MODE -eq 1 ]]; then
   fi
   CHAIN_SS=1; CHAIN_SS_PORT_VAL=8389
   test_out="$TMPD/config-server.json"
-  render_config "$TMPD/cert.pem" "$TMPD/key.pem" "$test_out" >/dev/null || { err "self-check: generation failed"; exit 1; }
+  render_config "$TMPD/cert.pem" "$TMPD/key.pem" "$test_out" || { err "self-check: generation failed"; exit 1; }
   if timeout 15 "$SB_BIN" check -c "$test_out" 2>"$TMPD/check.err"; then
     ok "self-check: generated + passed sing-box check ($INST_TAGS)"
     exit 0
@@ -576,7 +594,9 @@ fi
 if ! mkdir -p "$(dirname "$SB_OUTPUT")" 2>/dev/null; then
   die1 "cannot write output dir (permission?): $(dirname "$SB_OUTPUT") (add --debug for details)"
 fi
-PUB="$(render_config "$CERT_FILE" "$KEY_FILE" "$SB_OUTPUT")" || exit 1
+PUB=""
+render_config "$CERT_FILE" "$KEY_FILE" "$SB_OUTPUT" || exit 1
+PUB="$GEN_PUB"   # reality public key, set by render_config (stdout channel removed)
 if [[ ! -s "$SB_OUTPUT" ]]; then
   die1 "output file empty after write (disk full?): $SB_OUTPUT"
 fi
