@@ -382,48 +382,46 @@ fi
 # Instance context: INST_TAG (current), INST_PORT, INST_SS_METHOD — set by render_config loop.
 # Shadowtls chained ss: rendered only for the FIRST shadowtls instance (CHAIN_SS=1).
 render_reality() {
-  echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
+  echo "{ \"type\": \"vless\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\", \"flow\": \"xtls-rprx-vision\" } ],
     \"tls\": { \"enabled\": true, \"server_name\": \"$REALITY_SNI\",
       \"reality\": { \"enabled\": true, \"handshake\": { \"server\": \"$REALITY_SNI\", \"server_port\": 443 },
         \"private_key\": \"$GEN_PRIV\", \"short_id\": [\"$GEN_SID\"] } } }"
 }
 render_hysteria2() {
-  echo "{ \"type\": \"hysteria2\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
+  echo "{ \"type\": \"hysteria2\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"password\": \"$GEN_HY2_PASS\" } ],
     \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
 render_vless_ws() {
-  echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
+  echo "{ \"type\": \"vless\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\" } ],
     \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) },
     \"transport\": { \"type\": \"ws\", \"path\": \"/ws\" } }"
 }
 render_vless_grpc() {
-  echo "{ \"type\": \"vless\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
+  echo "{ \"type\": \"vless\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\" } ],
     \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) },
     \"transport\": { \"type\": \"grpc\", \"service_name\": \"grpc\" } }"
 }
 render_anytls() {
-  echo "{ \"type\": \"anytls\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
+  echo "{ \"type\": \"anytls\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"password\": \"$GEN_ANYTLS_PASS\" } ],
     \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
 render_shadowtls() {
-  # tag must be unique per instance; the server may have several shadowtls inbounds
-  local out detour
-  detour=""
-  if [[ $CHAIN_SS -eq 1 && "${INST_SHADOWTLS_N:-0}" -eq 0 ]]; then
+  # The chain ss binds to the FIRST shadowtls instance only. The count lives in
+  # render_config's loop (INST_ST_N) — a counter incremented here would die in the
+  # $( ) substitution subshell and every instance would look like the first.
+  local out detour=""
+  if [[ $CHAIN_SS -eq 1 && "${INST_ST_N:-0}" -eq 1 ]]; then
     detour=", \"detour\": \"ss-chain-in\""
   fi
-  INST_SHADOWTLS_N=$(( ${INST_SHADOWTLS_N:-0} + 1 ))
   out="{ \"type\": \"shadowtls\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"version\": 3, \"users\": [ { \"name\": \"sb\", \"password\": \"$GEN_ST_PASS\" } ],
     \"handshake\": { \"server\": \"$REALITY_SNI\", \"server_port\": 443 }, \"strict_mode\": true$detour }"
-  # chain ss binds to the FIRST shadowtls instance only: INST_SHADOWTLS_N was 0
-  # before the increment above, so after it the first instance reads 1-1==0.
-  if [[ $CHAIN_SS -eq 1 && $(( ${INST_SHADOWTLS_N:-0} - 1 )) -eq 0 ]]; then
+  if [[ $CHAIN_SS -eq 1 && "${INST_ST_N:-0}" -eq 1 ]]; then
     out+=", { \"type\": \"shadowsocks\", \"tag\": \"ss-chain-in\", \"listen\": \"::\", \"listen_port\": $CHAIN_SS_PORT_VAL,
       \"method\": \"2022-blake3-aes-256-gcm\", \"password\": \"$GEN_SS_CHAIN_PASS\" }"
   fi
@@ -435,13 +433,13 @@ render_shadowsocks() {
     \"method\": \"$method\", \"password\": \"$GEN_SS_PASS\" }"
 }
 render_tuic() {
-  echo "{ \"type\": \"tuic\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
+  echo "{ \"type\": \"tuic\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\", \"password\": \"$GEN_TU_PASS\" } ],
     \"congestion_control\": \"bbr\",
     \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
 render_naive() {
-  echo "{ \"type\": \"naive\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
+  echo "{ \"type\": \"naive\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"username\": \"sb\", \"password\": \"$GEN_NAIVE_PASS\" } ],
     \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
@@ -481,11 +479,19 @@ render_config() {
   GEN_NAIVE_PASS="$(gen_hex_pass)"
   GEN_ECH_KEY_ARR=""
   [[ $ECH -eq 1 ]] && gen_ech
-  INST_SHADOWTLS_N=0
+  INST_ST_N=0
+  ST_N=0
   debug "domain=$DOMAIN reality_sni=$REALITY_SNI instances=$INST_TAGS ech=$ECH"
   for t in $INST_TAGS; do
     INST_TAG="$t"
     INST_PORT="${INST_PORTS[$t]}"
+    # shadowtls instance ordinal (1-based), read by render_shadowtls — must live in
+    # the parent shell: $( ) subshell writes would be lost.
+    INST_ST_N=0
+    if [[ "$t" == shadowtls || "$t" == shadowtls-* ]]; then
+      ST_N=$((ST_N + 1))
+      INST_ST_N="$ST_N"
+    fi
     proto="${t%%-*}"
     [[ -n "${PROTO_DEFAULT_PORT[$proto]+x}" ]] || proto="$t"
     local frag

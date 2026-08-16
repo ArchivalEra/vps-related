@@ -158,14 +158,23 @@ ech_suffix() { # $1=inbound index → '' or ', "ech": { "enabled": true }'
   [[ -n "$k" ]] && echo ', "ech": { "enabled": true }'
 }
 
+# Shared tag derivation: the server now always emits a unique per-instance tag, so
+# read it and keep it (multi-instance tags like reality-2 survive conversion and the
+# duplicate-tag check in gen-client passes). Fall back to the protocol default only
+# for hand-written/legacy configs with no tag. The old "%-in" strip was dead code —
+# the server never emits -in suffixes.
+ctag_of() { # $1=inbound index  $2=fallback (protocol default tag)
+  local t; t="$(inb_field "$1" 'tag')"
+  echo "${t:-$2}"
+}
+
 convert_vless() { # $1=inbound index — server vless → client vless (reality or ws/grpc transport variant)
-  local i="$1" uuid flow sni priv short pub port tag ctag
+  local i="$1" uuid flow sni priv short pub port ctag
   uuid="$(inb_field "$i" 'users.0.uuid')"
   flow="$(inb_field "$i" 'users.0.flow')"
   sni="$(inb_field "$i" 'tls.server_name')"
   priv="$(inb_field "$i" 'tls.reality.private_key')"
   port="$(inb_field "$i" 'listen_port')"
-  tag="$(inb_field "$i" 'tag')"
   [[ -z "$port" || "$port" == "0" ]] && { warn "vless inbound[$i] missing listen_port, skip"; return; }
   # Branch A: reality (has private_key)
   if [[ -n "$priv" ]]; then
@@ -173,7 +182,7 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
     [[ -z "$short" ]] && short="$(inb_field "$i" 'tls.reality.short_id')"
     local pub
     pub="$(derive_pubkey "$priv")" || { warn "vless inbound[$i] pubkey derivation failed, skip"; return; }
-    ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="reality"
+    ctag="$(ctag_of "$i" reality)"
     OUTS+="${OUTS:+,
         }{ \"type\": \"vless\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"flow\": \"$flow\", \"packet_encoding\": \"xudp\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" }, \"reality\": { \"enabled\": true, \"public_key\": \"$pub\", \"short_id\": \"$short\" } } }"
     TAGS+=" $ctag"
@@ -195,7 +204,7 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
       [[ -z "$ws_path" ]] && ws_path="/ws"
       ws_host="$(inb_field "$i" 'transport.headers.Host')"
       [[ -z "$ws_host" ]] && ws_host="$sni"
-      ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="vless-ws"
+      ctag="$(ctag_of "$i" vless-ws)"
       OUTS+="${OUTS:+,
         }{ \"type\": \"vless\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins$(ech_suffix "$i") }, \"transport\": { \"type\": \"ws\", \"path\": \"$ws_path\", \"headers\": { \"Host\": \"$ws_host\" } } }"
       TAGS+=" $ctag"
@@ -204,7 +213,7 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
     grpc)
       local service_name
       service_name="$(inb_field "$i" 'transport.service_name')"
-      ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="vless-grpc"
+      ctag="$(ctag_of "$i" vless-grpc)"
       OUTS+="${OUTS:+,
         }{ \"type\": \"vless\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$ins$(ech_suffix "$i") }, \"transport\": { \"type\": \"grpc\", \"service_name\": \"$service_name\" } }"
       TAGS+=" $ctag"
@@ -218,17 +227,16 @@ convert_vless() { # $1=inbound index — server vless → client vless (reality 
 }
 
 convert_hy2() { # $1=inbound index — server hysteria2 → client hysteria2
-  local i="$1" pass obfs_type obfs_pass tag ctag
+  local i="$1" pass obfs_type obfs_pass ctag
   pass="$(inb_field "$i" 'users.0.password')"
   obfs_type="$(inb_field "$i" 'obfs.type')"
   obfs_pass="$(inb_field "$i" 'obfs.password')"
-  tag="$(inb_field "$i" 'tag')"
   local obfs_json=""
   [[ -n "$obfs_type" && -n "$obfs_pass" ]] && obfs_json=", \"obfs\": { \"type\": \"$obfs_type\", \"password\": \"$obfs_pass\" }"
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field "$i" 'listen_port')"
-  ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="hy2"
+  ctag="$(ctag_of "$i" hy2)"
   OUTS+="${OUTS:+,
         }{ \"type\": \"hysteria2\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\"$obfs_json, \"tls\": { \"enabled\": true, \"server_name\": \"${SNI_OVERRIDE:-$SERVER}\"$ins$(ech_suffix "$i") } }"
   TAGS+=" $ctag"
@@ -236,37 +244,44 @@ convert_hy2() { # $1=inbound index — server hysteria2 → client hysteria2
 }
 
 convert_shadowtls() { # $1=inbound index — server shadowtls (chain→ss) → client shadowtls + ss(detour)
-  local i="$1" pass ver handshake_sni detour_tag ss_in
+  local i="$1" pass ver handshake_sni detour_tag ss_in ctag
   pass="$(inb_field "$i" 'users.0.password')"
   ver="$(inb_field "$i" 'version')"
   [[ -z "$ver" || "$ver" == "0" ]] && ver=3
   handshake_sni="$(inb_field "$i" 'handshake.server')"
   local port; port="$(inb_field "$i" 'listen_port')"
+  ctag="$(ctag_of "$i" shadowtls)"
   OUTS+="${OUTS:+,
-        }{ \"type\": \"shadowtls\", \"tag\": \"shadowtls\", \"server\": \"$SERVER\", \"server_port\": $port, \"version\": $ver, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$handshake_sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" } } }"
-  TAGS+=" shadowtls"
-  # Chain: find the ss inbound referenced by detour, emit ss(detour→shadowtls)
+        }{ \"type\": \"shadowtls\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"version\": $ver, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$handshake_sni\", \"utls\": { \"enabled\": true, \"fingerprint\": \"chrome\" } } }"
+  TAGS+=" $ctag"
+  # Chain: only emit the ss half when this instance actually references a chain ss
+  # (detour non-empty and matching an ss inbound). An empty detour means a standalone
+  # shadowtls — grabbing "the first ss" would double-convert it. The chain tag is the
+  # fixed single-name ss-over-st (only the first shadowtls instance chains, so it is
+  # unique even with multiple shadowtls instances).
   detour_tag="$(inb_field "$i" 'detour')"
   local n ss_method ss_pass ss_port
   n="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
   ss_in=""
-  for ((j=0; j<n; j++)); do
-    local t; t="$(inb_field "$j" 'type')"
-    if [[ "$t" == "shadowsocks" ]]; then
-      local tag; tag="$(inb_field "$j" 'tag')"
-      if [[ "$detour_tag" == "$tag" || -z "$detour_tag" ]]; then ss_in=$j; break; fi
-    fi
-  done
+  if [[ -n "$detour_tag" ]]; then
+    for ((j=0; j<n; j++)); do
+      local t; t="$(inb_field "$j" 'type')"
+      if [[ "$t" == "shadowsocks" ]]; then
+        local tag; tag="$(inb_field "$j" 'tag')"
+        if [[ "$detour_tag" == "$tag" ]]; then ss_in=$j; break; fi
+      fi
+    done
+  fi
   if [[ -n "$ss_in" ]]; then
     ss_method="$(inb_field "$ss_in" 'method')"
     ss_pass="$(inb_field "$ss_in" 'password')"
     ss_port="$(inb_field "$ss_in" 'listen_port')"
     OUTS+=",
-        { \"type\": \"shadowsocks\", \"tag\": \"ss-over-st\", \"server\": \"$SERVER\", \"server_port\": $ss_port, \"method\": \"$ss_method\", \"password\": \"$ss_pass\", \"detour\": \"shadowtls\" }"
+        { \"type\": \"shadowsocks\", \"tag\": \"ss-over-st\", \"server\": \"$SERVER\", \"server_port\": $ss_port, \"method\": \"$ss_method\", \"password\": \"$ss_pass\", \"detour\": \"$ctag\" }"
     TAGS+=" ss-over-st"
-    debug "shadowtls ← inbound[$i] + ss chain inbound[$ss_in]"
+    debug "shadowtls[$ctag] ← inbound[$i] + ss chain inbound[$ss_in]"
   else
-    warn "shadowtls inbound[$i] has no matching ss inbound (detour=$detour_tag), only shadowtls emitted"
+    debug "shadowtls[$ctag] ← inbound[$i] (no chain, detour=$detour_tag)"
   fi
 }
 
@@ -275,12 +290,11 @@ convert_tuic() { # $1=inbound index — server tuic → client tuic
   uuid="$(inb_field "$i" 'users.0.uuid')"
   pass="$(inb_field "$i" 'users.0.password')"
   cc="$(inb_field "$i" 'congestion_control')"
-  tag="$(inb_field "$i" 'tag')"
   [[ -z "$cc" ]] && cc="bbr"
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field "$i" 'listen_port')"
-  ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="tuic"
+  ctag="$(ctag_of "$i" tuic)"
   OUTS+="${OUTS:+,
         }{ \"type\": \"tuic\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\", \"tls\": { \"enabled\": true, \"server_name\": \"${SNI_OVERRIDE:-$SERVER}\"$ins$(ech_suffix "$i") } }"
   TAGS+=" $ctag"
@@ -288,13 +302,12 @@ convert_tuic() { # $1=inbound index — server tuic → client tuic
 }
 
 convert_anytls() { # $1=inbound index — server anytls → client anytls
-  local i="$1" pass tag ctag
+  local i="$1" pass ctag
   pass="$(inb_field "$i" 'users.0.password')"
-  tag="$(inb_field "$i" 'tag')"
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field "$i" 'listen_port')"
-  ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="anytls"
+  ctag="$(ctag_of "$i" anytls)"
   OUTS+="${OUTS:+,
         }{ \"type\": \"anytls\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"${SNI_OVERRIDE:-$SERVER}\"$ins$(ech_suffix "$i") } }"
   TAGS+=" $ctag"
@@ -312,7 +325,7 @@ convert_ss() { # $1=inbound index — direct shadowsocks → client ss (skip ss 
   method="$(inb_field "$i" 'method')"
   pass="$(inb_field "$i" 'password')"
   local port; port="$(inb_field "$i" 'listen_port')"
-  ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="ss2022"
+  ctag="$(ctag_of "$i" ss2022)"
   OUTS+="${OUTS:+,
         }{ \"type\": \"shadowsocks\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"method\": \"$method\", \"password\": \"$pass\" }"
   TAGS+=" $ctag"
@@ -320,17 +333,16 @@ convert_ss() { # $1=inbound index — direct shadowsocks → client ss (skip ss 
 }
 
 convert_naive() { # $1=inbound index — server naive → client naive (no insecure; self-signed via certificate_path)
-  local i="$1" user pass cert sni tag ctag
+  local i="$1" user pass cert sni ctag
   user="$(inb_field "$i" 'users.0.username')"
   pass="$(inb_field "$i" 'users.0.password')"
   sni="${SNI_OVERRIDE:-$SERVER}"
   cert="$(inb_field "$i" 'tls.certificate_path')"
-  tag="$(inb_field "$i" 'tag')"
   local port; port="$(inb_field "$i" 'listen_port')"
   [[ -z "$port" || "$port" == "0" ]] && { warn "naive inbound[$i] missing listen_port, skip"; return; }
   local cert_json=""
   [[ -n "$cert" ]] && cert_json=", \"certificate_path\": \"$cert\""
-  ctag="${tag%-in}"; [[ -z "$ctag" ]] && ctag="naive"
+  ctag="$(ctag_of "$i" naive)"
   OUTS+="${OUTS:+,
         }{ \"type\": \"naive\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$cert_json$(ech_suffix "$i") } }"
   TAGS+=" $ctag"

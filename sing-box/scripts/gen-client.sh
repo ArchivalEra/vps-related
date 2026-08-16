@@ -226,9 +226,11 @@ OUTBOUNDS_ALL+=",
         { \"type\": \"direct\", \"tag\": \"direct\" },
         { \"type\": \"block\", \"tag\": \"block\" }"
 
+# DNS detour: reality lines are the most anti-blocking, so DNS prefers one. Prefix
+# match (reality / reality-2) — the server emits unique per-instance tags.
 DNS_DETOUR="reality"
 echo "$TAGS" | tr ' ' '
-' | grep -q '^reality$' || DNS_DETOUR="$(echo "$TAGS" | cut -d' ' -f1)"
+' | grep -q '^reality' || DNS_DETOUR="$(echo "$TAGS" | cut -d' ' -f1)"
 
 # ---------- inbound ----------
 if [[ "$INBOUND_TYPE" == "tun" ]]; then
