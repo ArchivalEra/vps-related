@@ -5,8 +5,10 @@
 # serving, native TLS, streaming — as a single static musl binary (x86_64 + arm64).
 # We wrap it instead of writing our own server because dufs already owns all the
 # hard parts; the wrapper only adds the one-time semantics dufs lacks: a random
-# key URL, with a TTL auto-destruct (default 60s) or an infinite --hold share until
-# Ctrl+C.
+# key URL with a TTL auto-destruct (default 60s, or --ttl N — N has no upper bound,
+# since a truly permanent share would need systemd, which this tool does not pretend
+# to be). --hold is a foreground display mode, not a longer lease: live single-line
+# countdown, ^C stops the share immediately, and the TTL elapsing stops it by itself.
 #
 # Key decisions, and why:
 #   - Random 8-char key URL: the key IS the secret. A path without it is a 404 and
@@ -14,8 +16,12 @@
 #     one-time without any auth setup.
 #   - TTL auto-expiry by default: after TTL seconds (default 60, or --ttl N) the dufs
 #     we started is killed and the temp dir removed, so the delivered file does not
-#     linger. With --hold the share is infinite — the script holds the terminal until
-#     Ctrl+C, then cleans up identically (zero residue either way).
+#     linger. TTL has no upper bound — the honest way to "keep it up for a while" is a
+#     big TTL (a day, a week), not an infinite share.
+#   - --hold is a terminal mode, not a longer lease: the script stays in the
+#     foreground with an acme-style single-line countdown (in-place \r updates); ^C
+#     stops sharing immediately, and the TTL elapsing ends it by itself — then the
+#     terminal is released. Zero residue either way.
 #   - Port pre-check via bash /dev/tcp: pure-bash (no nc dependency) and loopback
 #     only — it checks availability, it never probes anything external.
 #   - --host is user-supplied only, never auto-probed: the script cannot know which
@@ -28,7 +34,7 @@
 #     browsers show zero warnings) — no domain or open inbound port needed. The
 #     local dufs backend then stays plain HTTP on a random loopback port.
 #
-# Usage: config-delivery.sh [serve] <file> [--port N] [--ttl SEC|--hold] [--host HOST [--v4|--v6]]
+# Usage: config-delivery.sh [serve] <file> [--port N] [--ttl SEC] [--hold] [--host HOST [--v4|--v6]]
 #                           [--cert FILE] [--key FILE] [--argo]   (details: --help)
 # Env: DUFS_BIN (path to dufs binary; default: dufs on PATH)
 
@@ -41,9 +47,8 @@ if [[ $# -eq 0 ]]; then
 fi
 
 PORT=443
-TTL=60             # default = 60s auto-delete; --ttl N overrides
-TTL_SET=0          # 1 = --ttl given explicitly (mutually exclusive with --hold)
-HOLD=0             # 1 = --hold: infinite share until Ctrl+C
+TTL=60             # default = 60s auto-delete; --ttl N overrides; no upper bound
+HOLD=0             # 1 = --hold: foreground countdown mode (TTL still applies, ^C stops)
 HOST=""
 FAMILY=""          # "" = auto (IPv4 first), "v4" = force IPv4, "v6" = force IPv6
 CERT=""
@@ -56,9 +61,11 @@ print_help() {
 ##help##
   --port N        listen port (default 443, 1-65535, <1024 needs root; ignored in
                   --argo mode, where the backend binds a random loopback port)
-  --ttl SEC       auto-delete the file after N seconds (default 60)
-  --hold          hold the terminal until Ctrl+C (infinite share; mutually
-                  exclusive with --ttl)
+  --ttl SEC       auto-delete the file after N seconds (default 60, no upper bound —
+                  a "permanent" share without systemd is not real — use a big TTL)
+  --hold          stay in the foreground: live single-line countdown on screen; ^C
+                  stops the share right away, and when the TTL elapses the share ends
+                  by itself and the terminal is released. not exclusive with --ttl
   --host NAME     host in the link — an IP literal (v6 bracketed automatically), or a
                   domain kept as-is (dual-stack: each client resolves it with its own
                   DNS). never auto-probed, user-supplied only. disabled in --argo mode.
@@ -114,7 +121,7 @@ dufs_install_guide() {
   echo
   echo "  1. Download (v0.46.0 — replace with the latest from"
   echo "     https://github.com/sigoden/dufs/releases if you prefer):"
-  echo "     curl -fL -o /tmp/dufs.tar.gz https://github.com/sigoden/dufs/releases/download/v0.46.0/dufs-v0.46.0-$DUF_TARGET.tar.gz"
+  echo "     wget -O /tmp/dufs.tar.gz https://github.com/sigoden/dufs/releases/download/v0.46.0/dufs-v0.46.0-$DUF_TARGET.tar.gz"
   echo "  2. Extract the dufs binary into /usr/local/bin:"
   echo "     tar -xzf /tmp/dufs.tar.gz -C /usr/local/bin"
   echo "  3. Verify:"
@@ -149,24 +156,27 @@ cleanup() {
 #   1) a live 3s countdown, which also doubles as the argo edge warm-up window (a
 #      fresh trycloudflare URL is typically unreachable for the first ~1-2s: 530,
 #      then 200);
-#   2) up to 3 curl probes for HTTP 200 — curl is always -k because we verify the
-#      link ANSWERS, not that its cert is trusted, and --max-time 2 keeps each probe
-#      from hanging;
+#   2) up to 3 wget probes for HTTP success — wget is always --no-check-certificate
+#      (mirrors curl's -k) because we verify the link ANSWERS, not that its cert is
+#      trusted, and -T 2 keeps each probe from hanging. One command, no flavor
+#      detection: GNU wget and busybox wget both accept -q -Y off -T 2
+#      --no-check-certificate -O /dev/null, and the probe downloads the file to
+#      /dev/null (a few KB). -Y off is load-bearing: the target is loopback, so a
+#      server-side http(s)_proxy env must never get in the way;
 #   3) ~2s between failed probes.
-# Returns 0 on the first 200, 1 when all three attempts fail.
+# Returns 0 on the first success, 1 when all three attempts fail.
 verify_link() {
   local url="$1"
-  local i code
+  local i
   for i in 3 2 1; do
     echo "checking link in $i..."
     sleep 1
   done
   for i in 1 2 3; do
-    code="$(curl -k --max-time 2 -sS -o /dev/null -w '%{http_code}' "$url")"
-    if [[ "$code" == "200" ]]; then
+    if wget -q -Y off --no-check-certificate -T 2 -O /dev/null "$url" 2>/dev/null; then
       return 0
     fi
-    [[ $i -lt 3 ]] && { echo "link check attempt $i/3 returned $code — retrying"; sleep 2; }
+    [[ $i -lt 3 ]] && { echo "link check attempt $i/3 failed — retrying"; sleep 2; }
   done
   return 1
 }
@@ -178,7 +188,7 @@ while [[ $i -lt ${#args[@]} ]]; do
   case "$a" in
     --help) print_help; exit 0 ;;
     --port) PORT="${args[$((i+1))]}"; i=$((i+2)) ;;
-    --ttl)  TTL="${args[$((i+1))]}"; TTL_SET=1; i=$((i+2)) ;;
+    --ttl)  TTL="${args[$((i+1))]}"; i=$((i+2)) ;;
     --host) HOST="${args[$((i+1))]}"; i=$((i+2)) ;;
     --v4) [[ -n "$FAMILY" && "$FAMILY" != "v4" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v4"; i=$((i+1)) ;;
     --v6) [[ -n "$FAMILY" && "$FAMILY" != "v6" ]] && { echo "error: --v4 and --v6 are mutually exclusive — pick one"; exit 1; }; FAMILY="v6"; i=$((i+1)) ;;
@@ -190,11 +200,8 @@ while [[ $i -lt ${#args[@]} ]]; do
   esac
 done
 
-# --hold and --ttl are the two sharing modes; both given is a contradiction.
-if [[ $HOLD -eq 1 && $TTL_SET -eq 1 ]]; then
-  echo "error: --hold and --ttl are mutually exclusive — pick one"
-  exit 1
-fi
+# --hold and --ttl are orthogonal: --hold controls the terminal (foreground countdown
+# vs. detach), --ttl controls the lease. They combine freely — no mutual exclusion.
 
 # ---------- --argo mode: guards first ----------
 # The quick tunnel owns the public URL + cert, so flags that steer a direct link or
@@ -230,6 +237,14 @@ if ! command -v "$DUFS_BIN" >/dev/null 2>&1; then
   dufs_install_guide
 fi
 
+# wget is the link self-check tool (GNU wget or busybox wget — one command works
+# for both, no flavor detection needed). It is a hard dependency because the
+# script promises a verified link; no wget means no way to keep that promise.
+if ! command -v wget >/dev/null 2>&1; then
+  echo "error: wget not found — needed for the link self-check (install GNU wget, or busybox wget)"
+  exit 1
+fi
+
 # ---------- Input guards ----------
 [[ -n "$FILE" && -f "$FILE" && -r "$FILE" ]] || { echo "error: file not readable: ${FILE:-<none>}"; exit 1; }
 [[ -s "$FILE" ]] || echo "warning: file is empty: $FILE"
@@ -246,7 +261,7 @@ if [[ -n "$CERT" || -n "$KEY" ]]; then
   if [[ -n "$CERT" && -n "$KEY" && -r "$CERT" && -r "$KEY" ]]; then
     TLS_MODE="cert"
   else
-    echo "warning: --cert/--key unusable (missing or unreadable pair) — falling back to a self-signed HTTPS cert; clients must use curl -k"
+    echo "warning: --cert/--key unusable (missing or unreadable pair) — falling back to a self-signed HTTPS cert; clients must use wget --no-check-certificate"
     TLS_MODE="self-signed"
     CERT=""; KEY=""
   fi
@@ -309,7 +324,7 @@ if [[ "$TLS_MODE" == "self-signed" ]]; then
 fi
 
 # dufs is detached (setsid) so the TTL path can hand the terminal back immediately;
-# in --hold mode the script keeps the terminal foreground and waits on this PID.
+# in --hold mode the script stays in the foreground and ticks the same TTL on screen.
 # TLS states "http" (plaintext — also the --argo backend) run dufs without any
 # --tls-cert/--tls-key; in --argo mode the backend additionally binds loopback only.
 if [[ "$TLS_MODE" == "http" && $ARGO -eq 1 ]]; then
@@ -354,10 +369,14 @@ fi
 # direct mode prints the --host link with the scheme the TLS state dictates.
 # LINK_URL is the FINAL url the client will hit; verify_link() probes exactly that
 # (not a loopback stand-in), so the check is as real as the delivery.
+# Client download hint uses wget -O with the delivered file's real name (GNU wget
+# and busybox wget both take -O), so the client ends up with a useful filename
+# instead of the random key.
+BN="$(basename "$FILE")"
 if [[ $ARGO -eq 1 ]]; then
   echo "one-time download link: $PUB_URL/$KEYSTR"
   echo "tunnel cert is a public CA (browser-trusted, zero warnings); no domain or open inbound port needed"
-  echo "client: curl -OJ $PUB_URL/$KEYSTR"
+  echo "client: wget -O $BN $PUB_URL/$KEYSTR"
   LINK_URL="$PUB_URL/$KEYSTR"
 else
   SH="${HOST:-localhost}"
@@ -365,41 +384,52 @@ else
     echo "one-time download link: http://$SH:$PORT/$KEYSTR"
     echo "warning: plain HTTP — the config contains secrets; anyone on the network path can read it"
     echo "dir listing hidden; host is user-supplied (never auto-probed)"
-    echo "client: curl -OJ http://$SH:$PORT/$KEYSTR"
+    echo "client: wget -O $BN http://$SH:$PORT/$KEYSTR"
     LINK_URL="http://$SH:$PORT/$KEYSTR"
   else
     echo "one-time download link: https://$SH:$PORT/$KEYSTR"
     echo "dir listing hidden; host is user-supplied (never auto-probed)"
-    echo "client: curl -kOJ https://$SH:$PORT/$KEYSTR"
+    if [[ "$TLS_MODE" == "cert" ]]; then
+      echo "client: wget -O $BN https://$SH:$PORT/$KEYSTR"
+    else
+      echo "client: wget --no-check-certificate -O $BN https://$SH:$PORT/$KEYSTR"
+    fi
     LINK_URL="https://$SH:$PORT/$KEYSTR"
   fi
 fi
-# Unified link verification: 3s countdown, then up to 3 curl probes for HTTP 200.
+# Unified link verification: 3s countdown, then up to 3 wget probes for HTTP success.
 # All three failed → report + zero-residue cleanup + exit 1 (no link echoed again).
 if ! verify_link "$LINK_URL"; then
   echo "error: link did not return HTTP 200 after 3 attempts — not printing the link" >&2
   cleanup 1
 fi
 
-# Two sharing modes, one cleanup:
-#   --hold   -> infinite share: the script stays in the foreground and waits on dufs
-#               (and on cloudflared when --argo is active), holding the terminal
-#               until the user hits ^C — the INT/TERM trap above then runs the same
-#               cleanup (kill dufs + rm + exit 130).
-#   default  -> TTL self-destruct (60s or --ttl N): detach a steward that sleeps N
-#               seconds, then kills dufs, removes the temp dir and (in --argo mode)
-#               prints the tunnel cleanup reminder. The script returns 0 immediately
-#               and hands the terminal back.
+# One sharing timeline, one cleanup:
+#   --hold -> foreground: acme-style single-line countdown (in-place \r updates) that
+#             ticks the remaining TTL; ^C runs the INT/TERM trap cleanup (kill dufs +
+#             rm temp dir) and stops right away. When the countdown reaches zero the
+#             share ends by itself — same cleanup, same exit, terminal released.
+#   default -> detached: the TTL steward below sleeps, then kills dufs, removes the
+#              temp dir and (in --argo mode) prints the tunnel cleanup reminder. The
+#              script returns 0 immediately and hands the terminal back.
 if [[ $HOLD -eq 1 ]]; then
-  echo "Ctrl+C to stop sharing (--hold)"
-  wait "$DUFS_PID"
-  [[ $ARGO -eq 1 ]] && wait "$CFD_PID"
-  # Reaching this line means the server exited on its own (e.g. killed externally);
-  # clean the temp dir and hand the terminal back.
+  left="$TTL"
+  while [[ "$left" -gt 0 ]]; do
+    printf '\r\033[2Klink auto-deletes in %ss (^C to stop now)   ' "$left"
+    sleep 1
+    left=$((left - 1))
+  done
+  printf '\r\033[2Klink expired — cleaning up\n'
   cleanup 0
 fi
 
+# Detached mode: the script is about to exit and hand the terminal back, but the
+# share lives on via the detached steward. The one handle that always works is the
+# dufs PID we just started — print it loud. No pidfile/stop subcommand: the PID is
+# the whole handle, and if the user missed it, restarting dufs or the server clears
+# any strays anyway.
 echo "file auto-deletes after ${TTL}s"
+printf '\033[31mimportant: if you wanna end sharing before ttl, try kill %s\033[0m\n' "$DUFS_PID"
 ( sleep "$TTL"; cleanup 0 ) &
 disown 2>/dev/null || true
 exit 0

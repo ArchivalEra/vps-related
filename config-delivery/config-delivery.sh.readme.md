@@ -1,26 +1,29 @@
 # config-delivery.sh — one-time file delivery over dufs
 
 **config-delivery.sh + dufs exists for one thing only: one-time file delivery via a
-random-key URL that self-destructs after a TTL (default 60s, or `--ttl N`) — or,
-with `--hold`, runs as an infinite share you stop with `Ctrl+C`.**
+random-key URL that self-destructs after a TTL (default 60s, or `--ttl N`). `--hold`
+does not make the share longer — it is a terminal mode: the script stays in the
+foreground with a live single-line countdown, `^C` stops the share right away, and
+the TTL elapsing ends it by itself.**
 
 ## Usage
 
 ```
-config-delivery.sh serve ./config-client.json --port 443 --ttl 600 --host your.domain   # TTL self-destruct
-config-delivery.sh serve ./config-client.json --port 443 --hold --host your.domain      # infinite share (Ctrl+C)
+config-delivery.sh serve ./config-client.json --port 443 --ttl 600 --host your.domain   # 600s self-destruct
+config-delivery.sh serve ./config-client.json --port 443 --hold --host your.domain      # foreground countdown, ^C to stop
 config-delivery.sh serve ./config-client.json --port 443 --host your.domain             # default: 60s TTL self-destruct
+config-delivery.sh serve ./config-client.json --port 443 --ttl 3600 --hold --host your.domain   # 1h, foreground countdown
 ```
 
 | flag | meaning |
 |------|---------|
 | `--port N` | listen port (default 443, 1-65535; < 1024 needs root). Ignored in `--argo` mode, where the backend binds a random loopback port. |
-| `--ttl SEC` | auto-delete: the file is served for N seconds (>= 1) and then self-destructs. Default **60** when neither `--ttl` nor `--hold` is given. Mutually exclusive with `--hold`. |
-| `--hold` | **infinite share** — the script holds the terminal until `Ctrl+C` stops sharing (and cleans up). Mutually exclusive with `--ttl`. |
+| `--ttl SEC` | auto-delete: the file is served for N seconds (>= 1, no upper bound) and then self-destructs. Default **60**. Combines freely with `--hold`. |
+| `--hold` | **foreground mode** — the script stays in the terminal and prints an acme-style single-line countdown (`\r` in-place update). `^C` stops the share immediately (with cleanup); when the countdown hits zero the share ends by itself and the terminal is released. Not a longer lease — the TTL still decides when the link dies. Not exclusive with `--ttl`. |
 | `--host NAME` | host in the link — an IP literal (v6 bracketed automatically), or a domain kept as-is (dual-stack: each client resolves it with its own DNS); never auto-probed. Disabled in `--argo` mode. |
 | `--v4` | with `--host DOMAIN`: force-resolve to an IPv4 for an IP link (errors if no IPv4); mutually exclusive with `--v6`. Disabled in `--argo` mode. |
 | `--v6` | with `--host DOMAIN`: force-resolve to an IPv6 for an IP link (errors if no IPv6); mutually exclusive with `--v4`. Disabled in `--argo` mode. |
-| `--cert FILE` | PEM certificate. Three-state TLS: readable `--cert` + readable `--key` → real-cert HTTPS; only one given (or either unreadable) → warning + fresh self-signed HTTPS fallback (clients `curl -k`); neither given → plain HTTP with a secrets-in-clear warning. Disabled in `--argo` mode. |
+| `--cert FILE` | PEM certificate. Three-state TLS: readable `--cert` + readable `--key` → real-cert HTTPS; only one given (or either unreadable) → warning + fresh self-signed HTTPS fallback (clients `wget --no-check-certificate`); neither given → plain HTTP with a secrets-in-clear warning. Disabled in `--argo` mode. |
 | `--key FILE` | PEM private key; pairs with `--cert` (three states, see above). Disabled in `--argo` mode. |
 | `--argo` | deliver via a cloudflared quick tunnel: public `https://<random>.trycloudflare.com` URL with a public-CA cert (Google Trust Services — browsers trust it, zero warnings), no domain or open inbound port needed. dufs runs plain HTTP on a random loopback port. Disables `--host`/`--v4`/`--v6`/`--cert`/`--key`. |
 | `FILE` | the file to deliver (positional) |
@@ -47,13 +50,13 @@ Client side — open the link in a browser, or:
 
 ```
 # plain HTTP / quick tunnel:
-curl -OJ http://localhost:443/<8-char-key>
+wget -O config-client.json http://localhost:443/<8-char-key>
 
 # HTTPS with a real cert:
-curl -OJ https://your.domain:443/<8-char-key>
+wget -O config-client.json https://your.domain:443/<8-char-key>
 
 # HTTPS with the self-signed fallback:
-curl -kOJ https://localhost:443/<8-char-key>
+wget --no-check-certificate -O config-client.json https://localhost:443/<8-char-key>
 ```
 
 Run `config-delivery.sh --help` for the same flag summary at the terminal.
@@ -63,11 +66,19 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
 - **dufs** — the script resolves the binary from `$DUFS_BIN` (env), falling back to
   `dufs` on PATH. When it is missing, the script prints a complete install wizard:
   architecture detection (`uname -m` → `x86_64-unknown-linux-musl` or
-  `aarch64-unknown-linux-musl`), a curl download URL (pinned to v0.46.0; the message
+  `aarch64-unknown-linux-musl`), a wget download URL (pinned to v0.46.0; the message
   notes the version number can be replaced with the latest from the dufs releases
   page), `tar` extraction into `/usr/local/bin`, a `dufs --version` check, and a
   "re-run this script" prompt. Prebuilt binaries are published for Linux x86_64 and
   aarch64 (musl) only; other architectures need a from-source build.
+- **wget** — the link self-check tool. One command works for both flavors — GNU wget
+  and busybox wget accept the same flags the script uses (`-q -Y off -T 2
+  --no-check-certificate -O /dev/null`), so there is no flavor detection. `-Y off`
+  is deliberate: the probe targets loopback, so a server-side `http(s)_proxy` env
+  must never intercept it. It is a hard dependency because the script promises a
+  verified link; a missing wget exits with an error before anything is served. On
+  machines too old for curl but with a static dufs binary, wget is the option that
+  is actually there.
 - **cloudflared** — required only for `--argo` mode (the quick tunnel client). When
   it is missing, `--argo` prints a blue `no cf, argo link generation disabled`
   notice and exits 1 — there is deliberately no install wizard for it, since quick
@@ -85,15 +96,28 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
 - **Why a random key URL?** The 8-char key (`a-zA-Z0-9_-`) is the secret: without it
   the path is a 404 and the directory listing is hidden, so the link is effectively
   private and one-time without any auth setup.
-- **TTL self-destruct vs `--hold` infinite share.** By default the file is served for
-  60s and then self-destructs; `--ttl N` changes the window (N >= 1). After the TTL
+- **TTL self-destruct, and what `--hold` actually does.** The file is served for a TTL
+  window (default 60s, or `--ttl N`, N >= 1 with **no upper bound** — a truly
+  permanent share needs systemd, which this tool does not pretend to be, so a big TTL
+  — a day, a week — is the honest way to keep a link up for a while). After the TTL
   elapses, a detached steward kills only the dufs this script started and removes the
-  temp dir, so the delivered file does not linger on the machine after delivery; the
-  script returns to the shell immediately. With `--hold`, the share is **infinite**:
-  the script stays in the foreground, holds the terminal, and prints
-  `Ctrl+C to stop sharing (--hold)`. `^C` runs the same cleanup (kill dufs + remove
-  the temp dir + exit 130), so both paths end with zero residue. Nothing is persisted
-  beyond the temp dir either way. `--ttl` and `--hold` are mutually exclusive.
+  temp dir, so the delivered file does not linger on the machine; the script returns
+  to the shell immediately. `--hold` is orthogonal: it keeps the script in the
+  foreground and prints an acme.sh-style single-line countdown (in-place `\r`
+  updates, so the terminal is not spammed) ticking down the same TTL. `^C` runs the
+  same cleanup (kill dufs + remove the temp dir + exit 130) and stops right away;
+  when the countdown reaches zero the share ends by itself and the terminal is
+  released. Both flags combine freely — `--ttl 3600 --hold` is a one-hour share with
+  a foreground countdown. Nothing is persisted beyond the temp dir either way.
+- **Emergency stop in detached (background) mode.** The script prints its link and
+  returns to the shell; the share keeps running via a detached steward. To end it
+  before the TTL, the script prints a red
+  `important: if you wanna end sharing before ttl, try kill <dufs-pid>` line with
+  the exact PID of the dufs it started — killing it drops the link and frees the
+  port immediately (the temp dir is cleaned by the steward at TTL end, or with the
+  next dufs/server restart). The PID is the whole handle: there is deliberately no
+  pidfile or `stop` subcommand, since restarting dufs or the server clears any
+  strays anyway.
 - **Why an `--argo` quick-tunnel mode?** A direct link needs a reachable host/IP and
   an open inbound port (often 443 — root — for the cert to match). A cloudflared
   quick tunnel removes both: `cloudflared tunnel --url http://127.0.0.1:PORT` gives
@@ -117,7 +141,8 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
      end to end. Clients trust the cert directly (no `-k`).
   2. **Self-signed fallback** — only one is given, or either path is missing or
      unreadable: the script prints a warning and mints a fresh throwaway ECDSA
-     cert instead of dying. Clients must `curl -k`; a browser shows one click-through
+     cert instead of dying. Clients must use `wget --no-check-certificate`; a browser
+     shows one click-through
      warning.
   3. **Plain HTTP** — neither is given: dufs runs with no TLS flags at all. This is
      zero-config but carries a real security cost, so the printed link is prefixed
@@ -140,11 +165,11 @@ Run `config-delivery.sh --help` for the same flag summary at the terminal.
 - **Unified link verification**: before the link is printed, the **final URL** (the
   one the client will actually hit — http/https direct or the trycloudflare tunnel)
   is verified with a live `checking link in 3... 2... 1...` countdown, then up to 3
-  curl probes for HTTP 200 (curl is always `-k` because we verify the link answers,
-  not that its cert is trusted; `--max-time 2` keeps each probe from hanging; ~2s
-  between retries). The countdown also doubles as the argo edge warm-up window — a
-  fresh trycloudflare URL is typically unreachable for its first ~1-2s (530, then
-  200), so the 3s countdown plus the 3 retries covers that. All 3 attempts failed →
-  the error is reported and everything is cleaned up with exit 1, and no link is
-  printed. This replaces the old loopback self-check: it probes the exact URL the
-  client will use, so the check is as real as the delivery.
+  wget probes for a successful download (wget is always `--no-check-certificate`
+  because we verify the link answers, not that its cert is trusted; `-T 2` keeps
+  each probe from hanging; ~2s between retries). The countdown also doubles as the
+  argo edge warm-up window — a fresh trycloudflare URL is typically unreachable for
+  its first ~1-2s (530, then 200), so the 3s countdown plus the 3 retries covers
+  that. All 3 attempts failed → the error is reported and everything is cleaned up
+  with exit 1, and no link is printed. This replaces the old loopback self-check: it
+  probes the exact URL the client will use, so the check is as real as the delivery.
