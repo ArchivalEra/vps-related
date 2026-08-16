@@ -27,14 +27,16 @@
 #   --debug             diagnostic output (fully silent by default)
 #   --test              run assert_gen self-check then exit
 #
-# Env: SB_BIN / SB_OUTPUT (full output path override) / DEBUG
-# Exit codes: 0=ok  1=argument/dependency  2=conversion/check failure (contract, assert_gen depends on it)
+# Env: SB_OUTPUT (full output path override) / DEBUG
+# Exit codes: 0=ok  1=argument/dependency  2=conversion/structural check failure (contract, assert_gen depends on it)
 #
 # ═══════════════════════════════════════════════════════════════════════
-# 【Version policy】— auto-detect sing-box binary version, confirm compatibility via timeline
-# Baseline 1.14.0-beta.14; timeline table in protocols.lib.sh VERSION_TABLE.
-# To upgrade to 1.15+: add a row to VERSION_TABLE + adapt convert_xxx() per maintenance doc; check is the net.
-# Full field audit + breaking-change history + upgrade SOP: docs/protocol-maintenance.md
+# 【Version policy】— the client config runs on the *client's* sing-box, so this
+# converter validates structure only, never with a local binary: no version probing,
+# no sing-box check. Field drift between sing-box versions is handled at the convert
+# layer (unknown transport types are skipped with a warning) and at the client
+# device's own sing-box check on import. Timeline table in protocols.lib.sh
+# VERSION_TABLE is informational. 1.15+ upgrade path: docs/protocol-maintenance.md
 # ═══════════════════════════════════════════════════════════════════════
 
 set -uo pipefail
@@ -174,18 +176,6 @@ if [[ "$INBOUND_COUNT" -eq 0 ]]; then
 fi
 debug "inbounds: $INBOUND_COUNT"
 
-# ---------- Version detection (timeline compatibility) ----------
-SB_BIN="${SB_BIN:-}"
-if [[ -z "$SB_BIN" ]]; then
-  SB_BIN="$(find_sb_bin)" || SB_BIN=""
-  [[ -n "$SB_BIN" ]] || warn "sing-box binary not found, skipping check and version detection"
-fi
-if [[ -n "$SB_BIN" ]]; then
-  DETECTED="$(timeout 5 "$SB_BIN" version 2>/dev/null | head -1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -1 | tr -d 'v')"
-  check_version "$DETECTED"
-  debug "sing-box: $SB_BIN (v${DETECTED:-unknown})"
-fi
-
 # ---------- Client connect address (--addr or interactive; never probes local IP; domain/IPv4/IPv6 all accepted) ----------
 # The connect address is a *client-side* fact: probing "our own" IP would only discover the
 # machine we happen to run on, not how the client will reach the server — so we always ask.
@@ -303,17 +293,43 @@ if grep -q '^// ECH CONFIGS' "$TMPD/server-orig.txt" 2>/dev/null; then
 fi
 debug "output written: $SB_OUTPUT"
 
-# ---------- sing-box check (syntax net: final arbiter for breaking changes) ----------
-if [[ -n "$SB_BIN" ]]; then
-  if timeout 15 "$SB_BIN" check -c "$SB_OUTPUT" 2>"$TMPD/check.err"; then
-    ok "generated and passed sing-box check: $SB_OUTPUT"
-  else
-    err "config check failed:"; cat "$TMPD/check.err" >&2
-    exit 2
-  fi
-else
-  warn "generated but not checked (no sing-box binary): $SB_OUTPUT"
+# ---------- Structural self-check (replaces sing-box check) ----------
+# The client config runs on the *client's* sing-box, which this machine may not even
+# have — validating it here with a server-side binary would be checking the wrong
+# thing. The net is a pure structural check: valid JSON, non-empty outbounds, the
+# auto/manual selectors present, route/dns wired. Syntax-level field validation is
+# the client device's sing-box check at import time.
+if ! python3 - "$SB_OUTPUT" <<'PY'
+import json, sys
+errs = []
+try:
+    c = json.load(open(sys.argv[1]))
+except Exception as e:
+    errs.append(f"not valid JSON: {e}")
+else:
+    outs = c.get("outbounds")
+    if not isinstance(outs, list) or not outs:
+        errs.append("outbounds missing or empty")
+    else:
+        tags = [o.get("tag") for o in outs]
+        for o in outs:
+            if not o.get("type") or not o.get("tag"):
+                errs.append(f"outbound missing type/tag: {o.get('type','?')}")
+        for need in ("auto", "manual"):
+            if need not in tags:
+                errs.append(f"missing {need} selector")
+    if not c.get("route", {}).get("final"):
+        errs.append("route.final missing")
+    if not c.get("dns", {}).get("servers"):
+        errs.append("dns.servers missing")
+if errs:
+    print("  ✗ " + "; ".join(errs)); sys.exit(1)
+PY
+then
+  err "structural self-check failed: $SB_OUTPUT"
+  exit 2
 fi
+ok "structural self-check passed: $SB_OUTPUT"
 
 ok "server: $CONFIG_PATH → client: $SB_OUTPUT"
 ok "connect address: $SERVER   TLS: $([ $INSECURE -eq 1 ] && echo 'self-signed(insecure)' || echo 'real cert')   inbound: $INBOUND_TYPE"

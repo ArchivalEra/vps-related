@@ -5,8 +5,8 @@
 # Usage: sourced by gen-client.sh; after parsing server config, call convert_xxx() per inbound, then render_from_server()
 #
 # 【When upgrading sing-box】:
-#   1. Add a version row to VERSION_TABLE (timeline)
-#   2. If the new version changed fields: update the corresponding convert_xxx() (gen-client.sh version probe + check are the net)
+#   1. Check VERSION_TABLE below (informational timeline of field drift)
+#   2. If the new version changed fields: update the corresponding convert_xxx()
 #   3. If a new protocol was added: add convert_xxx() + register it in render_from_server()'s dispatch table
 # Full field audit + breaking-change history + upgrade SOP: docs/protocol-maintenance.md
 
@@ -33,37 +33,20 @@ die2()  { err "$@"; exit 2; }                                          # error +
 debug() { [[ $DEBUG -eq 1 ]] && echo -e "${C_BLUE}[debug] $*${C_RESET}" >&2; }   # only with --debug
 
 # ═══════════════════════════════════════════════════════════════════════
-# 【Version compatibility timeline】— auto-detect sing-box version, confirm compatibility
+# 【Version timeline】— informational record of field drift across sing-box
+# versions. The converter itself never probes a binary version (the client
+# config runs on the *client's* sing-box, not this machine's); field changes
+# are handled per convert_xxx() and by the client device's own check on import.
 # Format: "major.minor:status:note"
 #   status: supported=baseline / deprecated_ok=parseable but deprecated fields / future=intercept new syntax
-# To upgrade to 1.15+: add a row here + adapt convert_xxx() to new fields; check is the final arbiter
+# To upgrade to 1.15+: add a row here + adapt convert_xxx() to new fields.
 # ═══════════════════════════════════════════════════════════════════════
-SINGBOX_MAJOR_MINOR="1.14"
+# shellcheck disable=SC2034  # informational data for future upgradeers; not consumed by code
 VERSION_TABLE=(
   "1.13:deprecated_ok:legacy DNS address shorthand etc. deprecated but parseable, removed in 1.14"
   "1.14:supported:baseline 1.14.0-beta.14"
   "1.15:future:new transport syntax (xhttp etc.) needs confirmation before generating, see maintenance doc"
 )
-
-# Check binary version against timeline; $1=version string (e.g. 1.14.0-beta.14)
-check_version() {
-  local ver="${1:-}" mm status note
-  [[ -z "$ver" ]] && return 0
-  mm="$(echo "$ver" | grep -oE '^[0-9]+\.[0-9]+')"
-  [[ -z "$mm" ]] && { warn "cannot parse sing-box version: $ver"; return 0; }
-  for row in "${VERSION_TABLE[@]}"; do
-    local m="${row%%:*}" rest="${row#*:}"
-    if [[ "$m" == "$mm" ]]; then
-      status="${rest%%:*}" note="${rest#*:}"
-      case "$status" in
-        supported)  debug "version compatible: v$ver (baseline)"; return 0 ;;
-        deprecated_ok) warn "version v$ver: $note"; return 0 ;;
-        future)     warn "version v$ver: $note (if errors, adapt fields per maintenance doc)"; return 0 ;;
-      esac
-    fi
-  done
-  warn "version v$ver not in compatibility timeline (baseline $SINGBOX_MAJOR_MINOR) — confirm fields before generating"
-}
 
 # ---------- X25519 private → public key derivation (server config only has private_key, client needs public_key) ----------
 # Input: URL-safe raw base64 private key (43 chars); Output: URL-safe raw base64 public key
@@ -406,11 +389,10 @@ render_from_server() {
 # No intermediate config dependency (config.gen.json/env removed).
 # ═══════════════════════════════════════════════════════════════════════
 assert_gen() {
-  local LIB_DIR ROOT TEST BIN GEN PASS FAIL code M1 M2 TMPD2 SRVCFG
+  local LIB_DIR ROOT TEST GEN PASS FAIL code M1 M2 TMPD2 SRVCFG
   LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   ROOT="$(dirname "$LIB_DIR")"
   TEST="$ROOT/test-env"
-  BIN="$(find_sb_bin)" || { err "sing-box binary not found (set SB_BIN or add sing-box to PATH)"; return 1; }
   GEN="$ROOT/scripts/gen-client.sh"
   SRVCFG="$TEST/server/config.json"
   if [[ ! -f "$SRVCFG" ]]; then
@@ -424,7 +406,7 @@ assert_gen() {
 
   check() { if [[ "$3" -eq "$2" ]]; then echo "  ✔ $1"; PASS=$((PASS+1)); else echo "  ✗ $1 (expected exit $2, got $3) ${4:-}"; FAIL=$((FAIL+1)); fi; }
   run_gen() { # $1=server config  $2=extra args → exit code to stdout
-    SB_OUTPUT="$TMPD2/out.json" SB_BIN="$BIN" bash "$GEN" --from-server "$1" --addr 127.0.0.1 --insecure "${2:-}" >"$TMPD2/log.txt" 2>&1
+    SB_OUTPUT="$TMPD2/out.json" bash "$GEN" --from-server "$1" --addr 127.0.0.1 --insecure "${2:-}" >"$TMPD2/log.txt" 2>&1
     echo "$?"
   }
 
