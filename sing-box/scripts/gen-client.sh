@@ -139,8 +139,8 @@ debug "temp dir: $TMPD"
 
 # ---------- --test: self-check then exit ----------
 if [[ $TEST_MODE -eq 1 ]]; then
-  ok "== running gen-client.sh self-check (assert_gen) =="
-  assert_gen
+  ok "== running gen-client.sh self-check (assert_gen via test-env/assert_gen.sh) =="
+  bash "$SCRIPT_DIR/../test-env/assert_gen.sh"
   exit $?
 fi
 
