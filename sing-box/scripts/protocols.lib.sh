@@ -351,10 +351,12 @@ convert_naive() { # $1=inbound index — server naive → client naive (no insec
 
 # ---------- Entry: iterate server inbounds, convert by type ----------
 # Input: $TMPD/inbounds.json (server config's inbounds array)
-# Output: OUTS/TAGS (client outbounds fragments)
+# Output: OUTS/TAGS (client outbounds fragments) — kept as globals for gen-client.sh assembly,
+# but render_from_server itself is now re-entrant: callers may declare local OUTS/TAGS/CONSUMED_SS_TAGS
+# to shadow the globals.
 render_from_server() {
   OUTS=""; TAGS=""
-  dump_fields   # single-pass field table ($TMPD/fields.lst); inb_field reads it
+  dump_fields   # single-pass field table ($TMPD/fields.lst); inb_field reads it (grep TSV, no new files)
   local ni t j det i
   ni="$(python3 -c "import json;print(len(json.load(open('$TMPD/inbounds.json'))))")"
   # Pre-scan: collect ss tags referenced by shadowtls chains (avoid duplicate direct conversion)
@@ -381,72 +383,31 @@ render_from_server() {
     esac
   done
   [[ -n "$OUTS" ]] || die2 "server config has no convertible inbounds (none of vless/hysteria2/shadowtls/tuic/anytls/shadowsocks)"
+  # ECH dual-representation check: structured ech (tls.ech.key via ech_suffix) vs comment // ECH CONFIGS must agree
+  local _has_structured_ech=0 _has_comment_ech=0
+  for ((i=0; i<ni; i++)); do
+    [[ -n "$(inb_field "$i" 'tls.ech.key')" ]] && _has_structured_ech=1 && break
+  done
+  [[ -f "$TMPD/server-orig.txt" ]] && grep -q '^// ECH CONFIGS' "$TMPD/server-orig.txt" 2>/dev/null && _has_comment_ech=1
+  if [[ $_has_structured_ech -ne $_has_comment_ech ]]; then
+    warn "ECH mismatch: structured ech=$_has_structured_ech comment ech=$_has_comment_ech (dual representation drift)"
+  fi
 }
 
-# ═══════════════════════════════════════════════════════════════════════
-# 【Self-check】assert_gen — conversion behavior assertions (invoked by gen-client.sh --test)
-# Uses test-env server config (setup.sh) to convert to client.json, asserts structure.
-# No intermediate config dependency (config.gen.json/env removed).
-# ═══════════════════════════════════════════════════════════════════════
-assert_gen() {
-  local LIB_DIR ROOT TEST GEN PASS FAIL code M1 M2 TMPD2 SRVCFG
-  LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  ROOT="$(dirname "$LIB_DIR")"
-  TEST="$ROOT/test-env"
-  GEN="$ROOT/scripts/gen-client.sh"
-  SRVCFG="$TEST/server/config.json"
-  if [[ ! -f "$SRVCFG" ]]; then
-    warn "missing test-env/server/config.json, running bash test-env/setup.sh first"
-    ( cd "$TEST" && bash setup.sh >/dev/null 2>&1 ) || { err "setup.sh failed"; return 1; }
-  fi
-  TMPD2="$(mktemp -d)" || die1 "cannot create temp dir"
-  trap '[[ -n "${TMPD2:-}" ]] && rm -rf "$TMPD2"' EXIT
-  PASS=0; FAIL=0
-  debug "assert_gen: TMPD=$TMPD2 SRVCFG=$SRVCFG"
-
-  check() { if [[ "$3" -eq "$2" ]]; then echo "  ✔ $1"; PASS=$((PASS+1)); else echo "  ✗ $1 (expected exit $2, got $3) ${4:-}"; FAIL=$((FAIL+1)); fi; }
-  run_gen() { # $1=server config  $2=extra args → exit code to stdout
-    SB_OUTPUT="$TMPD2/out.json" bash "$GEN" --from-server "$1" --addr 127.0.0.1 --insecure "${2:-}" >"$TMPD2/log.txt" 2>&1
-    echo "$?"
-  }
-
-  echo "=== A. argument/dependency errors (exit 1) ==="
-  code=$(run_gen /nonexistent.json);         check "server config missing → 1" 1 "$code"
-  echo "=== B. conversion failure (exit 2) ==="
-  python3 -c "import json;json.dump({'inbounds':[]},open('$TMPD2/empty.json','w'))"
-  code=$(run_gen "$TMPD2/empty.json");       check "empty inbounds → 2" 2 "$code"
-  echo "=== C. 9-line conversion structure (exit 0 + structure) ==="
-  code=$(run_gen "$SRVCFG");                 check "9-line conversion → 0" 0 "$code"
-  if ! python3 - "$TMPD2/out.json" <<'PY'
-import json, sys
-c = json.load(open(sys.argv[1]))
-errs = []
-tags = {o["tag"] for o in c["outbounds"]}
-expect = {"reality","hy2","shadowtls","ss-over-st","tuic","anytls","vless-ws","vless-grpc","naive","auto","manual","direct","block"}
-if tags != expect: errs.append(f"tag set mismatch: {sorted(tags)} expected {sorted(expect)}")
-auto = next(o for o in c["outbounds"] if o["tag"]=="auto")["outbounds"]
-manual = next(o for o in c["outbounds"] if o["tag"]=="manual")["outbounds"]
-if set(auto) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","vless-grpc","naive"}: errs.append(f"auto ref set mismatch: {auto}")
-if manual[0] != "auto" or set(manual[1:]) != {"reality","hy2","ss-over-st","tuic","anytls","shadowtls","vless-ws","vless-grpc","naive"}: errs.append(f"manual ref set mismatch: {manual}")
-if c["route"]["final"] != "auto": errs.append("route.final not auto")
-if c["dns"]["servers"][0].get("detour") != "reality": errs.append("DNS detour not reality")
-rv = next(o for o in c["outbounds"] if o["tag"]=="reality")
-if not rv["tls"]["reality"].get("public_key"): errs.append("reality pubkey not derived")
-if errs:
-    print("  ✗ " + "; ".join(errs)); sys.exit(1)
-print("  ✔ 8-line conversion structure OK")
-PY
-  then
-    FAIL=$((FAIL+1))
-  fi
-  echo "=== D. idempotency ==="
-  code=$(run_gen "$SRVCFG"); check "idempotent run 1 → 0" 0 "$code"
-  M1=$(md5sum "$TMPD2/out.json" | cut -d' ' -f1)
-  code=$(run_gen "$SRVCFG"); check "idempotent run 2 → 0" 0 "$code"
-  M2=$(md5sum "$TMPD2/out.json" | cut -d' ' -f1)
-  if [[ "$M1" == "$M2" ]]; then echo "  ✔ both runs identical"; PASS=$((PASS+1)); else echo "  ✗ idempotency failed"; FAIL=$((FAIL+1)); fi
-
-  echo
-  echo "=== Result: passed $PASS / $((PASS+FAIL)) ==="
-  [[ $FAIL -eq 0 ]]
+# Big interface: convert(server_json, addr, opts) -> stdout complete client JSON
+# Zero garbage: reuses existing TMPD temp files only, no new files; domains remain independent, gen-server never calls this
+# $1 serverJson path already parsed to $TMPD/inbounds.json by gen-client; addr/opts converge TAGS/DNS logic
+protocols_convert() {
+  local _addr="$1" _insecure="$2" _sni_override="${3:-}" _inbound_type="${4:-tun}" _inbound_port="${5:-1080}"
+  SERVER="$_addr" INSECURE="$_insecure" SNI_OVERRIDE="$_sni_override"
+  # Localize OUTS/TAGS for re-entrancy, shadowing globals
+  local OUTS="" TAGS="" CONSUMED_SS_TAGS=""
+  render_from_server
+  # Reuse gen-client assembly logic converged in lib: caller receives OUTS/TAGS then builds auto/manual
+  # Returns OUTS/TAGS only; does not write client.json, keeping output-path control in gen-client
+  echo "$OUTS"
+  echo "---TAGS---"
+  echo "$TAGS"
 }
+
+# assert_gen has been extracted to test-env/assert_gen.sh — lib stays pure (conversion only).
