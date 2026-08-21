@@ -32,21 +32,7 @@ die1()  { err "$@"; exit 1; }                                          # error +
 die2()  { err "$@"; exit 2; }                                          # error + exit 2 (conversion/check)
 debug() { [[ $DEBUG -eq 1 ]] && echo -e "${C_BLUE}[debug] $*${C_RESET}" >&2; }   # only with --debug
 
-# ═══════════════════════════════════════════════════════════════════════
-# 【Version timeline】— informational record of field drift across sing-box
-# versions. The converter itself never probes a binary version (the client
-# config runs on the *client's* sing-box, not this machine's); field changes
-# are handled per convert_xxx() and by the client device's own check on import.
-# Format: "major.minor:status:note"
-#   status: supported=baseline / deprecated_ok=parseable but deprecated fields / future=intercept new syntax
-# To upgrade to 1.15+: add a row here + adapt convert_xxx() to new fields.
-# ═══════════════════════════════════════════════════════════════════════
-# shellcheck disable=SC2034  # informational data for future upgradeers; not consumed by code
-VERSION_TABLE=(
-  "1.13:deprecated_ok:legacy DNS address shorthand etc. deprecated but parseable, removed in 1.14"
-  "1.14:supported:baseline 1.14.0-beta.14"
-  "1.15:future:new transport syntax (xhttp etc.) needs confirmation before generating, see maintenance doc"
-)
+# Baseline: 1.14.0-beta.14. Future deca intercept is sing-box check's job.
 
 # ---------- X25519 private → public key derivation (server config only has private_key, client needs public_key) ----------
 # Input: URL-safe raw base64 private key (43 chars); Output: URL-safe raw base64 public key
