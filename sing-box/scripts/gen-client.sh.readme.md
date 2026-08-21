@@ -29,9 +29,8 @@ bash gen-client.sh --from-server /path/config-server.json \
 ## Requirements
 
 - `python3` (parses the server config.json)
-- No sing-box binary needed: the client config runs on the *client's* sing-box, so
-  this converter validates structure only (valid JSON, outbounds, selectors,
-  route/dns) and never probes a local binary version.
+- `sing-box` binary (self-check is bound to `sing-box check`; auto-detected via
+  `SB_BIN` / PATH / test-env fallback — deca intercept is the binary's own validation)
 - `protocols.lib.sh` MUST be the same-version sibling — the entry script checks after
   sourcing that the output layer (ok/warn/err/die1/die2/debug) exists, and fails with
   a re-fetch command if the lib is an outdated pre-output-layer version.
