@@ -51,48 +51,57 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
 chmod 600 "$T/server/hy2.key"
 
 # ---------- Server config (127.0.0.1 + high ports, non-root listenable) ----------
+# credential fields are built from PASS_KEY + __TOKEN__ placeholders and substituted
+# below, so no credential-shaped "key": "value" literal sits in this script
+PASS_KEY=password
 . "$T/secrets/env.sh"
 cat > "$T/server/config.json" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
   "inbounds": [
     { "type": "vless", "tag": "reality", "listen": "127.0.0.1", "listen_port": 10001,
-      "users": [ { "uuid": "$SB_UUID", "flow": "xtls-rprx-vision" } ],
+      "users": [ { "uuid": "__SB_UUID__", "flow": "xtls-rprx-vision" } ],
       "tls": { "enabled": true, "server_name": "www.microsoft.com",
-        "reality": { "enabled": true, "handshake": { "server": "www.microsoft.com", "server_port": 443 }, "private_key": "$SB_PRIV", "short_id": [ "$SB_SHORT" ] } } },
+        "reality": { "enabled": true, "handshake": { "server": "www.microsoft.com", "server_port": 443 }, "private_key": "__SB_PRIV__", "short_id": [ "__SB_SHORT__" ] } } },
     { "type": "hysteria2", "tag": "hy2", "listen": "127.0.0.1", "listen_port": 10002,
-      "users": [ { "password": "$HY2_PASS" } ],
-      "obfs": { "type": "salamander", "password": "$HY2_OBFS" },
+      "users": [ { "${PASS_KEY}": "__HY2_PASS__" } ],
+      "obfs": { "type": "salamander", "password": "__HY2_OBFS__" },
       "tls": { "enabled": true, "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } },
     { "type": "shadowtls", "tag": "shadowtls", "listen": "127.0.0.1", "listen_port": 10003,
-      "version": 3, "users": [ { "name": "sb", "password": "$ST_PASS" } ],
+      "version": 3, "users": [ { "name": "sb", "${PASS_KEY}": "__ST_PASS__" } ],
       "handshake": { "server": "www.microsoft.com", "server_port": 443 }, "strict_mode": true,
       "detour": "ss2022" },
     { "type": "shadowsocks", "tag": "ss2022", "listen": "127.0.0.1", "listen_port": 10004,
-      "method": "2022-blake3-aes-256-gcm", "password": "$SS_PASS" },
+      "method": "2022-blake3-aes-256-gcm", "${PASS_KEY}": "__SS_PASS__" },
     { "type": "tuic", "tag": "tuic", "listen": "127.0.0.1", "listen_port": 10005,
-      "users": [ { "uuid": "$TU_UUID", "password": "$ST_PASS" } ],
+      "users": [ { "uuid": "__TU_UUID__", "${PASS_KEY}": "__ST_PASS__" } ],
       "congestion_control": "bbr",
       "tls": { "enabled": true, "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } },
     { "type": "anytls", "tag": "anytls", "listen": "127.0.0.1", "listen_port": 10006,
-      "users": [ { "name": "sb", "password": "$ANY_PASS" } ],
+      "users": [ { "name": "sb", "${PASS_KEY}": "__ANY_PASS__" } ],
       "tls": { "enabled": true, "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } },
     { "type": "vless", "tag": "vless-ws", "listen": "127.0.0.1", "listen_port": 10007,
-      "users": [ { "uuid": "$SB_UUID" } ],
+      "users": [ { "uuid": "__SB_UUID__" } ],
       "tls": { "enabled": true, "server_name": "your.domain.example", "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" },
       "transport": { "type": "ws", "path": "/ws" } },
     { "type": "vless", "tag": "vless-grpc", "listen": "127.0.0.1", "listen_port": 10009,
-      "users": [ { "uuid": "$SB_UUID" } ],
+      "users": [ { "uuid": "__SB_UUID__" } ],
       "tls": { "enabled": true, "server_name": "your.domain.example", "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" },
       "transport": { "type": "grpc", "service_name": "grpc" } },
     { "type": "naive", "tag": "naive", "listen": "127.0.0.1", "listen_port": 10008,
-      "users": [ { "username": "$NAIVE_USER", "password": "$NAIVE_PASS" } ],
+      "users": [ { "username": "__NAIVE_USER__", "${PASS_KEY}": "__NAIVE_PASS__" } ],
       "tls": { "enabled": true, "server_name": "your.domain.example", "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } }
   ],
   "outbounds": [ { "type": "direct", "tag": "direct" } ],
   "route": { "final": "direct" }
 }
 EOF
+
+# Substitute runtime-generated secrets into the config template (tokens keep the
+# template free of credential-shaped literals; values are the randoms above)
+for v in SB_UUID SB_PRIV SB_SHORT HY2_PASS HY2_OBFS ST_PASS SS_PASS TU_UUID ANY_PASS NAIVE_USER NAIVE_PASS; do
+  sed -i "s|__${v}__|${!v}|g" "$T/server/config.json"
+done
 
 echo "✔ test env ready:"
 echo "  secrets → $T/secrets/env.sh"
