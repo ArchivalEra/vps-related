@@ -25,6 +25,10 @@
 !scripts/
 !scripts/**
 
+# 3e) Allow builds (cross-compiled server artifacts + build provenance)
+!builds/
+!builds/**
+
 # 4) Local exclusions (sensitive/generated; note: gitignore has no inline comments — keep them on their own line)
 # Generated configs & keys (incl. server private keys), never upload
 sing-box/out/
@@ -45,6 +49,8 @@ sing-box/scripts/config-client.json
 sing-box/scripts/config-server.json
 # Python bytecode cache (otd.py in share/)
 share/__pycache__/
+# Mimosa scan bookkeeping dirs are never tracked
+.mimosa/
 # Archived otd.py (kept for reference; old one-time sharing, superseded by config-delivery)
 archived/
 # config-delivery built binaries (source tracked, cross-compiled artifacts are downloads)
