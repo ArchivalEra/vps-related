@@ -37,9 +37,10 @@ DoQ 优先），全程不落盘、无 cron、无 GC 停顿（纯 Rust + rustls/q
   现算**，客户端永远不会拿到超期 TTL。只缓存 NOERROR/NXDOMAIN 且非截断的应答；
   key = 小写 qname + qtype + qclass + DO 位；并发相同查询单飞（single-flight）
   合并成一次上游请求，省 NextDNS 配额。
-- **运行时**：`SIGHUP` 热加载证书（不重启进程、不断连接，DoT/DoQ 同时生效）；
-  `SIGUSR1` 向 stderr 打一行 JSON 统计；正常退出也打。无磁盘写（journald 自己
-  收 stderr）。
+- **运行时**：`SIGHUP` 重读配置文件，热生效两样东西——监听证书（DoT/DoQ 同步换，
+  不断连接）与**弹夹容量/TTL**（缩容即从队尾清退，服务不中断；改
+  `cache_bytes`/`cache_ttl` 后 `systemctl reload magdns` 即可）；`SIGUSR1` 向
+  stderr 打一行 JSON 统计；正常退出也打。无磁盘写（journald 自己收 stderr）。
 - **SSRF 防线**：上游仅接受 `https://`（拒绝 `http://`）+ `quic://`/`tls://`；
   默认拒绝环回/私网/链路本地目标（字面量在配置期拦截、解析出的地址在连接期
   拦截），本地 ShadowTLS 源需显式 `allow_private_upstream = true`。
@@ -115,8 +116,10 @@ killall -HUP magdns        # 或 systemctl reload magdns —— 热加载，不�
 T1 DoT→DoQ 上游；T2 缓存命中+TTL 封顶 1200；T3 DoQ 进；T7 [::1] 双栈；
 T4a DoQ 死→DoT 兜底；T5a DoT 死→DoH 兜底；T5b 全死→SERVFAIL；T6a 全死后 DoQ
 复活即时接管；T6b 探测恢复优先级；T8 畸形输入不断进程；T10 900 条风暴 FIFO
-驱逐+最老重取；T9 SIGHUP 换 CA 热生效；T13 QDCOUNT=2 透传；STATS 校验。
-——本机 x86 与 qemu aarch64 均 **17/17 PASS**（含 PGO 终版二进制）。
+驱逐+最老重取；T9 SIGHUP 换 CA 热生效；T13 QDCOUNT=2 透传；T14 SIGHUP 弹夹
+热缩容（65536→16384，尾部清退、持续服务）；T15 单飞（15 并发同名字=上游恰好
+1 查询）；STATS 校验。——本机 x86 与 qemu aarch64 均 **21/21 PASS**（含 PGO
+终版二进制）。
 
 ### 真实 NextDNS 实测（`./real_nextdns_test.sh`，qemu 终版二进制）
 

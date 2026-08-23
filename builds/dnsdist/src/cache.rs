@@ -111,6 +111,25 @@ impl MagCache {
         self.inserts += 1;
     }
 
+    /// Hot resize (SIGHUP): new budget, TTL applies to existing entries
+    /// retroactively (shortening expires them sooner; nothing revives).
+    /// Shrinking evicts from the tail of insertion order until it fits.
+    pub fn resize(&mut self, cap_bytes: usize, ttl_secs: u64) {
+        self.cap_bytes = cap_bytes;
+        self.ttl = Duration::from_secs(ttl_secs);
+        while self.bytes > self.cap_bytes {
+            match self.order.pop_front() {
+                Some(k) => {
+                    if let Some(e) = self.map.remove(&k) {
+                        self.bytes -= k.len() + e.msg.len();
+                        self.evicts += 1;
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+
     pub fn snapshot(&self) -> CacheSnap {
         CacheSnap {
             entries: self.map.len(),

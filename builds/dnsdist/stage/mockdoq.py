@@ -31,11 +31,17 @@ class DoQProtocol(QuicConnectionProtocol):
                     p = parse_question(q)
                     name, qt = (p[0], p[1]) if p else ("?", 0)
                     print(f"MOCKHIT doq {name} {qt}", flush=True)
-                    r = build_response(q, ARGS.ttl)
-                    self._quic.send_stream_data(
-                        sid, len(r).to_bytes(2, "big") + r, end_stream=True
-                    )
-                    self.transmit()
+
+                    async def delayed():
+                        if ARGS.delay > 0:
+                            await asyncio.sleep(ARGS.delay)
+                        r = build_response(q, ARGS.ttl)
+                        self._quic.send_stream_data(
+                            sid, len(r).to_bytes(2, "big") + r, end_stream=True
+                        )
+                        self.transmit()
+
+                    asyncio.ensure_future(delayed())
                     self.bufs.pop(sid, None)
                     return
             self.bufs[sid] = buf
@@ -46,6 +52,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=1854)
     ap.add_argument("--ttl", type=int, default=3600)
+    ap.add_argument("--delay", type=float, default=0.0, help="artificial response delay (s), for single-flight tests")
     ap.add_argument("--cert", default="certs/upstream.pem")
     ap.add_argument("--key", default="certs/upstream.key")
     ARGS = ap.parse_args()

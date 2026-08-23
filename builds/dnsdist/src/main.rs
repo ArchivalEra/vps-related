@@ -15,7 +15,6 @@ use cache::MagCache;
 use cfg::Cfg;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
 use tokio::signal::unix::{signal, SignalKind};
 
 const DEFAULT_CONF: &str = "/etc/magdns/magdns.conf";
@@ -89,6 +88,7 @@ fn main() {
     if verbose {
         c.verbose = true;
     }
+    c.conf_path = conf_path.clone();
     if let Err(e) = cfg::validate(&c) {
         eprintln!("magdns: config invalid: {e}");
         std::process::exit(1);
@@ -210,9 +210,9 @@ async fn run(c: Cfg) {
                 break;
             }
             _ = hup.recv() => {
-                match reload_certs(&app) {
-                    Ok(()) => eprintln!("magdns: certs reloaded"),
-                    Err(e) => eprintln!("magdns: cert reload failed, keeping old: {e}"),
+                match reload_dynamic(&app) {
+                    Ok(()) => eprintln!("magdns: dynamic reload ok (certs + magazine)"),
+                    Err(e) => eprintln!("magdns: reload failed, keeping old: {e}"),
                 }
             }
             _ = usr1.recv() => {
@@ -230,9 +230,17 @@ fn dump_stats(app: &Arc<App>) {
     eprintln!("{}", app.stats.dump(&snap));
 }
 
-fn reload_certs(app: &Arc<App>) -> Result<(), String> {
-    let new_dot = tlsconf::load_server_config(&app.cfg.cert_file, &app.cfg.key_file, &[b"dot"], true)?;
-    let new_doq = tlsconf::load_server_config(&app.cfg.cert_file, &app.cfg.key_file, &[b"doq"], false)?;
+/// SIGHUP: re-read the config file and apply the hot-reloadable knobs:
+/// listener certificates + magazine size/TTL. Everything else keeps its
+/// startup value until a process restart.
+fn reload_dynamic(app: &Arc<App>) -> Result<(), String> {
+    let text = std::fs::read_to_string(&app.cfg.conf_path)
+        .map_err(|e| format!("read {}: {e}", app.cfg.conf_path))?;
+    let c = cfg::parse(&text)?;
+    cfg::validate(&c)?;
+    // certs (paths may have changed too)
+    let new_dot = tlsconf::load_server_config(&c.cert_file, &c.key_file, &[b"dot"], true)?;
+    let new_doq = tlsconf::load_server_config(&c.cert_file, &c.key_file, &[b"doq"], false)?;
     *app.server_tls_dot.write().unwrap() = Arc::new(new_dot);
     *app.server_tls_doq.write().unwrap() = Arc::new(new_doq);
     let quinn_cfg = doq::build_server_config(
@@ -242,7 +250,18 @@ fn reload_certs(app: &Arc<App>) -> Result<(), String> {
     if let Some(ep) = app.doq_endpoint.read().unwrap().as_ref() {
         ep.set_server_config(Some(quinn_cfg));
     }
+    // magazine resize (evicts from the tail on shrink)
+    {
+        let mut cache = app.cache.lock().unwrap();
+        let snap = cache.snapshot();
+        if snap.cap_bytes != c.cache_bytes || snap.ttl_secs != c.cache_ttl {
+            eprintln!(
+                "magdns: magazine resize {}B/{}s -> {}B/{}s",
+                snap.cap_bytes, snap.ttl_secs, c.cache_bytes, c.cache_ttl
+            );
+            cache.resize(c.cache_bytes, c.cache_ttl);
+        }
+    }
     app.stats.reloads.fetch_add(1, Ordering::Relaxed);
-    let _ = Instant::now();
     Ok(())
 }

@@ -10,7 +10,6 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
-use std::sync::Arc;
 use std::time::Instant;
 
 const BODY_CAP: usize = 128 * 1024;

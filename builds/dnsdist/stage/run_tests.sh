@@ -182,6 +182,64 @@ print("passthrough ok, rcode", r[3] & 0xF)
 EOF
 check $? "T13 passthrough QDCOUNT=2 answered"
 
+# T14 magazine hot-resize via SIGHUP: 65536 -> 16384 -> back
+cp magdns-test.conf run/magdns-test.conf.bak
+kill -USR1 "$SUT_PID"; sleep 0.5
+BEFORE=$(grep -o '"cache_cap":[0-9]*' run/sut.log | tail -1 | cut -d: -f2)
+sed -i 's/^cache_bytes = 65536$/cache_bytes = 16384/' magdns-test.conf
+kill -HUP "$SUT_PID"; sleep 0.8
+kill -USR1 "$SUT_PID"; sleep 0.5
+S=$(grep -o 'STATS {.*}' run/sut.log | tail -1)
+AFTER=$(grep -o '"cache_cap":[0-9]*' <<<"$S" | cut -d: -f2)
+BYTES=$(grep -o '"cache_bytes":[0-9]*' <<<"$S" | cut -d: -f2)
+ENTRIES=$(grep -o '"cache_entries":[0-9]*' <<<"$S" | cut -d: -f2)
+[ "$BEFORE" = "65536" ] && [ "$AFTER" = "16384" ] && [ "$ENTRIES" -gt 0 ] && [ "$BYTES" -le 16384 ]
+check $? "T14 hot resize 65536->$AFTER, bytes=$BYTES entries=$ENTRIES"
+R=$($PY qclient.py --dot 127.0.0.1:1853 --name t14.stage.test --type 1)
+echo "$R" | grep -q "rcode=0"; check $? "T14b still serving after resize"
+echo "  $R"
+cp run/magdns-test.conf.bak magdns-test.conf
+kill -HUP "$SUT_PID"; sleep 0.8
+
+# T15 single-flight: slow DoQ mock (400ms), 15 parallel conns, one name
+kill "$(cat run/mockdoq.pid)" 2>/dev/null; sleep 0.3
+rm -f run/mockdoq.log
+$PY mockdoq.py --port 1854 --delay 0.4 >run/mockdoq.log 2>&1 & echo $! >run/mockdoq.pid
+for _ in $(seq 1 40); do grep -q listening run/mockdoq.log 2>/dev/null && break; sleep 0.25; done
+sleep 0.3
+$PY - <<'EOF'
+import asyncio, ssl, struct, os, sys
+sys.path.insert(0, ".")
+from loadgen import build_query
+
+async def one(name, i, out):
+    ctx = ssl.create_default_context(cafile="certs/ca.pem")
+    try:
+        rd, wr = await asyncio.open_connection("127.0.0.1", 1853, ssl=ctx, server_hostname="127.0.0.1")
+        q = build_query(name)
+        wr.write(len(q).to_bytes(2, "big") + q)
+        await wr.drain()
+        lb = await asyncio.wait_for(rd.readexactly(2), 8)
+        n = int.from_bytes(lb, "big")
+        r = await asyncio.wait_for(rd.readexactly(n), 8)
+        out[i] = (r[3] & 0xF) == 0
+        wr.close()
+    except Exception as e:
+        out[i] = False
+
+async def main():
+    out = {}
+    await asyncio.gather(*[one("sf1.stage.test", i, out) for i in range(15)])
+    ok = sum(1 for v in out.values() if v)
+    print(f"SINGLEFLIGHT ok={ok}/15")
+    sys.exit(0 if ok == 15 else 1)
+
+asyncio.run(main())
+EOF
+check $? "T15 15 parallel clients all answered"
+SF=$(cat run/mockdoq.log run/mockdot.log run/mockdoh.log 2>/dev/null | grep -c "sf1.stage.test")
+[ "$SF" -eq 1 ]; check $? "T15 single-flight: upstream saw exactly 1 query across all transports (got $SF)"
+
 # stats dump
 kill -USR1 "$SUT_PID"; sleep 0.5
 S=$(grep -o 'STATS {.*}' run/sut.log | tail -1)

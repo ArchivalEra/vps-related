@@ -29,6 +29,7 @@ pub struct SourceSpec {
 
 #[derive(Clone, Debug)]
 pub struct Cfg {
+    pub conf_path: String, // set by main(); SIGHUP re-reads this file
     pub listen_dot: String,
     pub listen_doq: String,
     pub cert_file: String,
@@ -49,6 +50,7 @@ pub struct Cfg {
 impl Default for Cfg {
     fn default() -> Self {
         Cfg {
+            conf_path: String::new(),
             listen_dot: "[::]:853".into(),
             listen_doq: "[::]:8853".into(),
             cert_file: String::new(),
