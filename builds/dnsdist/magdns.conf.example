@@ -1,0 +1,36 @@
+# magdns - private DoT/DoQ relay for the home box
+# /etc/magdns/magdns.conf
+
+# dual-stack listeners ([::] with v6only=0 serves v4-mapped too)
+listen_dot = [::]:853
+listen_doq = [::]:8853
+
+# certificate for the listeners (see README: Let's Encrypt via http-01)
+cert_file = /etc/magdns/cert.pem
+key_file = /etc/magdns/key.pem
+
+# upstream fallback chain, priority = file order.
+# nextdns profile 88f745: DoQ first, DoT fallback, DoH last resort
+upstream = quic://88f745.dns.nextdns.io:853
+upstream = tls://88f745.dns.nextdns.io:853
+upstream = https://dns.nextdns.io/88f745
+
+# later: ShadowTLS-fronted 1.1.1.3 DoH via a local forwarder ->
+#   upstream = https://127.0.0.1:8443/dns-query
+#   allow_private_upstream = true
+allow_private_upstream = false
+
+# magazine cache: RAM only, FIFO tail eviction, per-entry lifetime cap
+cache_bytes = 104857600
+cache_ttl = 1200
+
+# per-query total budget and per-source attempt budget (ms)
+query_timeout_ms = 3000
+attempt_timeout_ms = 1500
+# health-probe cadence for sources marked down (s)
+probe_interval_s = 12
+# idle timeout for client connections (ms)
+idle_timeout_ms = 45000
+
+# verbose = false
+# log_queries = false
