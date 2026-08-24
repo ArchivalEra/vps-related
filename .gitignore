@@ -28,6 +28,26 @@
 # 3e) Allow builds (cross-compiled server artifacts + build provenance)
 !builds/
 !builds/**
+# Build artifacts inside builds/ (regenerated, never tracked)
+builds/h2o-share/
+
+# 3f) Allow source code (magdns Rust + stage tests)
+!src/
+!src/**
+src/dnsdist/target*/
+src/dnsdist/pgo-data*/
+
+# 3g) Allow deployment configs (systemd units, config examples)
+!deploy/
+!deploy/**
+
+# 3h) Allow patches
+!patches/
+!patches/**
+
+# 3i) Allow docs
+!docs/
+!docs/**
 
 # 4) Local exclusions (sensitive/generated; note: gitignore has no inline comments — keep them on their own line)
 # Generated configs & keys (incl. server private keys), never upload
