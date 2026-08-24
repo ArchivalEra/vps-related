@@ -334,6 +334,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "quinn",
+ "ring",
  "rustls",
  "rustls-pemfile",
  "socket2 0.5.10",

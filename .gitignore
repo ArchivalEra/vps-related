@@ -77,3 +77,6 @@ archived/
 config-delivery/config-delivery
 config-delivery/config-delivery-linux-amd64
 config-delivery/config-delivery-linux-arm64
+src/dnsdist/stage/certs/*.key
+src/dnsdist/stage/run/
+src/dnsdist/stage/__pycache__/

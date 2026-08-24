@@ -7,6 +7,8 @@ mod doh;
 mod doq;
 mod dot;
 mod frame;
+mod maker_auth;
+mod router;
 mod stats;
 mod tlsconf;
 #[cfg(feature = "up-udp")]
@@ -182,11 +184,27 @@ async fn run(c: Cfg) {
         }
     };
 
+    // router: load CN domain list if configured
+    let mut router = router::Router::new(vec![
+        router::Route { name: "cn".into(), upstreams: vec![], cache_enabled: false, ecs_enabled: false },
+        router::Route { name: "foreign".into(), upstreams: vec![], cache_enabled: true, ecs_enabled: true },
+    ]);
+    if !c.cn_domain_file.is_empty() {
+        match std::fs::read_to_string(&c.cn_domain_file) {
+            Ok(content) => {
+                let count = router.load_domain_list(&content, 0);
+                eprintln!("magdns: loaded {} CN domains from {}", count, c.cn_domain_file);
+            }
+            Err(e) => eprintln!("magdns: WARN cannot read {}: {}", c.cn_domain_file, e),
+        }
+    }
+
     let app = Arc::new(App {
         cfg: c.clone(),
         stats: stats.clone(),
         cache: cache.clone(),
         chain,
+        router: RwLock::new(Some(router)),
         server_tls_dot: RwLock::new(rustls_dot),
         server_tls_doq: RwLock::new(rustls_doq),
         doq_endpoint: RwLock::new(Some(doq_endpoint.clone())),

@@ -2,10 +2,11 @@
 use crate::cache::MagCache;
 use crate::cfg::{self, Cfg};
 use crate::dnsmsg;
+use crate::router::Router;
 use crate::stats::Stats;
 use crate::upstream::Chain;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -48,9 +49,63 @@ pub struct App {
     pub stats: Arc<Stats>,
     pub cache: Arc<Mutex<MagCache>>,
     pub chain: Chain,
+    /// CN domain router: match qname → route to domestic or foreign chain
+    pub router: RwLock<Option<Router>>,
     pub server_tls_dot: RwLock<Arc<rustls::ServerConfig>>,
     pub server_tls_doq: RwLock<Arc<rustls::ServerConfig>>,
     pub doq_endpoint: RwLock<Option<quinn::Endpoint>>,
+}
+
+/// CN domain direct resolution: plain UDP to domestic resolver (114.114.114.114).
+/// No cache, no magazine, no chain machinery. Just forward and return.
+async fn cn_udp_resolve(app: &Arc<App>, query: &[u8], deadline: Instant) -> Result<Vec<u8>, ()> {
+    let resolver: SocketAddr = app
+        .cfg
+        .cn_upstreams
+        .first()
+        .and_then(|u| {
+            let host = u.trim_start_matches("udp://").trim_start_matches("tcp://");
+            host.parse().ok()
+        })
+        .unwrap_or_else(|| "114.114.114.114:53".parse().unwrap());
+
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|d| !d.is_zero())
+        .ok_or(())?;
+
+    let bind: SocketAddr = if resolver.is_ipv4() {
+        "0.0.0.0:0".parse().unwrap()
+    } else {
+        "[::]:0".parse().unwrap()
+    };
+    let sock = socket2::Socket::new(
+        socket2::Domain::for_address(bind),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .map_err(|_| ())?;
+    if bind.is_ipv6() {
+        sock.set_only_v6(false).map_err(|_| ())?;
+    }
+    sock.bind(&bind.into()).map_err(|_| ())?;
+    sock.set_nonblocking(true).map_err(|_| ())?;
+    let sock = tokio::net::UdpSocket::from_std(sock.into()).map_err(|_| ())?;
+
+    tokio::time::timeout(remaining, async {
+        sock.send_to(query, resolver)
+            .await
+            .map_err(|_: std::io::Error| ())?;
+        let mut buf = vec![0u8; 4096];
+        let (n, from) = sock.recv_from(&mut buf).await.map_err(|_: std::io::Error| ())?;
+        if from == resolver && n >= 12 {
+            Ok(buf[..n].to_vec())
+        } else {
+            Err(())
+        }
+    })
+    .await
+    .map_err(|_: tokio::time::error::Elapsed| ())?
 }
 
 pub fn unix_ms() -> u64 {
@@ -86,7 +141,7 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
     let deadline = Instant::now() + Duration::from_millis(app.cfg.query_timeout_ms);
     let cluster = crate::cache::GeoCluster::from_client_ip(client_ip);
 
-    let (key, cacheable, upstream_query, qname, qtype) = match dnsmsg::parse_query(&q) {
+    let (key, cacheable, upstream_query, qname, qtype, is_cn) = match dnsmsg::parse_query(&q) {
         Some(pq) => {
             let base_key = dnsmsg::cache_key(&pq);
             // geo-aware: append cluster bytes to the cache key
@@ -99,13 +154,24 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
             if app.cfg.ecs_enabled {
                 dnsmsg::append_ecs_to_query(&mut uq, &dnsmsg::ecs_option_bytes(client_ip, 24));
             }
-            (key, true, uq, n, t)
+            // split routing: check router for CN domain classification
+            let cn = {
+                let r = app.router.read().unwrap();
+                match r.as_ref() {
+                    Some(router) => {
+                        let lower = n.to_lowercase();
+                        matches!(router.resolve(&lower), Some(0)) // route 0 = CN
+                    }
+                    None => false,
+                }
+            };
+            (key, true && !cn, uq, n, t, cn)
         }
         None => {
             let mut k = vec![b'P'];
             k.extend_from_slice(&fnv1a(&q).to_be_bytes());
             k.extend_from_slice(&cluster.to_bytes());
-            (k, false, q.clone(), String::new(), 0)
+            (k, false, q.clone(), String::new(), 0, false)
         }
     };
 
@@ -137,6 +203,25 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
             }
             None => {}
         }
+    }
+
+    // split routing: CN domains bypass cache + chain, go direct to domestic resolver
+    if is_cn {
+        let result = cn_udp_resolve(app, &upstream_query, deadline).await;
+        return match result {
+            Ok(mut r) => {
+                dnsmsg::patch_id(&mut r, &id);
+                if app.cfg.log_queries {
+                    eprintln!("Q {} {} {} CN-direct rcode={} {}us",
+                        transport, qname, qtype, dnsmsg::rcode(&r), t0.elapsed().as_micros());
+                }
+                Reply::Owned(r)
+            }
+            Err(_) => {
+                Stats::bump(&app.stats.servfail);
+                Reply::Owned(dnsmsg::make_servfail(&q))
+            }
+        };
     }
 
     let result = app
