@@ -2,12 +2,15 @@ mod app;
 mod cache;
 mod cfg;
 mod dnsmsg;
+#[cfg(feature = "up-doh")]
 mod doh;
 mod doq;
 mod dot;
 mod frame;
 mod stats;
 mod tlsconf;
+#[cfg(feature = "up-udp")]
+mod udpsrc;
 mod upstream;
 
 use app::App;
@@ -105,7 +108,11 @@ fn main() {
         std::process::exit(0);
     }
 
+    // 2 workers + small stacks: DNS relay work is tiny; keeps RSS inside the
+    // magazine + 8MB budget on the 1G box
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(256 * 1024)
         .enable_all()
         .build()
         .expect("tokio runtime");
@@ -129,7 +136,11 @@ async fn run(c: Cfg) {
     };
 
     let stats = Arc::new(stats::Stats::default());
-    let cache = Arc::new(Mutex::new(MagCache::new(c.cache_bytes, c.cache_ttl)));
+    let cache = Arc::new(Mutex::new(MagCache::new(
+        c.cache_bytes,
+        c.cache_ttl,
+        c.cache_ttl_ignore,
+    )));
     let chain = match upstream::Chain::new(&c, stats.clone(), cache.clone()) {
         Ok(ch) => ch,
         Err(e) => {
@@ -227,7 +238,20 @@ async fn run(c: Cfg) {
 
 fn dump_stats(app: &Arc<App>) {
     let snap = app.cache.lock().unwrap().snapshot();
-    eprintln!("{}", app.stats.dump(&snap));
+    let rss = rss_bytes();
+    eprintln!("{}", app.stats.dump(&snap, rss));
+}
+
+/// RSS via /proc/self/statm (2nd field = resident pages; 1st is VmSize); 0 when unavailable.
+fn rss_bytes() -> u64 {
+    if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
+        if let Some(resident) = s.split_whitespace().nth(1) {
+            if let Ok(pages) = resident.parse::<u64>() {
+                return pages * 4096;
+            }
+        }
+    }
+    0
 }
 
 /// SIGHUP: re-read the config file and apply the hot-reloadable knobs:
@@ -254,12 +278,17 @@ fn reload_dynamic(app: &Arc<App>) -> Result<(), String> {
     {
         let mut cache = app.cache.lock().unwrap();
         let snap = cache.snapshot();
-        if snap.cap_bytes != c.cache_bytes || snap.ttl_secs != c.cache_ttl {
+        if snap.cap_bytes != c.cache_bytes || snap.ttl_secs != c.cache_ttl
+            || snap.ignore_ttl != c.cache_ttl_ignore
+        {
             eprintln!(
-                "magdns: magazine resize {}B/{}s -> {}B/{}s",
-                snap.cap_bytes, snap.ttl_secs, c.cache_bytes, c.cache_ttl
+                "magdns: magazine resize {}B/{}s{} -> {}B/{}s{}",
+                snap.cap_bytes, snap.ttl_secs,
+                if snap.ignore_ttl { " (ttl ignored)" } else { "" },
+                c.cache_bytes, c.cache_ttl,
+                if c.cache_ttl_ignore { " (ttl ignored)" } else { "" }
             );
-            cache.resize(c.cache_bytes, c.cache_ttl);
+            cache.resize(c.cache_bytes, c.cache_ttl, c.cache_ttl_ignore);
         }
     }
     app.stats.reloads.fetch_add(1, Ordering::Relaxed);

@@ -20,8 +20,8 @@ pub async fn run_listener(app: Arc<App>, listener: TcpListener) {
     loop {
         match listener.accept().await {
             Ok((tcp, _peer)) => {
-                if app.stats.dot_conns.load(Ordering::Relaxed) >= 512 {
-                    continue;
+                if app.stats.dot_conns.load(Ordering::Relaxed) >= 128 {
+                    continue; // per-conn TLS buffers are the main off-cache cost
                 }
                 let app = app.clone();
                 tokio::spawn(async move {
@@ -60,7 +60,7 @@ async fn handle_conn(app: &Arc<App>, tcp: TcpStream) {
         if resp.is_empty() {
             break;
         }
-        if write_frame(&mut tls, &resp).await.is_err() {
+        if app::write_reply(&mut tls, &resp).await.is_err() {
             break;
         }
     }

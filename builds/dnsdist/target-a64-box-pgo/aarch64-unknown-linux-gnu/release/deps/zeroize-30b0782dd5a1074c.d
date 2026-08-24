@@ -1,0 +1,11 @@
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/target-a64-box-pgo/aarch64-unknown-linux-gnu/release/deps/zeroize-30b0782dd5a1074c.d: /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/lib.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/aarch64.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/barrier.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/stack.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/../README.md
+
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/target-a64-box-pgo/aarch64-unknown-linux-gnu/release/deps/libzeroize-30b0782dd5a1074c.rlib: /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/lib.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/aarch64.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/barrier.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/stack.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/../README.md
+
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/target-a64-box-pgo/aarch64-unknown-linux-gnu/release/deps/libzeroize-30b0782dd5a1074c.rmeta: /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/lib.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/aarch64.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/barrier.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/stack.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/../README.md
+
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/lib.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/aarch64.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/barrier.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/stack.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/zeroize-1.9.0/src/../README.md:

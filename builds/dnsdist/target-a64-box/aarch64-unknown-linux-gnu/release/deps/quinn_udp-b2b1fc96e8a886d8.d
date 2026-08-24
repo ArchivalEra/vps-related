@@ -1,0 +1,10 @@
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/target-a64-box/aarch64-unknown-linux-gnu/release/deps/quinn_udp-b2b1fc96e8a886d8.d: /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/lib.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/cmsg/mod.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/cmsg/unix.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/unix.rs
+
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/target-a64-box/aarch64-unknown-linux-gnu/release/deps/libquinn_udp-b2b1fc96e8a886d8.rlib: /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/lib.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/cmsg/mod.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/cmsg/unix.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/unix.rs
+
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/target-a64-box/aarch64-unknown-linux-gnu/release/deps/libquinn_udp-b2b1fc96e8a886d8.rmeta: /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/lib.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/cmsg/mod.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/cmsg/unix.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/unix.rs
+
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/lib.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/cmsg/mod.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/cmsg/unix.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/quinn-udp-0.5.15/src/unix.rs:

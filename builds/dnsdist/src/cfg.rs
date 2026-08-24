@@ -6,6 +6,7 @@ pub enum SrcKind {
     Quic,
     Tls,
     Doh,
+    Udp,
 }
 
 impl SrcKind {
@@ -14,6 +15,7 @@ impl SrcKind {
             SrcKind::Quic => "doq",
             SrcKind::Tls => "dot",
             SrcKind::Doh => "doh",
+            SrcKind::Udp => "udp",
         }
     }
 }
@@ -39,6 +41,7 @@ pub struct Cfg {
     pub allow_private_upstream: bool,
     pub cache_bytes: usize,
     pub cache_ttl: u64,
+    pub cache_ttl_ignore: bool,
     pub query_timeout_ms: u64,
     pub attempt_timeout_ms: u64,
     pub idle_timeout_ms: u64,
@@ -60,6 +63,7 @@ impl Default for Cfg {
             allow_private_upstream: false,
             cache_bytes: 100 * 1024 * 1024,
             cache_ttl: 1200,
+            cache_ttl_ignore: false,
             query_timeout_ms: 3000,
             attempt_timeout_ms: 1500,
             idle_timeout_ms: 45_000,
@@ -92,6 +96,7 @@ pub fn parse(text: &str) -> Result<Cfg, String> {
             "allow_private_upstream" => c.allow_private_upstream = v == "true" || v == "1",
             "cache_bytes" => c.cache_bytes = v.parse().map_err(|_| "bad cache_bytes")?,
             "cache_ttl" => c.cache_ttl = v.parse().map_err(|_| "bad cache_ttl")?,
+            "cache_ttl_ignore" => c.cache_ttl_ignore = v == "true" || v == "1",
             "query_timeout_ms" => c.query_timeout_ms = v.parse().map_err(|_| "bad query_timeout_ms")?,
             "attempt_timeout_ms" => c.attempt_timeout_ms = v.parse().map_err(|_| "bad attempt_timeout_ms")?,
             "idle_timeout_ms" => c.idle_timeout_ms = v.parse().map_err(|_| "bad idle_timeout_ms")?,
@@ -109,11 +114,17 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
         .split_once("://")
         .ok_or_else(|| format!("upstream `{}`: missing scheme://", raw))?;
     let kind = match scheme {
-        "quic" => SrcKind::Quic,
-        "tls" => SrcKind::Tls,
-        "https" => SrcKind::Doh,
+        "quic" if cfg!(feature = "up-quic") => SrcKind::Quic,
+        "tls" if cfg!(feature = "up-tls") => SrcKind::Tls,
+        "https" if cfg!(feature = "up-doh") => SrcKind::Doh,
+        "udp" if cfg!(feature = "up-udp") => SrcKind::Udp,
         "http" => return Err(format!("upstream `{}`: plain http is not allowed, use https", raw)),
-        other => return Err(format!("upstream `{}`: unknown scheme `{}`", raw, other)),
+        other => {
+            return Err(format!(
+                "upstream `{}`: scheme `{}` not compiled into this binary",
+                raw, other
+            ))
+        }
     };
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
@@ -124,6 +135,7 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
     }
     let default_port = match kind {
         SrcKind::Doh => 443u16,
+        SrcKind::Udp => 53u16,
         _ => 853u16,
     };
     let (host, port) = if let Some(inner) = authority.strip_prefix('[') {

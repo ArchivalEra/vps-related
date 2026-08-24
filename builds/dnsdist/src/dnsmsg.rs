@@ -275,6 +275,41 @@ pub fn patch_ttls(m: &mut [u8], age: u32, cap: u32) -> bool {
     true
 }
 
+/// Magazine-only mode variant: same math but the served TTL floors at 1s
+/// and the walk never declares the entry expired.
+pub fn patch_ttls_min1(m: &mut [u8], age: u32, cap: u32) -> bool {
+    if m.len() < 12 {
+        return false;
+    }
+    let an = u16::from_be_bytes([m[6], m[7]]) as usize;
+    let ns = u16::from_be_bytes([m[8], m[9]]) as usize;
+    let off = match skip_name(m, 12) {
+        Some(o) => o + 4,
+        None => return false,
+    };
+    let mut off = off;
+    for count in [an, ns] {
+        for _ in 0..count {
+            off = match skip_name(m, off) {
+                Some(o) => o,
+                None => return false,
+            };
+            if off + 10 > m.len() {
+                return false;
+            }
+            let orig = be32(m, off + 4).unwrap_or(0);
+            let nt = orig.min(cap).saturating_sub(age).max(1);
+            m[off + 4..off + 8].copy_from_slice(&nt.to_be_bytes());
+            let rdlen = be16(m, off + 8).unwrap_or(0) as usize;
+            off += 10 + rdlen;
+            if off > m.len() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// SERVFAIL reply for a raw query, keeping the question section when parseable.
 pub fn make_servfail(q: &[u8]) -> Vec<u8> {
     let mut v = q.to_vec();
@@ -286,7 +321,8 @@ pub fn make_servfail(q: &[u8]) -> Vec<u8> {
     }
     v[2] = 0x80 | (v[2] & 0x78) | (v[2] & 0x01);
     v[3] = 2;
-    v[4..12].fill(0);
+    // keep QDCOUNT (question bytes stay); zero answer/authority/additional
+    v[6..12].fill(0);
     match skip_name(q, 12) {
         Some(o) if o + 4 <= q.len() => {
             v.truncate(o + 4);
@@ -317,4 +353,184 @@ pub fn qname_str(wire: &[u8]) -> String {
         s.push('.');
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// deterministic LCG: reproducible fuzz sequences, no external deps
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 16
+        }
+    }
+
+    fn rand_name(rng: &mut Rng) -> Vec<u8> {
+        let labels = (rng.next() % 4) as usize + 1;
+        let mut wire = Vec::new();
+        for _ in 0..labels {
+            let len = (rng.next() % 12) as usize + 1;
+            let lab: Vec<u8> = (0..len).map(|_| b'a' + (rng.next() % 26) as u8).collect();
+            wire.push(lab.len() as u8);
+            wire.extend_from_slice(&lab);
+        }
+        wire.push(0);
+        wire
+    }
+
+    fn rand_query(rng: &mut Rng) -> ParsedQuery {
+        ParsedQuery {
+            id: [(rng.next() % 256) as u8, (rng.next() % 256) as u8],
+            qname: rand_name(rng),
+            qtype: [1u16, 2, 16, 28, 33, 65][(rng.next() % 6) as usize],
+            qclass: if rng.next() % 8 == 0 { 3 } else { 1 },
+            do_bit: rng.next() % 2 == 0,
+        }
+    }
+
+    #[test]
+    fn parse_build_roundtrip() {
+        let mut rng = Rng(0x5eed);
+        for _ in 0..2000 {
+            let pq = rand_query(&mut rng);
+            let msg = build_query(&pq);
+            let back = parse_query(&msg).expect("own build must parse");
+            assert_eq!(back.qname, pq.qname);
+            assert_eq!(back.qtype, pq.qtype);
+            assert_eq!(back.qclass, pq.qclass);
+            assert_eq!(back.do_bit, pq.do_bit);
+            assert_eq!(back.id, pq.id);
+            // cache key must be case-insensitive on qname
+            let mut upper = pq.clone();
+            for b in upper.qname.iter_mut() {
+                *b = b.to_ascii_uppercase();
+            }
+            assert_eq!(cache_key(&pq), cache_key(&upper));
+        }
+    }
+
+    fn response_with_ttls(ttls: &[u32]) -> Vec<u8> {
+        let pq = ParsedQuery {
+            id: [0xab, 0xcd],
+            qname: b"\x04test\x00".to_vec(),
+            qtype: 1,
+            qclass: 1,
+            do_bit: false,
+        };
+        let mut v = build_query(&pq);
+        v[2] = 0x80; // QR=1
+        v.truncate(v.len() - 11); // drop the trailing OPT RR (we add sections below)
+        v[6..8].copy_from_slice(&(ttls.len() as u16).to_be_bytes()); // ANCOUNT
+        for &t in ttls {
+            v.extend_from_slice(b"\xc0\x0c"); // name ptr
+            v.extend_from_slice(&1u16.to_be_bytes()); // A
+            v.extend_from_slice(&1u16.to_be_bytes()); // IN
+            v.extend_from_slice(&t.to_be_bytes());
+            v.extend_from_slice(&4u16.to_be_bytes());
+            v.extend_from_slice(&[192, 0, 2, 7]);
+        }
+        v
+    }
+
+    #[test]
+    fn patch_ttls_math() {
+        // orig 3600, cap 1200: ttl after age must be 1200-age until it hits 0
+        for age in 0..1200u32 {
+            let mut m = response_with_ttls(&[3600]);
+            assert!(patch_ttls(&mut m, age, 1200), "age {age}");
+            let served = u32::from_be_bytes(m[m.len() - 10..m.len() - 6].try_into().unwrap());
+            assert_eq!(served, 1200 - age);
+        }
+        let mut m = response_with_ttls(&[3600]);
+        assert!(!patch_ttls(&mut m, 1200, 1200)); // exhausted -> expired
+        // short orig wins over cap
+        let mut m = response_with_ttls(&[30]);
+        assert!(patch_ttls(&mut m, 20, 1200));
+        let served = u32::from_be_bytes(m[m.len() - 10..m.len() - 6].try_into().unwrap());
+        assert_eq!(served, 10);
+        let mut m = response_with_ttls(&[30]);
+        assert!(!patch_ttls(&mut m, 30, 1200));
+    }
+
+    #[test]
+    fn patch_ttls_walks_all_rrs_and_names() {
+        // answer with pointer name + authority section
+        let mut m = response_with_ttls(&[300, 200]);
+        m[8..10].copy_from_slice(&1u16.to_be_bytes()); // NSCOUNT
+        m.extend_from_slice(b"\x02ns\x04test\x00"); // uncompressed name
+        m.extend_from_slice(&2u16.to_be_bytes());
+        m.extend_from_slice(&1u16.to_be_bytes());
+        m.extend_from_slice(&600u32.to_be_bytes());
+        m.extend_from_slice(&4u16.to_be_bytes());
+        m.extend_from_slice(&[192, 0, 2, 7]);
+        assert!(patch_ttls(&mut m, 100, 1200));
+        assert_eq!(u32::from_be_bytes(m[m.len() - 10..m.len() - 6].try_into().unwrap()), 500);
+    }
+
+    #[test]
+    fn parse_rejects_malformed() {
+        // QR set
+        let pq = ParsedQuery { id: [0, 0], qname: b"\x01a\x00".to_vec(), qtype: 1, qclass: 1, do_bit: false };
+        let mut m = build_query(&pq);
+        m[2] |= 0x80;
+        assert!(parse_query(&m).is_none());
+        // opcode != QUERY
+        let mut m = build_query(&pq);
+        m[2] |= 0x08;
+        assert!(parse_query(&m).is_none());
+        // QDCOUNT = 2
+        let mut m = build_query(&pq);
+        m[4..6].copy_from_slice(&2u16.to_be_bytes());
+        assert!(parse_query(&m).is_none());
+        // compression pointer loop in question
+        let mut m = build_query(&pq);
+        m[12] = 0xc0;
+        m[13] = 0x0c;
+        assert!(parse_query(&m).is_none());
+        // pointer into the future
+        let mut m = build_query(&pq);
+        m[12] = 0xc0;
+        m[13] = 0xff;
+        assert!(parse_query(&m).is_none());
+        // oversized label runs off the buffer
+        let mut m = build_query(&pq);
+        m[12] = 0x40;
+        assert!(parse_query(&m).is_none());
+        // truncated mid-question
+        let m = build_query(&pq);
+        assert!(parse_query(&m[..13]).is_none());
+        // ANCOUNT lies about a section that is not there
+        let mut m = build_query(&pq);
+        m[6..8].copy_from_slice(&5u16.to_be_bytes());
+        assert!(parse_query(&m).is_none());
+    }
+
+    #[test]
+    fn servfail_keeps_question() {
+        let pq = ParsedQuery { id: [0x11, 0x22], qname: b"\x04test\x00".to_vec(), qtype: 28, qclass: 1, do_bit: false };
+        let q = build_query(&pq);
+        let r = make_servfail(&q);
+        assert_eq!(rcode(&r), 2);
+        assert_eq!(&r[0..2], &[0x11, 0x22]);
+        assert_eq!(r[4..6], q[4..6]); // QDCOUNT preserved
+        // question bytes identical
+        assert_eq!(&r[12..], &q[12..12 + (r.len() - 12)]);
+    }
+
+    #[test]
+    fn fuzz_random_buffers_never_panic() {
+        let mut rng = Rng(0xf00d);
+        for _ in 0..20000 {
+            let len = (rng.next() % 300) as usize;
+            let buf: Vec<u8> = (0..len).map(|_| (rng.next() % 256) as u8).collect();
+            let _ = parse_query(&buf);
+            let mut c = buf.clone();
+            let _ = patch_ttls(&mut c, 5, 1200);
+            let _ = make_servfail(&buf);
+            let _ = qname_str(&buf);
+        }
+    }
 }

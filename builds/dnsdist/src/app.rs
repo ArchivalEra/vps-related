@@ -8,6 +8,40 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
+
+/// A reply ready for the wire. `Shared` is the zero-copy shape: the 2-byte
+/// client ID rides as a prefix in front of the Arc'd body (whose first two
+/// bytes are replaced), so hits and misses never copy the payload.
+pub enum Reply {
+    Owned(Vec<u8>),
+    Shared {
+        prefix: [u8; 2],
+        body: Arc<Vec<u8>>,
+    },
+}
+
+impl Reply {
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Reply::Owned(v) if v.is_empty())
+    }
+}
+
+pub async fn write_reply<W: AsyncWrite + Unpin>(w: &mut W, r: &Reply) -> std::io::Result<()> {
+    match r {
+        Reply::Owned(v) => crate::frame::write_frame(w, v).await,
+        Reply::Shared { prefix, body } => {
+            if body.len() < 2 {
+                return Ok(()); // malformed guard; should never happen
+            }
+            let lb = (body.len() as u16).to_be_bytes();
+            w.write_all(&lb).await?;
+            w.write_all(prefix).await?;
+            w.write_all(&body[2..]).await?;
+            w.flush().await
+        }
+    }
+}
 
 pub struct App {
     pub cfg: Cfg,
@@ -36,8 +70,8 @@ fn fnv1a(b: &[u8]) -> u64 {
 }
 
 /// The whole pipeline: cache -> single-flight -> ordered upstream chain.
-/// Returns the response to send, or an empty vec meaning "drop / close".
-pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str) -> Vec<u8> {
+/// Returns the wire-ready reply; Reply::Owned(vec![]) means "drop / close".
+pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str) -> Reply {
     let t0 = Instant::now();
     match transport {
         "dot" => Stats::bump(&app.stats.in_dot),
@@ -45,7 +79,7 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str) -> Vec<u8
         _ => {}
     }
     if q.len() < 12 {
-        return Vec::new();
+        return Reply::Owned(Vec::new());
     }
     let id = [q[0], q[1]];
     let deadline = Instant::now() + Duration::from_millis(app.cfg.query_timeout_ms);
@@ -66,22 +100,32 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str) -> Vec<u8
 
     // cache
     if cacheable {
-        if let Some(mut m) = app.cache.lock().unwrap().get(&key) {
-            Stats::bump(&app.stats.cache_hit);
-            dnsmsg::patch_id(&mut m, &id);
-            if app.cfg.log_queries {
-                eprintln!(
-                    "Q {} {} {} hit rcode={} {}us",
-                    transport,
-                    qname,
-                    qtype,
-                    dnsmsg::rcode(&m),
-                    t0.elapsed().as_micros()
-                );
+        match app.cache.lock().unwrap().get(&key) {
+            Some(crate::cache::Hit::Shared(body)) => {
+                if app.cfg.log_queries {
+                    eprintln!(
+                        "Q {} {} {} hit0 rcode={} {}us",
+                        transport, qname, qtype,
+                        dnsmsg::rcode(&body),
+                        t0.elapsed().as_micros()
+                    );
+                }
+                return Reply::Shared { prefix: id, body };
             }
-            return m;
+            Some(crate::cache::Hit::Owned(mut m)) => {
+                dnsmsg::patch_id(&mut m, &id);
+                if app.cfg.log_queries {
+                    eprintln!(
+                        "Q {} {} {} hit rcode={} {}us",
+                        transport, qname, qtype,
+                        dnsmsg::rcode(&m),
+                        t0.elapsed().as_micros()
+                    );
+                }
+                return Reply::Owned(m);
+            }
+            None => {}
         }
-        Stats::bump(&app.stats.cache_miss);
     }
 
     let result = app
@@ -90,23 +134,32 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str) -> Vec<u8
         .await;
 
     match result {
-        Ok(mut r) => {
+        Ok(crate::upstream::Out::Shared(body)) => {
+            if app.cfg.log_queries {
+                eprintln!(
+                    "Q {} {} {} miss0 rcode={} {}us",
+                    transport, qname, qtype,
+                    dnsmsg::rcode(&body),
+                    t0.elapsed().as_micros()
+                );
+            }
+            Reply::Shared { prefix: id, body }
+        }
+        Ok(crate::upstream::Out::Owned(mut r)) => {
             dnsmsg::patch_id(&mut r, &id);
             if app.cfg.log_queries {
                 eprintln!(
                     "Q {} {} {} miss rcode={} {}us",
-                    transport,
-                    qname,
-                    qtype,
+                    transport, qname, qtype,
                     dnsmsg::rcode(&r),
                     t0.elapsed().as_micros()
                 );
             }
-            r
+            Reply::Owned(r)
         }
         Err(_) => {
             Stats::bump(&app.stats.servfail);
-            dnsmsg::make_servfail(&q)
+            Reply::Owned(dnsmsg::make_servfail(&q))
         }
     }
 }

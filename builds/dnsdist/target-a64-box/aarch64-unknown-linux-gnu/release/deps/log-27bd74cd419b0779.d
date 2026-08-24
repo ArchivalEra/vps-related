@@ -1,0 +1,11 @@
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/target-a64-box/aarch64-unknown-linux-gnu/release/deps/log-27bd74cd419b0779.d: /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/lib.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/macros.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/serde.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/__private_api.rs /home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/pgo-data-udp/merged.profdata
+
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/target-a64-box/aarch64-unknown-linux-gnu/release/deps/liblog-27bd74cd419b0779.rlib: /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/lib.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/macros.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/serde.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/__private_api.rs /home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/pgo-data-udp/merged.profdata
+
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/target-a64-box/aarch64-unknown-linux-gnu/release/deps/liblog-27bd74cd419b0779.rmeta: /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/lib.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/macros.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/serde.rs /home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/__private_api.rs /home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/pgo-data-udp/merged.profdata
+
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/lib.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/macros.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/serde.rs:
+/home/archivalera/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/log-0.4.34/src/__private_api.rs:
+/home/archivalera/plum/zcode-projects/vps-related/builds/dnsdist/pgo-data-udp/merged.profdata:

@@ -16,6 +16,10 @@ fn server_transport(idle_ms: u64) -> Arc<TransportConfig> {
     let mut tc = TransportConfig::default();
     tc.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(idle_ms.max(5000) as u32))));
     tc.max_concurrent_bidi_streams(VarInt::from_u32(128));
+    // memory diet: small windows keep per-conn state well under 8MB total
+    tc.stream_receive_window(VarInt::from_u32(64 * 1024));
+    tc.receive_window(VarInt::from_u32(256 * 1024));
+    tc.datagram_receive_buffer_size(Some(64 * 1024));
     Arc::new(tc)
 }
 
@@ -23,6 +27,9 @@ fn client_transport() -> Arc<TransportConfig> {
     let mut tc = TransportConfig::default();
     tc.keep_alive_interval(Some(Duration::from_secs(15)));
     tc.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(60_000))));
+    tc.stream_receive_window(VarInt::from_u32(64 * 1024));
+    tc.receive_window(VarInt::from_u32(256 * 1024));
+    tc.datagram_receive_buffer_size(Some(64 * 1024));
     Arc::new(tc)
 }
 
@@ -77,7 +84,7 @@ async fn serve_conn(app: &Arc<App>, conn: Connection) {
                     if resp.is_empty() {
                         return;
                     }
-                    if write_frame(&mut tx, &resp).await.is_ok() {
+                    if app::write_reply(&mut tx, &resp).await.is_ok() {
                         let _ = tx.finish();
                     }
                 });
