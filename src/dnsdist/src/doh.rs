@@ -28,6 +28,8 @@ pub struct DoHPool {
     spec: SourceSpec,
     client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>,
     allow_private: bool,
+    /// Bearer token for Maker auth (None = no auth header)
+    auth_token: Option<String>,
 }
 
 impl DoHPool {
@@ -35,6 +37,7 @@ impl DoHPool {
         spec: SourceSpec,
         tls: rustls::ClientConfig,
         allow_private: bool,
+        auth_token: Option<String>,
     ) -> Result<Self, String> {
         // NOTE: hyper-rustls sets ALPN itself (h2 + http/1.1) and panics if
         // the config already carries alpn_protocols
@@ -43,14 +46,16 @@ impl DoHPool {
         // must not enforce http-only, the outer HttpsConnector handles https
         http.enforce_http(false);
         http.set_connect_timeout(Some(std::time::Duration::from_secs(4)));
+        // Force HTTP/1.1 only: each query gets its own TCP+TLS connection.
+        // H2 multiplexing over transoceanic links causes head-of-line
+        // blocking on packet loss — one dropped byte stalls ALL streams.
         let https = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(tls)
             .https_or_http()
             .enable_http1()
-            .enable_http2()
             .wrap_connector(http);
         let client = Client::builder(TokioExecutor::new()).build(https);
-        Ok(DoHPool { spec, client, allow_private })
+        Ok(DoHPool { spec, client, allow_private, auth_token: None })
     }
 
     pub async fn query(&self, msg: &[u8], deadline: Instant) -> Result<Vec<u8>, UpErr> {
@@ -72,7 +77,13 @@ impl DoHPool {
             .method(Method::POST)
             .uri(uri)
             .header("content-type", "application/dns-message")
-            .header("accept", "application/dns-message")
+            .header("accept", "application/dns-message");
+        // attach Bearer token for Maker auth when configured
+        let req = match &self.auth_token {
+            Some(tok) => req.header("authorization", format!("Bearer {tok}")),
+            None => req,
+        };
+        let req = req
             .body(Full::new(Bytes::copy_from_slice(msg)))
             .map_err(|e| UpErr::Conn(format!("doh: build: {e}")))?;
         let remaining = deadline

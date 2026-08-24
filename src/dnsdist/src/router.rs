@@ -56,9 +56,11 @@ impl Router {
     }
 
     /// Insert a domain pattern into the trie.
-    /// Patterns: "example.com" (exact+sub), ".cn" (TLD), "+.google.com" (suffix)
+    /// Patterns: "example.com", "+.google.com" (suffix), ".cn" (TLD)
     pub fn insert_domain(&mut self, domain: &str, route_idx: usize) {
-        let labels: Vec<&str> = domain.trim_start_matches('+').split('.').rev().collect();
+        let clean = domain.trim_start_matches('+');
+        let clean = clean.strip_prefix('.').unwrap_or(clean);
+        let labels: Vec<&str> = clean.split('.').filter(|l| !l.is_empty()).rev().collect();
         let mut node = &mut self.root;
         for label in &labels {
             node = node.children.entry(label.to_lowercase()).or_insert_with(TrieNode::new);
@@ -67,9 +69,10 @@ impl Router {
         node.route_idx = Some(route_idx);
     }
 
-    /// Match a query domain against the trie. Returns route index or None.
-    pub fn resolve(&self, qname_lower: &str) -> Option<usize> {
-        let labels: Vec<&str> = qname_lower.split('.').rev().collect();
+    /// Match a query domain against the trie (case-insensitive).
+    pub fn resolve(&self, qname: &str) -> Option<usize> {
+        let lower = qname.to_lowercase();
+        let labels: Vec<&str> = lower.split('.').rev().collect();
         let mut node = &self.root;
         let mut best_match: Option<usize> = None;
 

@@ -193,7 +193,12 @@ impl Chain {
                 #[cfg(feature = "up-doh")]
                 SrcKind::Doh => {
                     let rc = tlsconf::client_config(roots.clone(), &[], true);
-                    Kind::Doh(crate::doh::DoHPool::new(spec.clone(), rc, cfg.allow_private_upstream)?)
+                    let auth = if cfg.maker_auth_kind == "bearer" {
+                        Some(cfg.maker_auth_key.clone())
+                    } else {
+                        None
+                    };
+                    Kind::Doh(crate::doh::DoHPool::new(spec.clone(), rc, cfg.allow_private_upstream, auth)?)
                 }
                 #[cfg(feature = "up-udp")]
                 SrcKind::Udp => Kind::Udp(crate::udpsrc::UdpSource::new(spec.clone(), cfg.allow_private_upstream)?),
