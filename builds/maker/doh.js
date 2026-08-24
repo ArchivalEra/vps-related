@@ -25,8 +25,8 @@ async function handle(req) {
       status: r.status,
       headers: {
         "content-type": "application/dns-message",
-        // EdgeOne edge caches identical ?dns= queries for 5 min.
-        // Same cluster + same domain = same URL = cache HIT, function skipped.
+        // EdgeOne edge caches identical ?dns= URLs for 10 min.
+        // Same domain + same ECS cluster = same URL = edge cache HIT.
         "cache-control": "public, max-age=600",
       },
     });
