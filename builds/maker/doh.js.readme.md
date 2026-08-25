@@ -1,21 +1,40 @@
 # doh.js — EdgeOne DoH relay function
 
 Usage manual for [`doh.js`](doh.js), the EdgeOne edge function that fronts
-Google DoH for `magdns`. It is a blind RFC 8484 pipe: whatever DNS wire
-message arrives goes to `https://dns.google/dns-query` byte-for-byte, and the
-answer comes back untouched. ECS (EDNS Client Subnet) passes through intact,
-so geo-sensitive answers stay geo-correct.
+Google DoH for `magdns`. It is a blind RFC 8484 pipe (GET and POST) with an
+edge-side **anti-stampede cache**: the authoritative cache is magdns's
+magazine on the box; this function only absorbs identical concurrent or
+rapidly-repeated queries so the first upstream answer has time to land.
 
-## How it works
+## Caching design (why the old version never hit)
 
-- `GET /dns-query?dns=<base64url>` → forwarded as a GET with the same query
-  string. Identical URLs are cached at the EdgeOne edge for 10 minutes
-  (`Cache-Control: public, max-age=600`), so repeated questions from nearby
-  clients never reach Google.
-- `POST /dns-query` with `Content-Type: application/dns-message` → forwarded
-  as POST, response streamed back with the same content type.
-- `GET /health` → plain-text `ok`, no auth required (for uptime probes).
-- Anything else → 400/405. Upstream fetch failure → 502.
+A naive DoH cache keys on the raw request — but the DNS transaction ID is
+random per client, so identical questions from different clients look
+different and the cache never hits. This function strips the two ID bytes
+and keys both cache layers on the remaining wire bytes. Answers are stored
+ID-less; each caller gets a private copy with their own transaction ID
+patched back in. Verified by `src/dnsdist/stage/doh_selftest.js` (run with
+node): memory hit consumes zero upstream calls, and ten concurrent identical
+queries consume exactly one.
+
+Two layers, both TTL 10 s:
+
+| Layer | Scope | Purpose |
+|---|---|---|
+| per-isolate memory map | one edge isolate | zero-cost hit, no platform API |
+| platform Cache API (`caches.default`, used only if present) | shared across isolates | cross-instance dedup |
+
+Plus single-flight: identical in-flight queries share one upstream round trip.
+TTL is deliberately short (10 s) — freshness belongs to the magazine; this
+layer must never outlive it.
+
+## Stability
+
+- 3 s upstream deadline (AbortController), one retry on transport errors
+  only (never on HTTP error statuses).
+- Request size guards: wire messages outside 12..65535 bytes → 400.
+- Upstream non-OK / short replies → 502 to the caller, logged via
+  `console.error` (visible in the EdgeOne function log panel).
 
 ## Deployment (EdgeOne console)
 
@@ -41,16 +60,16 @@ maker_auth_key = <same secret>
 ```
 
 Multiple relay domains (one per Tencent Cloud Intl account) stack as strict
-priority failover lines — see `magdns.conf.example`.
+priority failover lines — see `deploy/dnsdist/magdns.conf.example`.
 
 ## Quota strategy
 
 EdgeOne bills per function invocation. Run accounts **serially**, not in
 parallel: list relays in priority order and let magdns drain account A's
 monthly allowance before touching B's. The magazine cache on the box absorbs
-repeat queries locally; the edge cache absorbs repeats regionally. Never
-enable hedging or round-robin against metered relays — both multiply billed
-requests.
+repeat queries locally; this function's 10 s layer absorbs bursts at the
+edge. Never enable hedging or round-robin against metered relays — both
+multiply billed requests.
 
 ## Smoke test
 
