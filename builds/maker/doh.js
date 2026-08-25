@@ -42,10 +42,24 @@ addEventListener("fetch", (event) => {
 
 async function handle(req) {
   const url = new URL(req.url);
-  if (url.pathname === "/health") return new Response("ok", { status: 200 });
+  if (url.pathname === "/health") {
+    const caps = HAS_CACHE_API ? " cache-api" : "";
+    caps += typeof DecompressionStream !== "undefined" ? " br" : "";
+    return new Response("ok" + caps, { status: 200 });
+  }
   if (url.pathname !== "/dns-query") return new Response(null, { status: 404 });
 
   try {
+    // batch container: N length-prefixed wire queries, one HTTP round trip.
+    // Private protocol between magdns and this function — slashes the billed
+    // request count and sidesteps per-connection stream limits.
+    if (
+      req.method === "POST" &&
+      (req.headers.get("content-type") || "").startsWith("application/dns-batch")
+    ) {
+      return await handleBatch(req);
+    }
+
     let wire;
     if (req.method === "POST") {
       const body = new Uint8Array(await req.arrayBuffer());
@@ -69,6 +83,66 @@ async function handle(req) {
     console.error("doh-relay:", e && e.message ? e.message : e);
     return new Response(null, { status: 502 });
   }
+}
+
+const BATCH_MAX = 64; // hard safety ceiling; magdns AIMDs well below this
+
+async function handleBatch(req) {
+  let bytes = new Uint8Array(await req.arrayBuffer());
+  const enc = req.headers.get("content-encoding") || "";
+  if (enc === "gzip" || enc === "br") {
+    if (typeof DecompressionStream === "undefined")
+      return new Response(null, { status: 415 }); // client falls back to raw
+    bytes = new Uint8Array(
+      await new Response(bytes.stream().pipeThrough(new DecompressionStream(enc))).arrayBuffer()
+    );
+  }
+  if (bytes.byteLength < 2) return new Response(null, { status: 400 });
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = dv.getUint16(0);
+  if (count === 0 || count > BATCH_MAX) return new Response(null, { status: 400 });
+
+  // parse + resolve every slot through the shared cache/single-flight path
+  const slots = [];
+  let off = 2;
+  for (let i = 0; i < count; i++) {
+    if (off + 2 > bytes.byteLength) break;
+    const len = dv.getUint16(off);
+    off += 2;
+    if (off + len > bytes.byteLength) break;
+    const wire = bytes.subarray(off, off + len);
+    off += len;
+    if (len >= 12) {
+      slots.push(cached(hex(wire.subarray(2)), wire).catch(() => null));
+    } else {
+      slots.push(Promise.resolve(null));
+    }
+  }
+  const answers = await Promise.all(slots);
+
+  // pack: [count][len][answer]... ; empty slot = that query failed alone
+  const parts = [new Uint8Array([answers.length >> 8, answers.length & 0xff])];
+  for (const a of answers) {
+    const len = a ? a.byteLength : 0;
+    parts.push(new Uint8Array([len >> 8, len & 0xff]));
+    if (a) parts.push(a);
+  }
+  return new Response(concat(parts), {
+    status: 200,
+    headers: { "content-type": "application/dns-batch+v1" },
+  });
+}
+
+function concat(chunks) {
+  let total = 0;
+  for (const c of chunks) total += c.byteLength;
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const c of chunks) {
+    out.set(c, o);
+    o += c.byteLength;
+  }
+  return out.buffer;
 }
 
 function dnsResponse(body) {

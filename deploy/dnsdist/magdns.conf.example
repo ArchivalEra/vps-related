@@ -22,12 +22,18 @@ key_file = /etc/magdns/key.pem
 #            queries route around it, so geo answers stay geo-correct
 #   h2 / h2=N — multiplex HTTP/2 over N independent connections (1..=20,
 #            default 4). For near-edge relays (Maker), not transoceanic.
+#   batch  — pack concurrent queries into ONE gzip-compressed request for
+#            the Maker's private batch protocol (AIMD-sized, zero-wait;
+#            the relay unpacks and serves from its edge cache first).
+#            Slashes billed request count ~10-20x under load; degrades to
+#            single-query POST automatically when the relay misbehaves.
 #
 # Maker relay farm: same doh.js deployed per Tencent Cloud Intl account,
-# one subdomain each; relay auth via raw `token:` header (EdgeOne trigger)
-# upstream = https://maker-a.isui.ren/dns-query h2=8
-# upstream = https://maker-b.isui.ren/dns-query h2=8
-# upstream = https://maker-c.isui.ren/dns-query h2=8
+# one subdomain each; relay auth via raw `token:` header (EdgeOne trigger).
+# batch+h2 together: ~20 queries per request, multiplexed over 8 connections.
+upstream = https://maker-a.isui.ren/dns-query h2=8 batch
+upstream = https://maker-b.isui.ren/dns-query h2=8 batch
+upstream = https://maker-c.isui.ren/dns-query h2=8 batch
 # maker_auth_kind = token          # "token" -> raw `token:` header,
 # maker_auth_key = <your-token>    # "bearer" -> Authorization: Bearer <key>
 #
