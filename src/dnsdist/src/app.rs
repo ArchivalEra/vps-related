@@ -114,51 +114,52 @@ pub async fn handle_query(
     let deadline = Instant::now() + Duration::from_millis(app.cfg.query_timeout_ms);
     let cluster = crate::cache::GeoCluster::from_client_ip(client_ip);
 
-    let (key, cacheable, upstream_query, qname, qtype, is_cn) = match dnsmsg::parse_query(&q) {
-        Some(pq) => {
-            let base_key = dnsmsg::cache_key(&pq);
-            // geo-aware: append cluster bytes to the cache key
-            let mut key = base_key.clone();
-            key.extend_from_slice(&cluster.to_bytes());
-            let n = dnsmsg::qname_str(&pq.qname);
-            let t = pq.qtype;
-            // Layer 2: per-domain limit keyed on the lowercase qname — one
-            // hot name (NAT household or random-qname flood) cannot crowd out
-            // everything else
-            if !app.domain_limiter.check(n.to_lowercase().into_bytes()) {
-                Stats::bump(&app.stats.domain_limited);
-                return Reply::Owned(dnsmsg::make_refused(&q));
-            }
-            // Layer 3: global QPS ceiling protecting upstreams + bandwidth
-            if !app.global_limiter.check() {
-                Stats::bump(&app.stats.global_limited);
-                return Reply::Owned(dnsmsg::make_refused(&q));
-            }
-            // build upstream query; embed ECS if enabled
-            let mut uq = dnsmsg::build_query(&pq);
-            if app.cfg.ecs_enabled {
-                dnsmsg::append_ecs_to_query(&mut uq, &dnsmsg::ecs_option_bytes(client_ip, 24));
-            }
-            // split routing: check router for CN domain classification
-            let cn = {
-                let r = app.router.read().unwrap();
-                match r.as_ref() {
-                    Some(router) => {
-                        let lower = n.to_lowercase();
-                        matches!(router.resolve(&lower), Some(0)) // route 0 = CN
-                    }
-                    None => false,
+    let (key, cacheable, upstream_query, qname, qtype, is_cn, wants_ecs) =
+        match dnsmsg::parse_query(&q) {
+            Some(pq) => {
+                let base_key = dnsmsg::cache_key(&pq);
+                // geo-aware: append cluster bytes to the cache key
+                let mut key = base_key.clone();
+                key.extend_from_slice(&cluster.to_bytes());
+                let n = dnsmsg::qname_str(&pq.qname);
+                let t = pq.qtype;
+                // Layer 2: per-domain limit keyed on the lowercase qname — one
+                // hot name (NAT household or random-qname flood) cannot crowd out
+                // everything else
+                if !app.domain_limiter.check(n.to_lowercase().into_bytes()) {
+                    Stats::bump(&app.stats.domain_limited);
+                    return Reply::Owned(dnsmsg::make_refused(&q));
                 }
-            };
-            (key, true && !cn, uq, n, t, cn)
-        }
-        None => {
-            let mut k = vec![b'P'];
-            k.extend_from_slice(&fnv1a(&q).to_be_bytes());
-            k.extend_from_slice(&cluster.to_bytes());
-            (k, false, q.clone(), String::new(), 0, false)
-        }
-    };
+                // Layer 3: global QPS ceiling protecting upstreams + bandwidth
+                if !app.global_limiter.check() {
+                    Stats::bump(&app.stats.global_limited);
+                    return Reply::Owned(dnsmsg::make_refused(&q));
+                }
+                // build upstream query; embed ECS if enabled
+                let mut uq = dnsmsg::build_query(&pq);
+                if app.cfg.ecs_enabled {
+                    dnsmsg::append_ecs_to_query(&mut uq, &dnsmsg::ecs_option_bytes(client_ip, 24));
+                }
+                // split routing: check router for CN domain classification
+                let cn = {
+                    let r = app.router.read().unwrap();
+                    match r.as_ref() {
+                        Some(router) => {
+                            let lower = n.to_lowercase();
+                            matches!(router.resolve(&lower), Some(0)) // route 0 = CN
+                        }
+                        None => false,
+                    }
+                };
+                (key, !cn, uq, n, t, cn, app.cfg.ecs_enabled)
+            }
+            None => {
+                let mut k = vec![b'P'];
+                k.extend_from_slice(&fnv1a(&q).to_be_bytes());
+                k.extend_from_slice(&cluster.to_bytes());
+                (k, false, q.clone(), String::new(), 0, false, false)
+            }
+        };
 
     // cache
     if cacheable {
@@ -200,7 +201,7 @@ pub async fn handle_query(
     if is_cn {
         #[cfg(feature = "up-udp")]
         if let Some(pool) = app.cn_pool.as_ref() {
-            return match pool.resolve(&upstream_query, deadline).await {
+            return match pool.resolve(&upstream_query, wants_ecs, deadline).await {
                 Ok(mut r) => {
                     dnsmsg::patch_id(&mut r, &id);
                     if app.cfg.log_queries {
@@ -225,7 +226,9 @@ pub async fn handle_query(
 
     let result = app
         .chain
-        .resolve(key.clone(), cacheable, deadline, || upstream_query.clone())
+        .resolve(key.clone(), cacheable, wants_ecs, deadline, || {
+            upstream_query.clone()
+        })
         .await;
 
     match result {

@@ -9,15 +9,22 @@ listen_doq = [::]:8853
 cert_file = /etc/magdns/cert.pem
 key_file = /etc/magdns/key.pem
 
-# upstream fallback chain, priority = file order.
-# nextdns profile 88f745: DoQ first, DoT fallback, DoH last resort
-upstream = quic://88f745.dns.nextdns.io:853
-upstream = tls://88f745.dns.nextdns.io:853
-upstream = https://dns.nextdns.io/88f745
+# foreign chain: three DoH springs in load-sharing balance
+# (spread_upstreams=true below rotates them round-robin; a source that
+# fails twice is struck out and probed back in background).
+# Flags after the URL:
+#   noecs — this source ignores EDNS Client Subnet (Quad9): ECS-carrying
+#           queries route around it, so geo answers stay geo-correct
+#   h2    — multiplex over HTTP/2 with a 4-connection fan-out; use for
+#           near-edge relays (Maker), not for transoceanic direct sources
+upstream = https://dns.google/dns-query
+upstream = https://dns9.quad9.net/dns-query noecs
+upstream = https://unfiltered.adguard-dns.com/dns-query
+# self-hosted Maker relay in front of Google: h2 multiplexing + relay auth
+# upstream = https://pure-dns.isui.ren/dns-query h2
+# maker_auth_kind = token          # "token" -> raw `token:` header,
+# maker_auth_key = <your-token>    # "bearer" -> Authorization: Bearer <key>
 
-# later: ShadowTLS-fronted 1.1.1.3 DoH via a local forwarder ->
-#   upstream = https://127.0.0.1:8443/dns-query
-#   allow_private_upstream = true
 allow_private_upstream = false
 
 # magazine cache: RAM only, FIFO tail eviction, per-entry lifetime cap
@@ -33,13 +40,14 @@ probe_interval_s = 12
 idle_timeout_ms = 45000
 
 # split routing: CN domains (cn_domain_file list) resolve through these
-# domestic legs — plain udp://, tried with round-robin fan-out across legs
-# and single-flight merge of identical concurrent queries; two strikes mark
-# a leg down, background probes bring it back. TC=1 answers retry over TCP.
-# Priority is cyclic: concurrent queries spread over peers by default.
-# cn_upstream = udp://114.114.114.114:53
-# cn_upstream = udp://119.29.29.29:53
-# cn_domain_file = /etc/magdns/accelerated-domains.china.conf
+# domestic legs — plain udp://, round-robin fan-out across legs with
+# single-flight merge of identical concurrent queries; two strikes mark a
+# leg down, background probes bring it back. TC=1 answers retry over TCP.
+# 223.5.5.5/223.6.6.6 (AliDNS) pass ECS through; 114 does not -> noecs.
+cn_upstream = udp://223.5.5.5:53
+cn_upstream = udp://223.6.6.6:53
+cn_upstream = udp://114.114.114.114:53 noecs
+cn_domain_file = /etc/magdns/accelerated-domains.china.conf
 
 # layered rate limiting, all token buckets; rate = 0 disables that layer.
 # SIGHUP applies new values live (changing limits resets the buckets).
@@ -56,8 +64,8 @@ domain_limit_entries = 8192
 # hard cap on queries being processed at once (overload drops instead of OOM)
 max_concurrent_queries = 1024
 # rotate the alive-source start per query in the FOREIGN chain too
-# (fan-out across peers instead of strict priority; CN pool always spreads)
-spread_upstreams = false
+# (load-sharing across the three DoH springs; CN pool always spreads)
+spread_upstreams = true
 
 # verbose = false
 # log_queries = false

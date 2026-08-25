@@ -203,10 +203,15 @@ impl Chain {
                 #[cfg(feature = "up-doh")]
                 SrcKind::Doh => {
                     let rc = tlsconf::client_config(roots.clone(), &[], true);
-                    let auth = if cfg.maker_auth_kind == "bearer" {
-                        Some(cfg.maker_auth_key.clone())
-                    } else {
-                        None
+                    // Maker relay auth: "bearer" -> Authorization: Bearer <key>,
+                    // "token" -> raw `token:` header (EdgeOne trigger-rule style)
+                    let auth = match (cfg.maker_auth_kind.as_str(), cfg.maker_auth_key.is_empty()) {
+                        ("bearer", false) => Some((
+                            "authorization".to_string(),
+                            format!("Bearer {}", cfg.maker_auth_key),
+                        )),
+                        ("token", false) => Some(("token".to_string(), cfg.maker_auth_key.clone())),
+                        _ => None,
                     };
                     Kind::Doh(crate::doh::DoHPool::new(
                         spec.clone(),
@@ -257,10 +262,13 @@ impl Chain {
 
     /// Resolve one query through the chain. `cacheable` false = raw
     /// passthrough (unusual opcodes / QDCOUNT != 1) which skips the cache.
+    /// `wants_ecs` routes around sources that ignore EDNS Client Subnet
+    /// (falls back to them only when nothing else is alive).
     pub async fn resolve(
         &self,
         key: Vec<u8>,
         cacheable: bool,
+        wants_ecs: bool,
         deadline: Instant,
         make_query: impl FnOnce() -> Vec<u8>,
     ) -> Result<Out, UpErr> {
@@ -274,12 +282,12 @@ impl Chain {
                 },
                 Entered::Bypass => {
                     return self
-                        .run_with_permit(&key, cacheable, make_query, deadline)
+                        .run_with_permit(&key, cacheable, wants_ecs, make_query, deadline)
                         .await
                 }
                 Entered::Initiator(guard) => {
                     let result = self
-                        .run_with_permit(&key, cacheable, make_query, deadline)
+                        .run_with_permit(&key, cacheable, wants_ecs, make_query, deadline)
                         .await;
                     let ok = match &result {
                         Ok(Out::Shared(v)) => Some(v.clone()),
@@ -293,7 +301,7 @@ impl Chain {
         }
         // both join attempts failed within budget — run unmerged rather than
         // returning a failure the client did not cause
-        self.run_with_permit(&key, cacheable, make_query, deadline)
+        self.run_with_permit(&key, cacheable, wants_ecs, make_query, deadline)
             .await
     }
 
@@ -301,6 +309,7 @@ impl Chain {
         &self,
         key: &[u8],
         cacheable: bool,
+        wants_ecs: bool,
         make_query: impl FnOnce() -> Vec<u8>,
         deadline: Instant,
     ) -> Result<Out, UpErr> {
@@ -317,7 +326,9 @@ impl Chain {
                 _ => return Err(UpErr::Timeout),
             };
         let query = make_query();
-        let out = self.run_sources(key, &query, cacheable, deadline).await;
+        let out = self
+            .run_sources(key, &query, cacheable, wants_ecs, deadline)
+            .await;
         drop(permit);
         out
     }
@@ -327,17 +338,28 @@ impl Chain {
         key: &[u8],
         query: &[u8],
         cacheable: bool,
+        wants_ecs: bool,
         deadline: Instant,
     ) -> Result<Out, UpErr> {
         let now_ms = crate::app::unix_ms();
         // alive sources keep their configured priority; down sources are
         // appended as last resort so a query still gets a full chance when
-        // the "alive" ones are actually dead (single-strike state)
+        // the "alive" ones are actually dead (single-strike state).
+        // ECS-aware queries skip noecs sources — unless that leaves nothing.
+        let alive = |i: usize| self.sources[i].alive(now_ms);
+        let ecs_ok = |i: usize| !wants_ecs || !self.sources[i].spec.noecs;
         let mut order: Vec<usize> = (0..self.sources.len())
-            .filter(|&i| self.sources[i].alive(now_ms))
+            .filter(|&i| alive(i) && ecs_ok(i))
             .collect();
+        if order.is_empty() {
+            // every alive source ignores ECS — better a geo-blind answer
+            // than no answer
+            order = (0..self.sources.len()).filter(|&i| alive(i)).collect();
+        }
         for i in 0..self.sources.len() {
-            if !self.sources[i].alive(now_ms) {
+            let eligible = alive(i) && ecs_ok(i);
+            if !eligible && !order.contains(&i) {
+                // down sources and ECS-filtered sources trail as last resort
                 order.push(i);
             }
         }

@@ -44,16 +44,15 @@ pub struct CnPool {
 }
 
 /// Alive-first dispatch order starting at `start` (round-robin among the
-/// alive prefix); dead legs trail as last resort, preserving their index
-/// order. Pure so the spread/fallback shape is unit-testable.
-pub fn dispatch_order(alive: impl Fn(usize) -> bool + Copy, n: usize, start: usize) -> Vec<usize> {
-    let mut ord: Vec<usize> = (0..n).filter(|&i| alive(i)).collect();
-    if ord.len() > 1 {
-        let s = start % ord.len();
-        ord.rotate_left(s);
+/// alive prefix); dead/ECS-filtered legs trail in their given order. Pure so
+/// the spread/fallback shape is unit-testable.
+pub fn dispatch_order(mut primary: Vec<usize>, rest: Vec<usize>, start: usize) -> Vec<usize> {
+    if primary.len() > 1 {
+        let s = start % primary.len();
+        primary.rotate_left(s);
     }
-    ord.extend((0..n).filter(|&i| !alive(i)));
-    ord
+    primary.extend(rest);
+    primary
 }
 
 /// FNV-1a over the query with the transaction ID zeroed: identical questions
@@ -110,8 +109,14 @@ impl CnPool {
     }
 
     /// Resolve through the domestic legs. Returns the raw upstream reply
-    /// (caller patches the client's transaction ID).
-    pub async fn resolve(&self, msg: &[u8], deadline: Instant) -> Result<Vec<u8>, UpErr> {
+    /// (caller patches the client's transaction ID). `wants_ecs` routes
+    /// around `noecs` legs (e.g. 114) so geo answers stay geo-correct.
+    pub async fn resolve(
+        &self,
+        msg: &[u8],
+        wants_ecs: bool,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, UpErr> {
         let key = flight_key(msg);
         // one takeover round: a failed joined flight means we run it ourselves
         for _ in 0..2 {
@@ -120,25 +125,39 @@ impl CnPool {
                     Ok(v) => return Ok((*v).clone()),
                     Err(_) => continue,
                 },
-                Entered::Bypass => return self.run_legs(msg, deadline).await,
+                Entered::Bypass => return self.run_legs(msg, wants_ecs, deadline).await,
                 Entered::Initiator(guard) => {
-                    let result = self.run_legs(msg, deadline).await;
+                    let result = self.run_legs(msg, wants_ecs, deadline).await;
                     guard.settle(result.as_ref().ok().map(|v| Arc::new(v.clone())));
                     return result;
                 }
             }
         }
-        self.run_legs(msg, deadline).await
+        self.run_legs(msg, wants_ecs, deadline).await
     }
 
-    async fn run_legs(&self, query: &[u8], deadline: Instant) -> Result<Vec<u8>, UpErr> {
+    async fn run_legs(
+        &self,
+        query: &[u8],
+        wants_ecs: bool,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, UpErr> {
         let now_ms = crate::app::unix_ms();
         let start = self.rr.fetch_add(1, Ordering::Relaxed);
-        let order = dispatch_order(
-            |i| self.legs[i].health.alive(now_ms),
-            self.legs.len(),
-            start,
-        );
+        // alive + ECS-eligible legs first (round-robin spread); anything else
+        // trails; if ECS filtering empties the pool, use all alive legs
+        let ecs_ok = |i: usize| !wants_ecs || !self.legs[i].spec.noecs;
+        let alive = |i: usize| self.legs[i].health.alive(now_ms);
+        let mut primary: Vec<usize> = (0..self.legs.len())
+            .filter(|&i| alive(i) && ecs_ok(i))
+            .collect();
+        if primary.is_empty() {
+            primary = (0..self.legs.len()).filter(|&i| alive(i)).collect();
+        }
+        let rest: Vec<usize> = (0..self.legs.len())
+            .filter(|&i| !primary.contains(&i))
+            .collect();
+        let order = dispatch_order(primary, rest, start);
         for (t, &i) in order.iter().enumerate() {
             if t > 0 {
                 Stats::bump(&self.stats.cn_fallback);
@@ -213,17 +232,14 @@ mod tests {
 
     #[test]
     fn spread_rotates_alive_prefix_keeps_dead_trailing() {
-        // 3 legs, middle one down: alive = {0, 2}, dead = {1}
-        let alive = |i: usize| i != 1;
-        assert_eq!(dispatch_order(alive, 3, 0), vec![0, 2, 1]);
-        assert_eq!(dispatch_order(alive, 3, 1), vec![2, 0, 1]);
-        assert_eq!(dispatch_order(alive, 3, 2), vec![0, 2, 1]); // wraps
-                                                                // all down: order is just the trailing indices
-        let none = |_: usize| false;
-        assert_eq!(dispatch_order(none, 3, 5), vec![0, 1, 2]);
+        // 3 legs, middle one down: primary = {0, 2}, trailing = {1}
+        assert_eq!(dispatch_order(vec![0, 2], vec![1], 0), vec![0, 2, 1]);
+        assert_eq!(dispatch_order(vec![0, 2], vec![1], 1), vec![2, 0, 1]);
+        assert_eq!(dispatch_order(vec![0, 2], vec![1], 2), vec![0, 2, 1]); // wraps
+                                                                           // nothing alive: just the trailing indices
+        assert_eq!(dispatch_order(vec![], vec![0, 1, 2], 5), vec![0, 1, 2]);
         // single alive leg never rotates
-        let one = |i: usize| i == 2;
-        assert_eq!(dispatch_order(one, 3, 9), vec![2, 0, 1]);
+        assert_eq!(dispatch_order(vec![2], vec![0, 1], 9), vec![2, 0, 1]);
     }
 
     #[test]
