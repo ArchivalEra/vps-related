@@ -21,6 +21,10 @@
 !config-delivery/
 !config-delivery/**
 
+# 3c-b) Allow duck-ddns (DuckDNS A/AAAA dynamic updater for the home box)
+!duck-ddns/
+!duck-ddns/**
+
 # 3d) Allow repo-level tooling (git hooks)
 !scripts/
 !scripts/**
