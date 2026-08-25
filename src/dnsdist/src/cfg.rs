@@ -30,8 +30,10 @@ pub struct SourceSpec {
     /// source ignores EDNS Client Subnet (Quad9, 114): queries carrying ECS
     /// route around it so geo answers stay geo-correct
     pub noecs: bool,
-    /// HTTP/2 multiplexing for DoH (4-connection fan-out bounds HOL blast radius)
-    pub h2: bool,
+    /// HTTP/2 connection fan-out for DoH (0 = HTTP/1.1 per-query; 1..=20 =
+    /// multiplexed H2 over that many independent connections, bounding HOL
+    /// blast radius at 1/N)
+    pub h2_fanout: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -185,18 +187,29 @@ pub fn parse(text: &str) -> Result<Cfg, String> {
 }
 
 pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
-    // trailing space-separated flags: `noecs` (source ignores ECS), `h2`
-    // (DoH over multiplexed HTTP/2). Unknown flags are config errors.
+    // trailing space-separated flags: `noecs` (source ignores ECS), `h2` or
+    // `h2=N` (DoH over N multiplexed HTTP/2 connections, 1..=20, default 4).
+    // Unknown flags are config errors.
+    const H2_DEFAULT: usize = 4;
+    const H2_MAX: usize = 20;
     let mut parts = raw.split_whitespace();
     let url = parts
         .next()
         .ok_or_else(|| format!("upstream `{raw}`: empty"))?;
     let mut noecs = false;
-    let mut h2 = false;
+    let mut h2_fanout = 0usize;
     for flag in parts {
         match flag {
             "noecs" => noecs = true,
-            "h2" => h2 = true,
+            "h2" => h2_fanout = H2_DEFAULT,
+            f if f.starts_with("h2=") => {
+                h2_fanout = f[3..]
+                    .parse()
+                    .map_err(|_| format!("upstream `{raw}`: bad h2 count"))?;
+                if h2_fanout == 0 || h2_fanout > H2_MAX {
+                    return Err(format!("upstream `{raw}`: h2 count must be 1..={H2_MAX}"));
+                }
+            }
             other => return Err(format!("upstream `{raw}`: unknown flag `{other}`")),
         }
     }
@@ -219,7 +232,7 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
             ))
         }
     };
-    if h2 && kind != SrcKind::Doh {
+    if h2_fanout > 0 && kind != SrcKind::Doh {
         return Err(format!(
             "upstream `{url}`: h2 flag applies to https:// sources only"
         ));
@@ -287,7 +300,7 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
         path,
         raw: raw.to_string(),
         noecs,
-        h2,
+        h2_fanout,
     })
 }
 
@@ -362,23 +375,26 @@ mod tests {
         #[cfg(feature = "up-udp")]
         {
             let s = parse_upstream("udp://223.5.5.5:53").unwrap();
-            assert!(!s.noecs && !s.h2);
+            assert!(!s.noecs && s.h2_fanout == 0);
             assert_eq!(s.port, 53);
 
             let s = parse_upstream("udp://114.114.114.114:53 noecs").unwrap();
-            assert!(s.noecs && !s.h2);
+            assert!(s.noecs && s.h2_fanout == 0);
         }
 
         #[cfg(feature = "up-doh")]
         {
             let s = parse_upstream("https://pure-dns.isui.ren/dns-query h2").unwrap();
-            assert!(s.h2 && !s.noecs);
+            assert!(s.h2_fanout == 4 && !s.noecs, "bare h2 defaults to 4");
             assert_eq!(s.host, "pure-dns.isui.ren");
             assert_eq!(s.path, "/dns-query");
 
-            // both flags together
-            let s = parse_upstream("https://a.example/dns-query noecs h2").unwrap();
-            assert!(s.noecs && s.h2);
+            let s = parse_upstream("https://a.example/dns-query noecs h2=20").unwrap();
+            assert!(s.noecs && s.h2_fanout == 20);
+
+            // out-of-range counts are config errors
+            assert!(parse_upstream("https://a.example/dns-query h2=21").is_err());
+            assert!(parse_upstream("https://a.example/dns-query h2=0").is_err());
         }
     }
 
