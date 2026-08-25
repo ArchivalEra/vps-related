@@ -9,21 +9,32 @@ listen_doq = [::]:8853
 cert_file = /etc/magdns/cert.pem
 key_file = /etc/magdns/key.pem
 
-# foreign chain: three DoH springs in load-sharing balance
-# (spread_upstreams=true below rotates them round-robin; a source that
-# fails twice is struck out and probed back in background).
+# foreign chain: STRICT PRIORITY (top line carries all traffic; a source
+# that fails twice is struck out for probe_interval_s and the next takes
+# over; probes bring recovered sources back at the head of the line).
+# This is deliberate quota arithmetic: Maker relays are billed per request,
+# so the relays run serially — drain account A's allowance, then B's —
+# instead of round-robin burning all allowances in parallel. Hedging is
+# likewise off: a duplicated query is a doubled request count.
+#
 # Flags after the URL:
-#   noecs — this source ignores EDNS Client Subnet (Quad9): ECS-carrying
-#           queries route around it, so geo answers stay geo-correct
-#   h2    — multiplex over HTTP/2 with a 4-connection fan-out; use for
-#           near-edge relays (Maker), not for transoceanic direct sources
+#   noecs  — this source ignores EDNS Client Subnet (Quad9): ECS-carrying
+#            queries route around it, so geo answers stay geo-correct
+#   h2 / h2=N — multiplex HTTP/2 over N independent connections (1..=20,
+#            default 4). For near-edge relays (Maker), not transoceanic.
+#
+# Maker relay farm: same doh.js deployed per Tencent Cloud Intl account,
+# one subdomain each; relay auth via raw `token:` header (EdgeOne trigger)
+# upstream = https://maker-a.isui.ren/dns-query h2=8
+# upstream = https://maker-b.isui.ren/dns-query h2=8
+# upstream = https://maker-c.isui.ren/dns-query h2=8
+# maker_auth_kind = token          # "token" -> raw `token:` header,
+# maker_auth_key = <your-token>    # "bearer" -> Authorization: Bearer <key>
+#
+# public springs as last resort when every Maker account is drained/dead
 upstream = https://dns.google/dns-query
 upstream = https://dns9.quad9.net/dns-query noecs
 upstream = https://unfiltered.adguard-dns.com/dns-query
-# self-hosted Maker relay in front of Google: h2 multiplexing + relay auth
-# upstream = https://pure-dns.isui.ren/dns-query h2
-# maker_auth_kind = token          # "token" -> raw `token:` header,
-# maker_auth_key = <your-token>    # "bearer" -> Authorization: Bearer <key>
 
 allow_private_upstream = false
 
@@ -63,9 +74,10 @@ burst_domain = 200
 domain_limit_entries = 8192
 # hard cap on queries being processed at once (overload drops instead of OOM)
 max_concurrent_queries = 1024
-# rotate the alive-source start per query in the FOREIGN chain too
-# (load-sharing across the three DoH springs; CN pool always spreads)
-spread_upstreams = true
+# rotate the alive-source start per query — OFF by default: the Maker
+# quota strategy needs strict priority (serial drain, see above). Turn on
+# only if all your upstreams are free/unmetered peers.
+spread_upstreams = false
 
 # verbose = false
 # log_queries = false

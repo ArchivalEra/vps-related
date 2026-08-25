@@ -18,9 +18,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 const BODY_CAP: usize = 128 * 1024;
-/// Independent H2 connections per `h2` source: HOL blast radius = 1/N,
-/// handshake savings stay at (N-1)/N.
-const H2_FANOUT: usize = 4;
 
 fn deep_source(e: &dyn std::error::Error) -> String {
     let mut cur = e.source();
@@ -53,7 +50,7 @@ impl DoHPool {
     ) -> Result<Self, String> {
         // NOTE: hyper-rustls sets ALPN itself (h2 + http/1.1 as enabled) and
         // panics if the config already carries alpn_protocols
-        let n = if spec.h2 { H2_FANOUT } else { 1 };
+        let n = spec.h2_fanout.max(1);
         let mut clients = Vec::with_capacity(n);
         for _ in 0..n {
             let mut http = HttpConnector::new();
@@ -65,7 +62,7 @@ impl DoHPool {
             let builder = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_tls_config(tls.clone())
                 .https_or_http();
-            let https = if spec.h2 {
+            let https = if spec.h2_fanout > 0 {
                 builder.enable_http1().enable_http2().wrap_connector(http)
             } else {
                 builder.enable_http1().wrap_connector(http)
