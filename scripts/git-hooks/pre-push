@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# pre-push hook — refuse the push if any tracked .sh/.md contains Chinese.
+# pre-push hook — refuse the push if any tracked .sh/.md contains Chinese,
+# or if any protected local-only path is tracked.
 #
 # This repo enforces "zero Chinese" (comments, errors, docs). The check is the
 # same pattern used by the cleanup sweeps: PCRE CJK range over .sh and .md,
 # excluding the gitignored test binary dir.
+#
+# The second check is the last line of defense for local-only files (deploy
+# configs with real tokens, the stage test bench): even if one slips into
+# history on another machine, it does not leave this machine.
 #
 # Enable on a clone (hook file is versioned under scripts/git-hooks):
 #   git config core.hooksPath scripts/git-hooks
@@ -21,6 +26,15 @@ if [[ -n "$DIRTY" ]]; then
   echo "pre-push REJECTED: Chinese characters found in tracked files:" >&2
   echo "$DIRTY" | sed 's/^/  /' >&2
   echo "Translate them to English before pushing (repo rule: zero Chinese)." >&2
+  exit 1
+fi
+
+# Protected paths must never be tracked. Keep in sync with pre-commit.
+LEAKED="$(git ls-files | grep -E '(^|/)magdns-final\.conf$|^src/dnsdist/stage/' 2>/dev/null || true)"
+if [[ -n "$LEAKED" ]]; then
+  echo "pre-push REJECTED: protected local-only paths are tracked:" >&2
+  echo "$LEAKED" | sed 's/^/  /' >&2
+  echo "Untrack them: git rm -r --cached <path>   (they carry real secrets / are bench-only)" >&2
   exit 1
 fi
 

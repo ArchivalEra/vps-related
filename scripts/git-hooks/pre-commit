@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# pre-commit hook — refuse commits that stage protected local-only paths.
+#
+# Backstop for `git add -A`: some files live in the worktree by design but
+# must never enter history (deploy configs carrying real tokens, the local
+# test bench). The whitelist .gitignore cannot cover them because they sit
+# inside allowed subtrees, so this hook is the guard.
+#
+# Enable on a clone (hooks are versioned under scripts/git-hooks):
+#   git config core.hooksPath scripts/git-hooks
+set -uo pipefail
+
+# Substrings matched against each staged path. Keep in sync with pre-push.
+PROTECTED=(
+  'magdns-final.conf'
+  'src/dnsdist/stage/'
+)
+
+STAGED="$(git diff --cached --name-only)"
+bad=()
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  for pat in "${PROTECTED[@]}"; do
+    if [[ "$f" == *"$pat"* ]]; then
+      bad+=("$f")
+      break
+    fi
+  done
+done <<< "$STAGED"
+
+if ((${#bad[@]})); then
+  echo "pre-commit REJECTED: protected local-only paths are staged:" >&2
+  printf '  %s\n' "${bad[@]}" >&2
+  echo "Unstage with: git restore --staged <path>   (these files must stay untracked)" >&2
+  exit 1
+fi
+
+exit 0
