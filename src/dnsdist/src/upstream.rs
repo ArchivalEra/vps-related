@@ -1,18 +1,21 @@
 // Ordered source chain: try sources by configured priority; two consecutive
 // failures mark a source down and a background probe brings it back.
-// Identical concurrent queries collapse into one upstream request.
+// Identical concurrent queries collapse into one upstream request
+// (flightmap). With `spread_upstream` the alive-order start rotates per
+// query so concurrent distinct queries fan out across peer sources while
+// keeping the configured fallback order cyclic.
 // Concurrency is bounded (semaphore + inflight cap) so worst-case memory
 // stays proportional to config, not to attacker load.
 use crate::cache::MagCache;
-use crate::cfg::{Cfg, SrcKind, SourceSpec};
+use crate::cfg::{Cfg, SourceSpec, SrcKind};
 use crate::dnsmsg;
+use crate::flightmap::{await_flight, Entered, FlightMap};
 use crate::stats::Stats;
 use crate::tlsconf;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::Semaphore;
 
 #[derive(Debug)]
 pub enum UpErr {
@@ -36,7 +39,7 @@ pub struct Health {
 }
 
 impl Health {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Health {
             failures: AtomicU32::new(0),
             down_until_ms: AtomicU64::new(0),
@@ -139,22 +142,14 @@ impl Source {
 
     async fn probe_once(&self) -> bool {
         let q = dnsmsg::build_probe_query();
-        match self.attempt(&q, Instant::now() + Duration::from_millis(2000)).await {
+        match self
+            .attempt(&q, Instant::now() + Duration::from_millis(2000))
+            .await
+        {
             Ok(r) => dnsmsg::rcode(&r) != 2,
             Err(_) => false,
         }
     }
-}
-
-enum FlightState {
-    Pending,
-    Ok(Arc<Vec<u8>>),
-    Failed,
-}
-
-struct Flight {
-    state: Mutex<FlightState>,
-    notify: Notify,
 }
 
 /// Hard memory bounds for concurrency: at most this many chain resolutions
@@ -165,13 +160,16 @@ const MAX_CONCURRENT_RESOLVE: usize = 256;
 
 pub struct Chain {
     sources: Vec<Arc<Source>>,
-    inflight: Mutex<HashMap<Vec<u8>, Arc<Flight>>>,
+    flights: FlightMap,
     cache: Arc<Mutex<MagCache>>,
     stats: Arc<Stats>,
     verbose: bool,
     attempt_timeout: Duration,
     probe_interval: Duration,
     resolve_permits: Arc<Semaphore>,
+    /// rotate the alive-order start per query (fan-out across peers)
+    spread: bool,
+    rr: AtomicUsize,
 }
 
 impl Chain {
@@ -182,13 +180,25 @@ impl Chain {
             let kind = match spec.kind {
                 #[cfg(feature = "up-quic")]
                 SrcKind::Quic => {
-                    let rc = tlsconf::client_config(roots.clone(), &[b"doq", b"doq-i03", b"doq-i02"], false);
-                    Kind::Doq(crate::doq::DoqClient::new(spec.clone(), Arc::new(rc), cfg.allow_private_upstream)?)
+                    let rc = tlsconf::client_config(
+                        roots.clone(),
+                        &[b"doq", b"doq-i03", b"doq-i02"],
+                        false,
+                    );
+                    Kind::Doq(crate::doq::DoqClient::new(
+                        spec.clone(),
+                        Arc::new(rc),
+                        cfg.allow_private_upstream,
+                    )?)
                 }
                 #[cfg(feature = "up-tls")]
                 SrcKind::Tls => {
                     let rc = tlsconf::client_config(roots.clone(), &[b"dot"], true);
-                    Kind::Dot(crate::dot::DotPool::new(spec.clone(), Arc::new(rc), cfg.allow_private_upstream)?)
+                    Kind::Dot(crate::dot::DotPool::new(
+                        spec.clone(),
+                        Arc::new(rc),
+                        cfg.allow_private_upstream,
+                    )?)
                 }
                 #[cfg(feature = "up-doh")]
                 SrcKind::Doh => {
@@ -198,10 +208,18 @@ impl Chain {
                     } else {
                         None
                     };
-                    Kind::Doh(crate::doh::DoHPool::new(spec.clone(), rc, cfg.allow_private_upstream, auth)?)
+                    Kind::Doh(crate::doh::DoHPool::new(
+                        spec.clone(),
+                        rc,
+                        cfg.allow_private_upstream,
+                        auth,
+                    )?)
                 }
                 #[cfg(feature = "up-udp")]
-                SrcKind::Udp => Kind::Udp(crate::udpsrc::UdpSource::new(spec.clone(), cfg.allow_private_upstream)?),
+                SrcKind::Udp => Kind::Udp(crate::udpsrc::UdpSource::new(
+                    spec.clone(),
+                    cfg.allow_private_upstream,
+                )?),
                 #[allow(unreachable_patterns)]
                 _ => {
                     return Err(format!(
@@ -218,13 +236,15 @@ impl Chain {
         }
         Ok(Chain {
             sources,
-            inflight: Mutex::new(HashMap::new()),
+            flights: FlightMap::new(),
             cache,
             stats,
             verbose: cfg.verbose,
             attempt_timeout: Duration::from_millis(cfg.attempt_timeout_ms.max(200)),
             probe_interval: Duration::from_secs(cfg.probe_interval_s.max(2)),
             resolve_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_RESOLVE)),
+            spread: cfg.spread_upstreams,
+            rr: AtomicUsize::new(0),
         })
     }
 
@@ -244,105 +264,69 @@ impl Chain {
         deadline: Instant,
         make_query: impl FnOnce() -> Vec<u8>,
     ) -> Result<Out, UpErr> {
-        // fast path: join an in-flight query (bounded; excess bypasses dedup)
-        let existing = {
-            let g = self.inflight.lock().unwrap();
-            if g.len() < MAX_INFLIGHT {
-                g.get(&key).cloned()
-            } else {
-                None
-            }
-        };
-        if let Some(f) = existing {
-            return self.wait_flight(f, deadline).await;
-        }
-        // try to become the initiator (same bound applies)
-        let flight = {
-            let mut g = self.inflight.lock().unwrap();
-            if g.len() >= MAX_INFLIGHT {
-                None // over budget: run without dedup, concurrency still bounded below
-            } else if let Some(f) = g.get(&key) {
-                Some(FlightRole::Joiner(f.clone()))
-            } else {
-                let f = Arc::new(Flight {
-                    state: Mutex::new(FlightState::Pending),
-                    notify: Notify::new(),
-                });
-                g.insert(key.clone(), f.clone());
-                Some(FlightRole::Initiator(f))
-            }
-        };
-        let flight = match flight {
-            Some(FlightRole::Joiner(f)) => return self.wait_flight(f, deadline).await,
-            Some(FlightRole::Initiator(f)) => Some(f),
-            None => None,
-        };
-
-        // bound concurrent upstream work; waiters beyond the budget fail fast
-        let permit = {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|d| !d.is_zero())
-                .ok_or(UpErr::Timeout)?;
-            match tokio::time::timeout(remaining, self.resolve_permits.clone().acquire_owned()).await {
-                Ok(Ok(p)) => p,
-                _ => {
-                    if let Some(f) = &flight {
-                        // release the slot we took
-                        self.inflight.lock().unwrap().remove(&key);
-                    }
-                    return Err(UpErr::Timeout);
+        // Join-or-initiate loop: if the joined flight failed (its initiator
+        // errored or was cancelled), take over as initiator once.
+        for _ in 0..2 {
+            match self.flights.enter(&key, MAX_INFLIGHT) {
+                Entered::Joiner(f) => match await_flight(f, deadline).await {
+                    Ok(v) => return Ok(Out::Shared(v)),
+                    Err(_) => continue,
+                },
+                Entered::Bypass => {
+                    return self
+                        .run_with_permit(&key, cacheable, make_query, deadline)
+                        .await
+                }
+                Entered::Initiator(guard) => {
+                    let result = self
+                        .run_with_permit(&key, cacheable, make_query, deadline)
+                        .await;
+                    let ok = match &result {
+                        Ok(Out::Shared(v)) => Some(v.clone()),
+                        Ok(Out::Owned(v)) => Some(Arc::new(v.clone())),
+                        Err(_) => None,
+                    };
+                    guard.settle(ok);
+                    return result;
                 }
             }
-        };
-
-        let query = make_query();
-        let result = self.run_sources(&key, cacheable, &query, deadline).await;
-        drop(permit);
-
-        if let Some(f) = &flight {
-            let out = match &result {
-                Ok(Out::Shared(v)) => FlightState::Ok(v.clone()),
-                Ok(Out::Owned(_)) => {
-                    // owned results never come from run_sources' success path
-                    FlightState::Failed
-                }
-                Err(_) => FlightState::Failed,
-            };
-            {
-                let mut st = f.state.lock().unwrap();
-                *st = out;
-            }
-            self.inflight.lock().unwrap().remove(&key);
-            f.notify.notify_waiters();
         }
-        result
+        // both join attempts failed within budget — run unmerged rather than
+        // returning a failure the client did not cause
+        self.run_with_permit(&key, cacheable, make_query, deadline)
+            .await
     }
 
-    async fn wait_flight(&self, f: Arc<Flight>, deadline: Instant) -> Result<Out, UpErr> {
-        let mut notified = std::pin::pin!(f.notify.notified());
-        loop {
-            match &*f.state.lock().unwrap() {
-                FlightState::Ok(v) => return Ok(Out::Shared(v.clone())),
-                FlightState::Failed => return Err(UpErr::Conn("in-flight query failed".into())),
-                FlightState::Pending => {}
-            }
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|d| !d.is_zero())
-                .ok_or(UpErr::Timeout)?;
-            match tokio::time::timeout(remaining, notified.as_mut()).await {
-                Ok(_) => continue,
-                Err(_) => return Err(UpErr::Timeout),
-            }
-        }
+    async fn run_with_permit(
+        &self,
+        key: &[u8],
+        cacheable: bool,
+        make_query: impl FnOnce() -> Vec<u8>,
+        deadline: Instant,
+    ) -> Result<Out, UpErr> {
+        // bound concurrent upstream work; waiters beyond the budget fail fast
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or(UpErr::Timeout)?;
+        let permit =
+            match tokio::time::timeout(remaining, self.resolve_permits.clone().acquire_owned())
+                .await
+            {
+                Ok(Ok(p)) => p,
+                _ => return Err(UpErr::Timeout),
+            };
+        let query = make_query();
+        let out = self.run_sources(key, &query, cacheable, deadline).await;
+        drop(permit);
+        out
     }
 
     async fn run_sources(
         &self,
         key: &[u8],
-        cacheable: bool,
         query: &[u8],
+        cacheable: bool,
         deadline: Instant,
     ) -> Result<Out, UpErr> {
         let now_ms = crate::app::unix_ms();
@@ -356,6 +340,12 @@ impl Chain {
             if !self.sources[i].alive(now_ms) {
                 order.push(i);
             }
+        }
+        // optional fan-out: rotate the start so concurrent queries land on
+        // different peers; the fallback order stays cyclic
+        if self.spread && order.len() > 1 {
+            let start = self.rr.fetch_add(1, Ordering::Relaxed) % order.len();
+            order.rotate_left(start);
         }
         let mut tried = 0usize;
         for &i in &order {
@@ -389,7 +379,9 @@ impl Chain {
                     if self.verbose {
                         eprintln!(
                             "magdns: upstream {}://{}:{} failed: {e:?}",
-                            s.spec.kind.tag(), s.spec.host, s.spec.port
+                            s.spec.kind.tag(),
+                            s.spec.host,
+                            s.spec.port
                         );
                     }
                     self.strike(s);
@@ -441,8 +433,10 @@ impl Chain {
     }
 
     fn strike(&self, s: &Arc<Source>) {
-        s.health
-            .record_failure(crate::app::unix_ms(), self.probe_interval.as_millis() as u64);
+        s.health.record_failure(
+            crate::app::unix_ms(),
+            self.probe_interval.as_millis() as u64,
+        );
         if s.health.take_probe_slot() {
             let s = s.clone();
             let stats = self.stats.clone();
@@ -466,9 +460,4 @@ impl Chain {
             });
         }
     }
-}
-
-enum FlightRole {
-    Initiator(Arc<Flight>),
-    Joiner(Arc<Flight>),
 }

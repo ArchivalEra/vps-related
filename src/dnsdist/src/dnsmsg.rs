@@ -24,7 +24,12 @@ pub fn be32(m: &[u8], off: usize) -> Option<u32> {
     if off + 4 > m.len() {
         return None;
     }
-    Some(u32::from_be_bytes([m[off], m[off + 1], m[off + 2], m[off + 3]]))
+    Some(u32::from_be_bytes([
+        m[off],
+        m[off + 1],
+        m[off + 2],
+        m[off + 3],
+    ]))
 }
 
 /// Skip over a (possibly compressed) name; returns offset just past the name as
@@ -198,7 +203,7 @@ pub fn build_query(pq: &ParsedQuery) -> Vec<u8> {
     v.extend_from_slice(&OPT_TYPE.to_be_bytes());
     v.extend_from_slice(&1232u16.to_be_bytes());
     v.extend_from_slice(&if pq.do_bit { 0x8000_0000u32 } else { 0u32 }.to_be_bytes());
-    v.extend_from_slice(&0u16.to_be_bytes());
+    v.extend_from_slice(&0u16.to_be_bytes()); // rdlen=0; caller appends options via append_ecs_to_query
     v
 }
 
@@ -341,28 +346,52 @@ pub fn ecs_option_bytes(ip: std::net::IpAddr, source_prefix: u8) -> Vec<u8> {
 /// If the query has no OPT, one is appended with the ECS inside.
 pub fn append_ecs_to_query(msg: &mut Vec<u8>, ecs_data: &[u8]) {
     // Find existing OPT RR in additional section
-    if msg.len() < 12 { return; }
+    if msg.len() < 12 {
+        return;
+    }
     let arcount = be16(msg, 10).unwrap_or(0);
     let mut off = 12usize;
     // Skip question
     for _ in 0..be16(msg, 4).unwrap_or(0) {
-        if let Some(o) = skip_name(msg, off) { off = o + 4; } else { return; }
+        if let Some(o) = skip_name(msg, off) {
+            off = o + 4;
+        } else {
+            return;
+        }
     }
     // Skip answer + authority
     for count in [be16(msg, 6).unwrap_or(0), be16(msg, 8).unwrap_or(0)] {
         for _ in 0..count {
-            if let Some(o) = skip_name(msg, off) { off = o; } else { return; }
-            let rdlen = match be16(msg, off + 8) { Some(v) => v as usize, None => return };
+            if let Some(o) = skip_name(msg, off) {
+                off = o;
+            } else {
+                return;
+            }
+            let rdlen = match be16(msg, off + 8) {
+                Some(v) => v as usize,
+                None => return,
+            };
             off += 10 + rdlen;
-            if off > msg.len() { return; }
+            if off > msg.len() {
+                return;
+            }
         }
     }
     // Walk additional looking for OPT (type 41)
     for i in 0..arcount {
-        let name_end = match skip_name(msg, off) { Some(v) => v, None => break };
-        let rtype = match be16(msg, name_end) { Some(v) => v, None => break };
+        let name_end = match skip_name(msg, off) {
+            Some(v) => v,
+            None => break,
+        };
+        let rtype = match be16(msg, name_end) {
+            Some(v) => v,
+            None => break,
+        };
         if rtype == OPT_TYPE {
-            let rdlen = match be16(msg, name_end + 8) { Some(v) => v as usize, None => break };
+            let rdlen = match be16(msg, name_end + 8) {
+                Some(v) => v as usize,
+                None => break,
+            };
             let rdata_start = name_end + 10;
             // Append ECS option: [option_code=8 (2B)][option_len (2B)][ecs_data]
             let mut new_rdata = msg[rdata_start..rdata_start + rdlen].to_vec();
@@ -376,9 +405,14 @@ pub fn append_ecs_to_query(msg: &mut Vec<u8>, ecs_data: &[u8]) {
             msg.splice(rdata_start..rdata_start + rdlen, new_rdata);
             return;
         }
-        let rdlen = match be16(msg, name_end + 8) { Some(v) => v as usize, None => break };
+        let rdlen = match be16(msg, name_end + 8) {
+            Some(v) => v as usize,
+            None => break,
+        };
         off = name_end + 10 + rdlen;
-        if off > msg.len() { break; }
+        if off > msg.len() {
+            break;
+        }
     }
 }
 
@@ -400,6 +434,16 @@ pub fn make_servfail(q: &[u8]) -> Vec<u8> {
             v.truncate(o + 4);
         }
         _ => v.truncate(12),
+    }
+    v
+}
+
+/// REFUSED reply (rcode 5) for rate-limit rejections: unlike SERVFAIL it
+/// tells stubs the server refuses to answer, damping retry storms.
+pub fn make_refused(q: &[u8]) -> Vec<u8> {
+    let mut v = make_servfail(q);
+    if v.len() >= 4 {
+        v[3] = (v[3] & 0xF0) | 5;
     }
     v
 }
@@ -435,7 +479,10 @@ mod tests {
     struct Rng(u64);
     impl Rng {
         fn next(&mut self) -> u64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             self.0 >> 16
         }
     }
@@ -518,7 +565,7 @@ mod tests {
         }
         let mut m = response_with_ttls(&[3600]);
         assert!(!patch_ttls(&mut m, 1200, 1200)); // exhausted -> expired
-        // short orig wins over cap
+                                                  // short orig wins over cap
         let mut m = response_with_ttls(&[30]);
         assert!(patch_ttls(&mut m, 20, 1200));
         let served = u32::from_be_bytes(m[m.len() - 10..m.len() - 6].try_into().unwrap());
@@ -539,13 +586,22 @@ mod tests {
         m.extend_from_slice(&4u16.to_be_bytes());
         m.extend_from_slice(&[192, 0, 2, 7]);
         assert!(patch_ttls(&mut m, 100, 1200));
-        assert_eq!(u32::from_be_bytes(m[m.len() - 10..m.len() - 6].try_into().unwrap()), 500);
+        assert_eq!(
+            u32::from_be_bytes(m[m.len() - 10..m.len() - 6].try_into().unwrap()),
+            500
+        );
     }
 
     #[test]
     fn parse_rejects_malformed() {
         // QR set
-        let pq = ParsedQuery { id: [0, 0], qname: b"\x01a\x00".to_vec(), qtype: 1, qclass: 1, do_bit: false };
+        let pq = ParsedQuery {
+            id: [0, 0],
+            qname: b"\x01a\x00".to_vec(),
+            qtype: 1,
+            qclass: 1,
+            do_bit: false,
+        };
         let mut m = build_query(&pq);
         m[2] |= 0x80;
         assert!(parse_query(&m).is_none());
@@ -582,13 +638,19 @@ mod tests {
 
     #[test]
     fn servfail_keeps_question() {
-        let pq = ParsedQuery { id: [0x11, 0x22], qname: b"\x04test\x00".to_vec(), qtype: 28, qclass: 1, do_bit: false };
+        let pq = ParsedQuery {
+            id: [0x11, 0x22],
+            qname: b"\x04test\x00".to_vec(),
+            qtype: 28,
+            qclass: 1,
+            do_bit: false,
+        };
         let q = build_query(&pq);
         let r = make_servfail(&q);
         assert_eq!(rcode(&r), 2);
         assert_eq!(&r[0..2], &[0x11, 0x22]);
         assert_eq!(r[4..6], q[4..6]); // QDCOUNT preserved
-        // question bytes identical
+                                      // question bytes identical
         assert_eq!(&r[12..], &q[12..12 + (r.len() - 12)]);
     }
 
@@ -604,5 +666,48 @@ mod tests {
             let _ = make_servfail(&buf);
             let _ = qname_str(&buf);
         }
+    }
+
+    #[test]
+    fn ecs_append_grows_by_option_size() {
+        let pq = ParsedQuery {
+            id: [0x8e, 0x1a],
+            qname: b"\x03www\x06google\x03com\x00".to_vec(),
+            qtype: 1,
+            qclass: 1,
+            do_bit: false,
+        };
+        let mut msg = build_query(&pq);
+        let before = msg.len();
+
+        let ecs_data = ecs_option_bytes("49.36.179.100".parse().unwrap(), 24);
+        assert_eq!(ecs_data.len(), 7); // family(2)+prefix(1)+scope(1)+addr(3)
+
+        append_ecs_to_query(&mut msg, &ecs_data);
+
+        // Growth = option_code(2) + option_len(2) + ecs_data(7) = 11
+        assert_eq!(msg.len(), before + 11);
+
+        // ARCOUNT should be 1
+        assert_eq!(u16::from_be_bytes([msg[10], msg[11]]), 1);
+
+        // Round-trip: must still be a valid query
+        let parsed = parse_query(&msg).expect("ECS query must parse");
+        assert_eq!(parsed.qtype, 1);
+    }
+
+    #[test]
+    fn ecs_option_data_format() {
+        // Verify ECS option data format per RFC 7871 §4.2
+        let ecs = ecs_option_bytes("49.36.179.100".parse().unwrap(), 24);
+        assert_eq!(ecs.len(), 7); // family(2)+prefix(1)+scope(1)+addr(3)
+        assert_eq!(&ecs[0..2], &[0x00, 0x01]); // family=IPv4
+        assert_eq!(ecs[2], 24); // source prefix
+        assert_eq!(ecs[3], 0); // scope=0 in queries
+        assert_eq!(&ecs[4..], &[49, 36, 179]); // first 3 bytes of IP
+
+        let ecs6 = ecs_option_bytes("2001:db8::1".parse().unwrap(), 56);
+        assert_eq!(ecs6.len(), 11); // family(2)+prefix(1)+scope(1)+addr(7) for /56
+        assert_eq!(&ecs6[0..2], &[0x00, 0x02]); // family=IPv6
     }
 }

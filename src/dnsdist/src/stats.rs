@@ -9,6 +9,14 @@ pub struct Stats {
     pub servfail: AtomicU64,
     pub passthrough: AtomicU64,
     pub fallback: AtomicU64,
+    pub ratelimited: AtomicU64,
+    pub domain_limited: AtomicU64,
+    pub global_limited: AtomicU64,
+    pub stale_serves: AtomicU64,
+    pub cn_sent: AtomicU64,
+    pub cn_ok: AtomicU64,
+    pub cn_err: AtomicU64,
+    pub cn_fallback: AtomicU64,
     pub up_sent_doq: AtomicU64,
     pub up_ok_doq: AtomicU64,
     pub up_err_doq: AtomicU64,
@@ -41,7 +49,9 @@ impl Stats {
 \"in_dot\":{},\"in_doq\":{},\
 \"cache_hit\":{},\"cache_miss\":{},\"cache_expired\":{},\"cache_evict\":{},\
 \"cache_entries\":{},\"cache_bytes\":{},\"cache_cap\":{},\"cache_ttl_s\":{},\"cache_ttl_ignore\":{},\"rss_bytes\":{},\
-\"servfail\":{},\"passthrough\":{},\"fallback\":{},\
+\"servfail\":{},\"passthrough\":{},\"fallback\":{},\"ratelimited\":{},\
+\"domain_limited\":{},\"global_limited\":{},\
+\"cn_sent\":{},\"cn_ok\":{},\"cn_err\":{},\"cn_fallback\":{},\
 \"up_sent_doq\":{},\"up_ok_doq\":{},\"up_err_doq\":{},\
 \"up_sent_dot\":{},\"up_ok_dot\":{},\"up_err_dot\":{},\
 \"up_sent_doh\":{},\"up_ok_doh\":{},\"up_err_doh\":{},\
@@ -52,7 +62,9 @@ impl Stats {
             g(&self.in_dot), g(&self.in_doq),
             snap.hits, snap.misses, snap.expired, snap.evicts,
             snap.entries, snap.bytes, snap.cap_bytes, snap.ttl_secs, snap.ignore_ttl, rss_bytes,
-            g(&self.servfail), g(&self.passthrough), g(&self.fallback),
+            g(&self.servfail), g(&self.passthrough), g(&self.fallback), g(&self.ratelimited),
+            g(&self.domain_limited), g(&self.global_limited),
+            g(&self.cn_sent), g(&self.cn_ok), g(&self.cn_err), g(&self.cn_fallback),
             g(&self.up_sent_doq), g(&self.up_ok_doq), g(&self.up_err_doq),
             g(&self.up_sent_dot), g(&self.up_ok_dot), g(&self.up_err_dot),
             g(&self.up_sent_doh), g(&self.up_ok_doh), g(&self.up_err_doh),

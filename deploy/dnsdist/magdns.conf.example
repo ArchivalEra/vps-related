@@ -32,5 +32,32 @@ probe_interval_s = 12
 # idle timeout for client connections (ms)
 idle_timeout_ms = 45000
 
+# split routing: CN domains (cn_domain_file list) resolve through these
+# domestic legs — plain udp://, tried with round-robin fan-out across legs
+# and single-flight merge of identical concurrent queries; two strikes mark
+# a leg down, background probes bring it back. TC=1 answers retry over TCP.
+# Priority is cyclic: concurrent queries spread over peers by default.
+# cn_upstream = udp://114.114.114.114:53
+# cn_upstream = udp://119.29.29.29:53
+# cn_domain_file = /etc/magdns/accelerated-domains.china.conf
+
+# layered rate limiting, all token buckets; rate = 0 disables that layer.
+# SIGHUP applies new values live (changing limits resets the buckets).
+qps_per_ip = 50
+burst_per_ip = 100
+# whole-process arrival ceiling protecting upstreams + bandwidth
+qps_global = 5000
+burst_global = 10000
+# aggregate per-qname cap so one hot domain cannot crowd out the rest;
+# at most domain_limit_entries distinct names are tracked (~bounded RAM)
+qps_domain = 100
+burst_domain = 200
+domain_limit_entries = 8192
+# hard cap on queries being processed at once (overload drops instead of OOM)
+max_concurrent_queries = 1024
+# rotate the alive-source start per query in the FOREIGN chain too
+# (fan-out across peers instead of strict priority; CN pool always spreads)
+spread_upstreams = false
+
 # verbose = false
 # log_queries = false

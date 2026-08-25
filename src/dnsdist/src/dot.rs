@@ -4,8 +4,8 @@ use crate::app::{self, App};
 use crate::cfg::SourceSpec;
 use crate::frame::{read_frame, write_frame};
 use crate::upstream::UpErr;
-use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
+use rustls::ClientConfig;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -83,7 +83,11 @@ pub struct DotPool {
 }
 
 impl DotPool {
-    pub fn new(spec: SourceSpec, client_cfg: Arc<ClientConfig>, allow_private: bool) -> Result<Self, String> {
+    pub fn new(
+        spec: SourceSpec,
+        client_cfg: Arc<ClientConfig>,
+        allow_private: bool,
+    ) -> Result<Self, String> {
         let server_name = ServerName::try_from(spec.host.clone())
             .map_err(|e| format!("upstream `{}`: bad server name: {e}", spec.raw))?;
         Ok(DotPool {
@@ -103,7 +107,14 @@ impl DotPool {
             };
             let sender = self.acquire().await;
             let (tx, rx) = oneshot::channel();
-            if sender.send(Job { msg: msg.to_vec(), tx }).await.is_err() {
+            if sender
+                .send(Job {
+                    msg: msg.to_vec(),
+                    tx,
+                })
+                .await
+                .is_err()
+            {
                 self.discard();
                 continue;
             }
@@ -177,7 +188,8 @@ async fn run_conn(
             return;
         }
     };
-    let (rh, wh): (ReadHalf<ClientTlsStream>, WriteHalf<ClientTlsStream>) = tokio::io::split(stream);
+    let (rh, wh): (ReadHalf<ClientTlsStream>, WriteHalf<ClientTlsStream>) =
+        tokio::io::split(stream);
     let inflight: Arc<Mutex<HashMap<u16, oneshot::Sender<Result<Vec<u8>, String>>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -244,7 +256,9 @@ async fn connect(
             _ => continue,
         };
         let connector = tokio_rustls::TlsConnector::from(client_cfg.clone());
-        match tokio::time::timeout(Duration::from_secs(4), connector.connect(name.clone(), tcp)).await {
+        match tokio::time::timeout(Duration::from_secs(4), connector.connect(name.clone(), tcp))
+            .await
+        {
             Ok(Ok(s)) => return Some(s),
             _ => continue,
         }
