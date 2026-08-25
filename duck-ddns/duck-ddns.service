@@ -1,0 +1,13 @@
+[Unit]
+Description=DuckDNS dynamic DNS updater (no cron)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/duck-ddns.sh
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target
