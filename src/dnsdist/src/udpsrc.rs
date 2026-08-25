@@ -43,10 +43,8 @@ impl UdpSource {
         } else {
             "[::]:0".parse().unwrap()
         };
-        let sock = UdpSocket::from_std(
-            app::dual_udp_socket(bind).map_err(|e| UpErr::Conn(e))?,
-        )
-        .map_err(|e| UpErr::Conn(format!("udp bind: {e}")))?;
+        let sock = UdpSocket::from_std(app::dual_udp_socket(bind).map_err(|e| UpErr::Conn(e))?)
+            .map_err(|e| UpErr::Conn(format!("udp bind: {e}")))?;
         sock.connect(addr)
             .await
             .map_err(|e| UpErr::Conn(format!("udp connect: {e}")))?;

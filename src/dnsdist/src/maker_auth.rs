@@ -36,7 +36,9 @@ impl MakerAuth for Bearer {
 /// Create auth backend from explicit parameters (called once at startup).
 pub fn create(kind: &str, key: &str) -> Box<dyn MakerAuth> {
     match kind {
-        "bearer" if !key.is_empty() => Box::new(Bearer { token: key.to_string() }),
+        "bearer" if !key.is_empty() => Box::new(Bearer {
+            token: key.to_string(),
+        }),
         _ => Box::new(Closed),
     }
 }
