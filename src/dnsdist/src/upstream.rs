@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UpErr {
     Timeout,
     Conn(String),
