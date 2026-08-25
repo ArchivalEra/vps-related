@@ -1,7 +1,11 @@
-// DoH upstream via hyper (HTTP/2 first — nextdns's edge refuses plain
-// http/1.1 ALPN — with automatic http/1.1 fallback for local forwarders).
-// hyper owns the connection pool and keep-alive; we own deadlines and the
-// SSRF guard (pre-resolve + filter before each request).
+// DoH upstream via hyper. Default: HTTP/1.1 keep-alive — each concurrent
+// query holds its own TCP+TLS connection, so transoceanic packet loss can
+// never head-of-line-block unrelated queries.
+// With the `h2` source flag (near-edge relays like our Maker): a round-robin
+// fan of 4 independent hyper clients, each multiplexing HTTP/2 streams over
+// one pooled connection — one stalled connection costs at most 1/4 of the
+// traffic while saving 3/4 of the handshakes.
+// We own deadlines and the SSRF guard; hyper owns per-client pools.
 use crate::app;
 use crate::cfg::SourceSpec;
 use crate::upstream::UpErr;
@@ -10,9 +14,13 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 const BODY_CAP: usize = 128 * 1024;
+/// Independent H2 connections per `h2` source: HOL blast radius = 1/N,
+/// handshake savings stay at (N-1)/N.
+const H2_FANOUT: usize = 4;
 
 fn deep_source(e: &dyn std::error::Error) -> String {
     let mut cur = e.source();
@@ -24,12 +32,16 @@ fn deep_source(e: &dyn std::error::Error) -> String {
     parts.join(" | ")
 }
 
+type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
+
 pub struct DoHPool {
     spec: SourceSpec,
-    client: Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>,
+    /// one client per connection-fanout slot (len 1 without the `h2` flag)
+    clients: Vec<HttpsClient>,
+    rr: AtomicUsize,
     allow_private: bool,
-    /// Bearer token for Maker auth (None = no auth header)
-    auth_token: Option<String>,
+    /// pre-built auth header for Maker relays, e.g. ("token", "<key>")
+    auth_header: Option<(String, String)>,
 }
 
 impl DoHPool {
@@ -37,29 +49,35 @@ impl DoHPool {
         spec: SourceSpec,
         tls: rustls::ClientConfig,
         allow_private: bool,
-        auth_token: Option<String>,
+        auth_header: Option<(String, String)>,
     ) -> Result<Self, String> {
-        // NOTE: hyper-rustls sets ALPN itself (h2 + http/1.1) and panics if
-        // the config already carries alpn_protocols
-        let mut http = HttpConnector::new();
-        // mandatory when wrapping a custom connector: the inner HttpConnector
-        // must not enforce http-only, the outer HttpsConnector handles https
-        http.enforce_http(false);
-        http.set_connect_timeout(Some(std::time::Duration::from_secs(4)));
-        // Force HTTP/1.1 only: each query gets its own TCP+TLS connection.
-        // H2 multiplexing over transoceanic links causes head-of-line
-        // blocking on packet loss — one dropped byte stalls ALL streams.
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls)
-            .https_or_http()
-            .enable_http1()
-            .wrap_connector(http);
-        let client = Client::builder(TokioExecutor::new()).build(https);
+        // NOTE: hyper-rustls sets ALPN itself (h2 + http/1.1 as enabled) and
+        // panics if the config already carries alpn_protocols
+        let n = if spec.h2 { H2_FANOUT } else { 1 };
+        let mut clients = Vec::with_capacity(n);
+        for _ in 0..n {
+            let mut http = HttpConnector::new();
+            // mandatory when wrapping a custom connector: the inner
+            // HttpConnector must not enforce http-only, the outer
+            // HttpsConnector handles https
+            http.enforce_http(false);
+            http.set_connect_timeout(Some(std::time::Duration::from_secs(4)));
+            let builder = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_tls_config(tls.clone())
+                .https_or_http();
+            let https = if spec.h2 {
+                builder.enable_http1().enable_http2().wrap_connector(http)
+            } else {
+                builder.enable_http1().wrap_connector(http)
+            };
+            clients.push(Client::builder(TokioExecutor::new()).build(https));
+        }
         Ok(DoHPool {
             spec,
-            client,
+            clients,
+            rr: AtomicUsize::new(0),
             allow_private,
-            auth_token: None,
+            auth_header,
         })
     }
 
@@ -78,24 +96,26 @@ impl DoHPool {
         let uri: http::Uri = format!("https://{}{}", authority, self.spec.path)
             .parse()
             .map_err(|e| UpErr::Conn(format!("doh: bad uri: {e}")))?;
-        let req = http::Request::builder()
+        let mut req = http::Request::builder()
             .method(Method::POST)
             .uri(uri)
             .header("content-type", "application/dns-message")
             .header("accept", "application/dns-message");
-        // attach Bearer token for Maker auth when configured
-        let req = match &self.auth_token {
-            Some(tok) => req.header("authorization", format!("Bearer {tok}")),
-            None => req,
-        };
+        if let Some((name, value)) = &self.auth_header {
+            req = req.header(name.as_str(), value.as_str());
+        }
         let req = req
             .body(Full::new(Bytes::copy_from_slice(msg)))
             .map_err(|e| UpErr::Conn(format!("doh: build: {e}")))?;
+        // fan-out slot: distinct queries land on distinct connections;
+        // single-flight already collapses identical ones before we get here
+        let idx = self.rr.fetch_add(1, Ordering::Relaxed) % self.clients.len();
+        let client = &self.clients[idx];
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .filter(|d| !d.is_zero())
             .ok_or(UpErr::Timeout)?;
-        let resp = tokio::time::timeout(remaining, self.client.request(req))
+        let resp = tokio::time::timeout(remaining, client.request(req))
             .await
             .map_err(|_| UpErr::Timeout)?
             .map_err(|e| UpErr::Conn(format!("doh: {}: {}", e, deep_source(&e))))?;

@@ -27,6 +27,11 @@ pub struct SourceSpec {
     pub port: u16,
     pub path: String,
     pub raw: String,
+    /// source ignores EDNS Client Subnet (Quad9, 114): queries carrying ECS
+    /// route around it so geo answers stay geo-correct
+    pub noecs: bool,
+    /// HTTP/2 multiplexing for DoH (4-connection fan-out bounds HOL blast radius)
+    pub h2: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -180,9 +185,24 @@ pub fn parse(text: &str) -> Result<Cfg, String> {
 }
 
 pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
-    let (scheme, rest) = raw
+    // trailing space-separated flags: `noecs` (source ignores ECS), `h2`
+    // (DoH over multiplexed HTTP/2). Unknown flags are config errors.
+    let mut parts = raw.split_whitespace();
+    let url = parts
+        .next()
+        .ok_or_else(|| format!("upstream `{raw}`: empty"))?;
+    let mut noecs = false;
+    let mut h2 = false;
+    for flag in parts {
+        match flag {
+            "noecs" => noecs = true,
+            "h2" => h2 = true,
+            other => return Err(format!("upstream `{raw}`: unknown flag `{other}`")),
+        }
+    }
+    let (scheme, rest) = url
         .split_once("://")
-        .ok_or_else(|| format!("upstream `{}`: missing scheme://", raw))?;
+        .ok_or_else(|| format!("upstream `{url}`: missing scheme://"))?;
     let kind = match scheme {
         "quic" if cfg!(feature = "up-quic") => SrcKind::Quic,
         "tls" if cfg!(feature = "up-tls") => SrcKind::Tls,
@@ -190,17 +210,20 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
         "udp" if cfg!(feature = "up-udp") => SrcKind::Udp,
         "http" => {
             return Err(format!(
-                "upstream `{}`: plain http is not allowed, use https",
-                raw
+                "upstream `{url}`: plain http is not allowed, use https"
             ))
         }
         other => {
             return Err(format!(
-                "upstream `{}`: scheme `{}` not compiled into this binary",
-                raw, other
+                "upstream `{url}`: scheme `{other}` not compiled into this binary"
             ))
         }
     };
+    if h2 && kind != SrcKind::Doh {
+        return Err(format!(
+            "upstream `{url}`: h2 flag applies to https:// sources only"
+        ));
+    }
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, ""),
@@ -263,6 +286,8 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
         port,
         path,
         raw: raw.to_string(),
+        noecs,
+        h2,
     })
 }
 
@@ -326,4 +351,50 @@ pub fn validate(c: &Cfg) -> Result<(), String> {
         return Err("cache_ttl must be > 0".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upstream_flags_parse() {
+        #[cfg(feature = "up-udp")]
+        {
+            let s = parse_upstream("udp://223.5.5.5:53").unwrap();
+            assert!(!s.noecs && !s.h2);
+            assert_eq!(s.port, 53);
+
+            let s = parse_upstream("udp://114.114.114.114:53 noecs").unwrap();
+            assert!(s.noecs && !s.h2);
+        }
+
+        #[cfg(feature = "up-doh")]
+        {
+            let s = parse_upstream("https://pure-dns.isui.ren/dns-query h2").unwrap();
+            assert!(s.h2 && !s.noecs);
+            assert_eq!(s.host, "pure-dns.isui.ren");
+            assert_eq!(s.path, "/dns-query");
+
+            // both flags together
+            let s = parse_upstream("https://a.example/dns-query noecs h2").unwrap();
+            assert!(s.noecs && s.h2);
+        }
+    }
+
+    #[test]
+    fn unknown_flag_is_config_error() {
+        // scheme choice is irrelevant to flag parsing; pick one that exists
+        #[cfg(feature = "up-udp")]
+        assert!(parse_upstream("udp://223.5.5.5:53 turbo").is_err());
+        #[cfg(not(feature = "up-udp"))]
+        assert!(parse_upstream("https://a.example/dns-query turbo").is_err());
+    }
+
+    #[cfg(feature = "up-udp")]
+    #[test]
+    fn h2_flag_rejects_non_doh() {
+        // udp has no HTTP/2
+        assert!(parse_upstream("udp://223.5.5.5:53 h2").is_err());
+    }
 }
