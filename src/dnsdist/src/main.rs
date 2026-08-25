@@ -121,11 +121,13 @@ fn main() {
         std::process::exit(0);
     }
 
-    // 2 workers + small stacks: DNS relay work is tiny; keeps RSS inside the
-    // magazine + 8MB budget on the 1G box
+    // 2 workers + modest stacks: DNS relay work is tiny; keeps RSS inside the
+    // magazine + 8MB budget on the 1G box. 1MB (not 256KB): unoptimized dev
+    // builds overflow 256KB inside hyper/rustls handshakes, and the extra
+    // ~1.5MB resident for two workers is cheap insurance everywhere.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
-        .thread_stack_size(256 * 1024)
+        .thread_stack_size(1024 * 1024)
         .enable_all()
         .build()
         .expect("tokio runtime");
