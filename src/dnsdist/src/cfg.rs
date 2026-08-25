@@ -34,6 +34,9 @@ pub struct SourceSpec {
     /// multiplexed H2 over that many independent connections, bounding HOL
     /// blast radius at 1/N)
     pub h2_fanout: usize,
+    /// pack concurrent queries into one br-compressed request (Maker private
+    /// protocol, AIMD-sized); slashes billed request count at the relay
+    pub batch: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -188,8 +191,9 @@ pub fn parse(text: &str) -> Result<Cfg, String> {
 
 pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
     // trailing space-separated flags: `noecs` (source ignores ECS), `h2` or
-    // `h2=N` (DoH over N multiplexed HTTP/2 connections, 1..=20, default 4).
-    // Unknown flags are config errors.
+    // `h2=N` (DoH over N multiplexed HTTP/2 connections, 1..=20, default 4),
+    // `batch` (pack concurrent queries into one br-compressed request —
+    // Maker private protocol). Unknown flags are config errors.
     const H2_DEFAULT: usize = 4;
     const H2_MAX: usize = 20;
     let mut parts = raw.split_whitespace();
@@ -198,9 +202,11 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
         .ok_or_else(|| format!("upstream `{raw}`: empty"))?;
     let mut noecs = false;
     let mut h2_fanout = 0usize;
+    let mut batch = false;
     for flag in parts {
         match flag {
             "noecs" => noecs = true,
+            "batch" => batch = true,
             "h2" => h2_fanout = H2_DEFAULT,
             f if f.starts_with("h2=") => {
                 h2_fanout = f[3..]
@@ -293,6 +299,11 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
             String::new()
         }
     };
+    if batch && kind != SrcKind::Doh {
+        return Err(format!(
+            "upstream `{url}`: batch flag applies to https:// sources only"
+        ));
+    }
     Ok(SourceSpec {
         kind,
         host,
@@ -301,6 +312,7 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
         raw: raw.to_string(),
         noecs,
         h2_fanout,
+        batch,
     })
 }
 

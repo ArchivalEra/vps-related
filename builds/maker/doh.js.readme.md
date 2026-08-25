@@ -2,9 +2,11 @@
 
 Usage manual for [`doh.js`](doh.js), the EdgeOne edge function that fronts
 Google DoH for `magdns`. It is a blind RFC 8484 pipe (GET and POST) with an
-edge-side **anti-stampede cache**: the authoritative cache is magdns's
+edge-side **anti-stampede cache** and a **batch endpoint** that packs many
+queries into one billed request. The authoritative cache is magdns's
 magazine on the box; this function only absorbs identical concurrent or
-rapidly-repeated queries so the first upstream answer has time to land.
+rapidly-repeated queries so the first upstream answer has time to land
+(also covering transoceanic packet-loss windows).
 
 ## Caching design (why the old version never hit)
 
@@ -27,6 +29,23 @@ Two layers, both TTL 10 s:
 Plus single-flight: identical in-flight queries share one upstream round trip.
 TTL is deliberately short (10 s) — freshness belongs to the magazine; this
 layer must never outlive it.
+
+## Batch endpoint (private protocol, `application/dns-batch`)
+
+magdns with the `batch` source flag POSTs a container of N length-prefixed
+wire queries (`[u16 count][u16 len][wire]...`, gzip-compressed via
+`Content-Encoding: gzip`) as ONE request. The function decompresses
+(DecompressionStream — the platform does NOT auto-decompress request bodies),
+serves each slot through the same cache → single-flight → Google pipeline,
+and packs the answers back in the same layout. A zero-length slot means that
+one query failed alone; batches never fail as a whole.
+
+Effect under load: roughly 10–20× fewer billed requests (measured 198
+queries across 11 requests), and one compressed packet on the wire instead
+of dozens — a direct mitigation of transoceanic loss amplification. Plain
+single-query GET/POST keeps working unchanged; magdns's AIMD packer degrades
+to single queries automatically when the relay misbehaves, and drops its
+compression if the endpoint ever answers 415.
 
 ## Stability
 

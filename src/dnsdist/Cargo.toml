@@ -10,7 +10,7 @@ default = ["up-tls", "up-quic", "up-doh", "up-udp"]
 # upstream transports; listeners (DoT/DoQ) are always built
 up-tls = []
 up-quic = []
-up-doh = ["dep:hyper", "dep:hyper-util", "dep:http", "dep:http-body-util", "dep:bytes", "dep:tower-service", "dep:hyper-rustls"]
+up-doh = ["dep:hyper", "dep:hyper-util", "dep:http", "dep:http-body-util", "dep:bytes", "dep:tower-service", "dep:hyper-rustls", "dep:flate2"]
 up-udp = []
 
 [dependencies]
@@ -29,6 +29,7 @@ http = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
 tower-service = { version = "0.3", optional = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
 
 [profile.release]
 lto = "thin"
