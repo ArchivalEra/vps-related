@@ -315,6 +315,38 @@ pub fn patch_ttls_min1(m: &mut [u8], age: u32, cap: u32) -> bool {
     true
 }
 
+/// RFC 7871 §10.2 + BCP: address ranges that must NEVER be expressed as
+/// EDNS Client Subnet. Household-WiFi clients (RFC1918) and any spoofed
+/// local-range source therefore resolve without ECS — the upstream answers
+/// from its own vantage point instead of being handed a bogus "geography"
+/// (or worse, a pointer at link-local metadata services).
+pub fn ecs_source_ok(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_private()                       // 10/8, 172.16/12, 192.168/16
+                || v4.is_loopback()                 // 127/8
+                || v4.is_link_local()               // 169.254/16 (incl. cloud metadata)
+                || v4.is_unspecified()
+                || v4.is_broadcast()                // 255.255.255.255
+                || o[0] == 0                        // 0.0.0.0/8 this-network
+                || (o[0] == 100 && o[1] >= 64 && o[1] < 128) // 100.64/10 CGNAT
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)   // 192.0.0.0/24
+                || v4.is_documentation()            // TEST-NET-1/2/3
+                || o[0] >= 240)                     // 240/4 reserved + broadcast
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            !(v6.is_loopback()                      // ::1
+                || v6.is_unspecified()              // ::
+                || (s[0] & 0xfe00) == 0xfe00        // fe80::/10 link-local
+                || (s[0] & 0xff00) == 0xfc00        // fc00::/7 ULA
+                || v6.is_multicast()                // ff00::/8
+                || (s[0] == 0x2001 && s[1] == 0x0db8)) // 2001:db8::/32 doc
+        }
+    }
+}
+
 /// Build EDNS0 Client Subnet option data (RFC 7871).
 /// Returns (family, source_prefix, scope_prefix=0, address_bytes).
 /// The caller embeds this into the OPT RR's RDATA.
@@ -709,5 +741,29 @@ mod tests {
         let ecs6 = ecs_option_bytes("2001:db8::1".parse().unwrap(), 56);
         assert_eq!(ecs6.len(), 11); // family(2)+prefix(1)+scope(1)+addr(7) for /56
         assert_eq!(&ecs6[0..2], &[0x00, 0x02]); // family=IPv6
+    }
+
+    #[test]
+    fn ecs_source_banlist() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        let ok = |s: &str| ecs_source_ok(s.parse::<IpAddr>().unwrap());
+        // public answers are fine
+        assert!(ok("8.8.8.8") && ok("2001:4860:4860::8888") && ok("1.1.1.1"));
+        // every banned range
+        for bad in [
+            "10.0.0.9", "172.16.1.1", "192.168.1.7",       // RFC1918
+            "127.0.0.1", "127.9.9.9",                      // loopback
+            "169.254.169.254",                             // link-local metadata
+            "100.64.0.1", "100.127.255.254",               // CGNAT
+            "0.0.0.5",                                     // this-network
+            "192.0.0.9", "192.0.2.9", "198.51.100.9", "203.0.113.9", // reserved/TEST-NET
+            "240.0.0.1", "255.255.255.255",                // reserved/broadcast
+        ] {
+            assert!(!ok(bad), "{bad} must be banned as ECS");
+        }
+        let _ = (Ipv4Addr::new(0, 0, 0, 0), Ipv6Addr::LOCALHOST);
+        for bad in ["fe80::1", "fc00::5", "ff02::1", "::1", "::", "2001:db8::9"] {
+            assert!(!ok(bad), "{bad} must be banned as ECS");
+        }
     }
 }

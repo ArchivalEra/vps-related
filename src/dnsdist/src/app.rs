@@ -135,9 +135,12 @@ pub async fn handle_query(
                     Stats::bump(&app.stats.global_limited);
                     return Reply::Owned(dnsmsg::make_refused(&q));
                 }
-                // build upstream query; embed ECS if enabled
+                // build upstream query; embed ECS if enabled. RFC 7871 forbids
+                // non-global sources as ECS — resolvers like Google REFUSE
+                // such queries outright. ecs_source_ok() is the full ban-list;
+                // household-WiFi clients simply resolve without ECS.
                 let mut uq = dnsmsg::build_query(&pq);
-                if app.cfg.ecs_enabled {
+                if app.cfg.ecs_enabled && dnsmsg::ecs_source_ok(client_ip) {
                     dnsmsg::append_ecs_to_query(&mut uq, &dnsmsg::ecs_option_bytes(client_ip, 24));
                 }
                 // split routing: check router for CN domain classification
@@ -151,7 +154,8 @@ pub async fn handle_query(
                         None => false,
                     }
                 };
-                (key, !cn, uq, n, t, cn, app.cfg.ecs_enabled)
+                let wants = app.cfg.ecs_enabled && dnsmsg::ecs_source_ok(client_ip);
+                (key, !cn, uq, n, t, cn, wants)
             }
             None => {
                 let mut k = vec![b'P'];
