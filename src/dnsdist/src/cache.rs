@@ -19,9 +19,8 @@ impl GeoCluster {
         match ip {
             std::net::IpAddr::V4(v4) => {
                 let o = v4.octets();
-                let c = ((o[0] as u64) << 56)
-                    | ((o[1] as u64) << 48)
-                    | (((o[2] as u64) & 0xF0) << 40);
+                let c =
+                    ((o[0] as u64) << 56) | ((o[1] as u64) << 48) | (((o[2] as u64) & 0xF0) << 40);
                 GeoCluster(c | 0x4000_0000_0000_0000)
             }
             std::net::IpAddr::V6(v6) => {
@@ -65,6 +64,7 @@ pub struct MagCache {
     last_sweep: Instant,
     /// parent_key → live child count; zero → parent dropped
     parent_refs: HashMap<Vec<u8>, u32>,
+    pub stale_serves: u64,
     pub hits: u64,
     pub misses: u64,
     pub expired: u64,
@@ -97,6 +97,7 @@ impl MagCache {
             bytes: 0,
             last_sweep: Instant::now(),
             parent_refs: HashMap::new(),
+            stale_serves: 0,
             hits: 0,
             misses: 0,
             expired: 0,
@@ -151,7 +152,9 @@ impl MagCache {
             self.misses += 1;
             return None;
         }
-        let age = now.duration_since(self.map.get(key).unwrap().base).as_secs() as u32;
+        let age = now
+            .duration_since(self.map.get(key).unwrap().base)
+            .as_secs() as u32;
         let cap = self.ttl.as_secs() as u32;
         let arc_msg = self.map.get(key).unwrap().msg.clone();
         if self.ignore_ttl {
@@ -199,7 +202,13 @@ impl MagCache {
         }
         self.bytes += sz;
         self.order.push_back(key.clone());
-        self.map.insert(key.clone(), Entry { msg: arc.clone(), base: Instant::now() });
+        self.map.insert(
+            key.clone(),
+            Entry {
+                msg: arc.clone(),
+                base: Instant::now(),
+            },
+        );
         self.on_child_added(&key);
         self.inserts += 1;
         arc
@@ -242,6 +251,14 @@ impl MagCache {
                 None => break,
             }
         }
+    }
+
+    /// Serve expired entry as last resort (TTL capped to 10 min).
+    pub fn get_stale(&self, key: &[u8]) -> Option<Vec<u8>> {
+        let e = self.map.get(key)?;
+        let mut msg = (*e.msg).clone();
+        let _ = dnsmsg::patch_ttls_min1(&mut msg, 0, 600);
+        Some(msg)
     }
 
     pub fn snapshot(&self) -> CacheSnap {
@@ -293,15 +310,19 @@ mod tests {
         let pq = crate::dnsmsg::ParsedQuery {
             id: [0, 0],
             qname: b"\x07example\x03com\x00".to_vec(),
-            qtype: 1, qclass: 1, do_bit: false,
+            qtype: 1,
+            qclass: 1,
+            do_bit: false,
         };
         let pk = dnsmsg::cache_key(&pq);
 
         let cl_a = GeoCluster::from_client_ip("203.0.113.1".parse().unwrap()).to_bytes();
         let cl_b = GeoCluster::from_client_ip("198.51.100.1".parse().unwrap()).to_bytes();
 
-        let mut ka = pk.clone(); ka.extend_from_slice(&cl_a);
-        let mut kb = pk.clone(); kb.extend_from_slice(&cl_b);
+        let mut ka = pk.clone();
+        ka.extend_from_slice(&cl_a);
+        let mut kb = pk.clone();
+        kb.extend_from_slice(&cl_b);
 
         let resp = vec![0u8; 40];
         c.put(ka.clone(), resp.clone());
@@ -310,7 +331,7 @@ mod tests {
 
         // remove one child
         let _ = c.get(&ka); // triggers potential expiry path
-        // force expire ALL entries: set ttl=0 so every get misses
+                            // force expire ALL entries: set ttl=0 so every get misses
         c.resize(10000, 0, false);
         let _ = c.get(&kb); // expired → removed
         let _ = c.get(&ka); // already gone from earlier get, but sweep may fire
@@ -324,7 +345,9 @@ mod tests {
             let pq = crate::dnsmsg::ParsedQuery {
                 id: [0, 0],
                 qname: format!("\x04n{i}\x00").as_bytes().to_vec(),
-                qtype: 1, qclass: 1, do_bit: false,
+                qtype: 1,
+                qclass: 1,
+                do_bit: false,
             };
             let k = dnsmsg::cache_key(&pq);
             let _ = c.put(k, vec![0u8; 30]);

@@ -6,7 +6,10 @@ use crate::cfg::SourceSpec;
 use crate::frame::{read_frame, write_frame};
 use crate::upstream::UpErr;
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
-use quinn::{ClientConfig, Connection, Endpoint, EndpointConfig, IdleTimeout, ServerConfig, TokioRuntime, TransportConfig, VarInt};
+use quinn::{
+    ClientConfig, Connection, Endpoint, EndpointConfig, IdleTimeout, ServerConfig, TokioRuntime,
+    TransportConfig, VarInt,
+};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +17,9 @@ use tokio::sync::Mutex;
 
 fn server_transport(idle_ms: u64) -> Arc<TransportConfig> {
     let mut tc = TransportConfig::default();
-    tc.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(idle_ms.max(5000) as u32))));
+    tc.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(
+        idle_ms.max(5000) as u32
+    ))));
     tc.max_concurrent_bidi_streams(VarInt::from_u32(128));
     // memory diet: small windows keep per-conn state well under 8MB total
     tc.stream_receive_window(VarInt::from_u32(64 * 1024));
@@ -33,10 +38,7 @@ fn client_transport() -> Arc<TransportConfig> {
     Arc::new(tc)
 }
 
-pub fn build_server_config(
-    rustls_cfg: Arc<rustls::ServerConfig>,
-    idle_ms: u64,
-) -> ServerConfig {
+pub fn build_server_config(rustls_cfg: Arc<rustls::ServerConfig>, idle_ms: u64) -> ServerConfig {
     // ring always ships TLS13_AES_128_GCM_SHA256 so this cannot fail
     let quic = QuicServerConfig::try_from(rustls_cfg).expect("initial cipher suite");
     let mut sc = ServerConfig::with_crypto(Arc::new(quic));
@@ -105,11 +107,20 @@ pub struct DoqClient {
 }
 
 impl DoqClient {
-    pub fn new(spec: SourceSpec, client_cfg: Arc<rustls::ClientConfig>, allow_private: bool) -> Result<Self, String> {
+    pub fn new(
+        spec: SourceSpec,
+        client_cfg: Arc<rustls::ClientConfig>,
+        allow_private: bool,
+    ) -> Result<Self, String> {
         let addr: std::net::SocketAddr = "[::]:0".parse().unwrap();
         let sock = app::dual_udp_socket(addr).map_err(|e| format!("doq client bind: {e}"))?;
-        let mut endpoint = Endpoint::new(EndpointConfig::default(), None, sock, Arc::new(TokioRuntime))
-            .map_err(|e| format!("doq endpoint: {e}"))?;
+        let mut endpoint = Endpoint::new(
+            EndpointConfig::default(),
+            None,
+            sock,
+            Arc::new(TokioRuntime),
+        )
+        .map_err(|e| format!("doq endpoint: {e}"))?;
         let quic = QuicClientConfig::try_from(client_cfg).expect("initial cipher suite");
         let mut qcfg = ClientConfig::new(Arc::new(quic));
         qcfg.transport_config(client_transport());

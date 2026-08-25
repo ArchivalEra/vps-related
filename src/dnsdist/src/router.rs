@@ -28,7 +28,11 @@ struct TrieNode {
 
 impl TrieNode {
     fn new() -> Self {
-        TrieNode { children: HashMap::new(), route_idx: None, has_children: false }
+        TrieNode {
+            children: HashMap::new(),
+            route_idx: None,
+            has_children: false,
+        }
     }
 }
 
@@ -52,7 +56,11 @@ impl Router {
             // actual domain lists are populated by load_geosite() or add_domain()
         }
         let default_route_idx = routes.len().saturating_sub(1); // last route = default
-        Router { root, routes, default_route_idx }
+        Router {
+            root,
+            routes,
+            default_route_idx,
+        }
     }
 
     /// Insert a domain pattern into the trie.
@@ -63,7 +71,10 @@ impl Router {
         let labels: Vec<&str> = clean.split('.').filter(|l| !l.is_empty()).rev().collect();
         let mut node = &mut self.root;
         for label in &labels {
-            node = node.children.entry(label.to_lowercase()).or_insert_with(TrieNode::new);
+            node = node
+                .children
+                .entry(label.to_lowercase())
+                .or_insert_with(TrieNode::new);
             node.has_children = true;
         }
         node.route_idx = Some(route_idx);

@@ -1,13 +1,17 @@
 mod app;
 mod cache;
 mod cfg;
+#[cfg(feature = "up-udp")]
+mod cnpool;
 mod dnsmsg;
 #[cfg(feature = "up-doh")]
 mod doh;
 mod doq;
 mod dot;
+mod flightmap;
 mod frame;
 mod maker_auth;
+mod ratelimit;
 mod router;
 mod stats;
 mod tlsconf;
@@ -100,7 +104,14 @@ fn main() {
     }
     if check {
         for (i, s) in c.upstreams.iter().enumerate() {
-            println!("upstream #{} {}://{}:{}{}", i + 1, s.kind.tag(), s.host, s.port, s.path);
+            println!(
+                "upstream #{} {}://{}:{}{}",
+                i + 1,
+                s.kind.tag(),
+                s.host,
+                s.port,
+                s.path
+            );
         }
         println!(
             "listen_dot={} listen_doq={} cache={}B/{}s cert={}",
@@ -129,7 +140,8 @@ async fn run(c: Cfg) {
             std::process::exit(1);
         }
     };
-    let rustls_doq = match tlsconf::load_server_config(&c.cert_file, &c.key_file, &[b"doq"], false) {
+    let rustls_doq = match tlsconf::load_server_config(&c.cert_file, &c.key_file, &[b"doq"], false)
+    {
         Ok(v) => Arc::new(v),
         Err(e) => {
             eprintln!("magdns: {e}");
@@ -186,18 +198,51 @@ async fn run(c: Cfg) {
 
     // router: load CN domain list if configured
     let mut router = router::Router::new(vec![
-        router::Route { name: "cn".into(), upstreams: vec![], cache_enabled: false, ecs_enabled: false },
-        router::Route { name: "foreign".into(), upstreams: vec![], cache_enabled: true, ecs_enabled: true },
+        router::Route {
+            name: "cn".into(),
+            upstreams: vec![],
+            cache_enabled: false,
+            ecs_enabled: false,
+        },
+        router::Route {
+            name: "foreign".into(),
+            upstreams: vec![],
+            cache_enabled: true,
+            ecs_enabled: true,
+        },
     ]);
     if !c.cn_domain_file.is_empty() {
         match std::fs::read_to_string(&c.cn_domain_file) {
             Ok(content) => {
                 let count = router.load_domain_list(&content, 0);
-                eprintln!("magdns: loaded {} CN domains from {}", count, c.cn_domain_file);
+                eprintln!(
+                    "magdns: loaded {} CN domains from {}",
+                    count, c.cn_domain_file
+                );
             }
             Err(e) => eprintln!("magdns: WARN cannot read {}: {}", c.cn_domain_file, e),
         }
     }
+
+    let rate_limiter = crate::ratelimit::RateLimiter::new(c.qps_per_ip, c.burst_per_ip, 65536);
+    let domain_limiter =
+        crate::ratelimit::KeyedLimiter::new(c.qps_domain, c.burst_domain, c.domain_limit_entries);
+    let global_limiter = crate::ratelimit::GlobalLimiter::new(c.qps_global, c.burst_global);
+    #[cfg(feature = "up-udp")]
+    let cn_pool: Option<crate::cnpool::CnPool> = match crate::cnpool::CnPool::new(&c, stats.clone())
+    {
+        Ok(p) => {
+            if let Some(pool) = &p {
+                eprintln!("magdns: cn_upstreams=[{}]", pool.legs_desc().join(", "));
+            }
+            p
+        }
+        Err(e) => {
+            eprintln!("magdns: {e}");
+            std::process::exit(1);
+        }
+    };
+    let query_gate = std::sync::Arc::new(tokio::sync::Semaphore::new(c.max_concurrent_queries));
 
     let app = Arc::new(App {
         cfg: c.clone(),
@@ -205,6 +250,12 @@ async fn run(c: Cfg) {
         cache: cache.clone(),
         chain,
         router: RwLock::new(Some(router)),
+        rate_limiter,
+        domain_limiter,
+        global_limiter,
+        #[cfg(feature = "up-udp")]
+        cn_pool,
+        query_gate,
         server_tls_dot: RwLock::new(rustls_dot),
         server_tls_doq: RwLock::new(rustls_doq),
         doq_endpoint: RwLock::new(Some(doq_endpoint.clone())),
@@ -240,7 +291,7 @@ async fn run(c: Cfg) {
             }
             _ = hup.recv() => {
                 match reload_dynamic(&app) {
-                    Ok(()) => eprintln!("magdns: dynamic reload ok (certs + magazine)"),
+                    Ok(()) => eprintln!("magdns: dynamic reload ok (certs + magazine + rate limits)"),
                     Err(e) => eprintln!("magdns: reload failed, keeping old: {e}"),
                 }
             }
@@ -296,19 +347,34 @@ fn reload_dynamic(app: &Arc<App>) -> Result<(), String> {
     {
         let mut cache = app.cache.lock().unwrap();
         let snap = cache.snapshot();
-        if snap.cap_bytes != c.cache_bytes || snap.ttl_secs != c.cache_ttl
+        if snap.cap_bytes != c.cache_bytes
+            || snap.ttl_secs != c.cache_ttl
             || snap.ignore_ttl != c.cache_ttl_ignore
         {
             eprintln!(
                 "magdns: magazine resize {}B/{}s{} -> {}B/{}s{}",
-                snap.cap_bytes, snap.ttl_secs,
-                if snap.ignore_ttl { " (ttl ignored)" } else { "" },
-                c.cache_bytes, c.cache_ttl,
-                if c.cache_ttl_ignore { " (ttl ignored)" } else { "" }
+                snap.cap_bytes,
+                snap.ttl_secs,
+                if snap.ignore_ttl {
+                    " (ttl ignored)"
+                } else {
+                    ""
+                },
+                c.cache_bytes,
+                c.cache_ttl,
+                if c.cache_ttl_ignore {
+                    " (ttl ignored)"
+                } else {
+                    ""
+                }
             );
             cache.resize(c.cache_bytes, c.cache_ttl, c.cache_ttl_ignore);
         }
     }
+    // layered rate limits: swap live so operators can tune under attack
+    app.rate_limiter.set_limits(c.qps_per_ip, c.burst_per_ip);
+    app.domain_limiter.set_limits(c.qps_domain, c.burst_domain);
+    app.global_limiter.set_limits(c.qps_global, c.burst_global);
     app.stats.reloads.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }

@@ -11,7 +11,8 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
 }
 
 const V13: &[&'static SupportedProtocolVersion] = &[&rustls::version::TLS13];
-const V12_13: &[&'static SupportedProtocolVersion] = &[&rustls::version::TLS13, &rustls::version::TLS12];
+const V12_13: &[&'static SupportedProtocolVersion] =
+    &[&rustls::version::TLS13, &rustls::version::TLS12];
 
 fn versions(tls12: bool) -> &'static [&'static SupportedProtocolVersion] {
     if tls12 {

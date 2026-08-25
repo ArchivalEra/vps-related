@@ -55,7 +55,12 @@ impl DoHPool {
             .enable_http1()
             .wrap_connector(http);
         let client = Client::builder(TokioExecutor::new()).build(https);
-        Ok(DoHPool { spec, client, allow_private, auth_token: None })
+        Ok(DoHPool {
+            spec,
+            client,
+            allow_private,
+            auth_token: None,
+        })
     }
 
     pub async fn query(&self, msg: &[u8], deadline: Instant) -> Result<Vec<u8>, UpErr> {
@@ -102,7 +107,10 @@ impl DoHPool {
             .filter(|d| !d.is_zero())
             .ok_or(UpErr::Timeout)?;
         let body = tokio::time::timeout(remaining, async {
-            resp.into_body().collect().await.map_err(|e| UpErr::Conn(format!("doh: body: {e}")))
+            resp.into_body()
+                .collect()
+                .await
+                .map_err(|e| UpErr::Conn(format!("doh: body: {e}")))
         })
         .await
         .map_err(|_| UpErr::Timeout)??;

@@ -6,7 +6,7 @@ use crate::router::Router;
 use crate::stats::Stats;
 use crate::upstream::Chain;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -16,10 +16,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 /// bytes are replaced), so hits and misses never copy the payload.
 pub enum Reply {
     Owned(Vec<u8>),
-    Shared {
-        prefix: [u8; 2],
-        body: Arc<Vec<u8>>,
-    },
+    Shared { prefix: [u8; 2], body: Arc<Vec<u8>> },
 }
 
 impl Reply {
@@ -51,61 +48,17 @@ pub struct App {
     pub chain: Chain,
     /// CN domain router: match qname → route to domestic or foreign chain
     pub router: RwLock<Option<Router>>,
+    /// Layered rate limiting: per-IP, per-domain (lowercase qname), global QPS
+    pub rate_limiter: crate::ratelimit::RateLimiter,
+    pub domain_limiter: crate::ratelimit::KeyedLimiter<Vec<u8>>,
+    pub global_limiter: crate::ratelimit::GlobalLimiter,
+    /// domestic legs for split routing; None = no `cn_upstream` configured
+    #[cfg(feature = "up-udp")]
+    pub cn_pool: Option<crate::cnpool::CnPool>,
+    pub query_gate: std::sync::Arc<tokio::sync::Semaphore>,
     pub server_tls_dot: RwLock<Arc<rustls::ServerConfig>>,
     pub server_tls_doq: RwLock<Arc<rustls::ServerConfig>>,
     pub doq_endpoint: RwLock<Option<quinn::Endpoint>>,
-}
-
-/// CN domain direct resolution: plain UDP to domestic resolver (114.114.114.114).
-/// No cache, no magazine, no chain machinery. Just forward and return.
-async fn cn_udp_resolve(app: &Arc<App>, query: &[u8], deadline: Instant) -> Result<Vec<u8>, ()> {
-    let resolver: SocketAddr = app
-        .cfg
-        .cn_upstreams
-        .first()
-        .and_then(|u| {
-            let host = u.trim_start_matches("udp://").trim_start_matches("tcp://");
-            host.parse().ok()
-        })
-        .unwrap_or_else(|| "114.114.114.114:53".parse().unwrap());
-
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .filter(|d| !d.is_zero())
-        .ok_or(())?;
-
-    let bind: SocketAddr = if resolver.is_ipv4() {
-        "0.0.0.0:0".parse().unwrap()
-    } else {
-        "[::]:0".parse().unwrap()
-    };
-    let sock = socket2::Socket::new(
-        socket2::Domain::for_address(bind),
-        socket2::Type::DGRAM,
-        Some(socket2::Protocol::UDP),
-    )
-    .map_err(|_| ())?;
-    if bind.is_ipv6() {
-        sock.set_only_v6(false).map_err(|_| ())?;
-    }
-    sock.bind(&bind.into()).map_err(|_| ())?;
-    sock.set_nonblocking(true).map_err(|_| ())?;
-    let sock = tokio::net::UdpSocket::from_std(sock.into()).map_err(|_| ())?;
-
-    tokio::time::timeout(remaining, async {
-        sock.send_to(query, resolver)
-            .await
-            .map_err(|_: std::io::Error| ())?;
-        let mut buf = vec![0u8; 4096];
-        let (n, from) = sock.recv_from(&mut buf).await.map_err(|_: std::io::Error| ())?;
-        if from == resolver && n >= 12 {
-            Ok(buf[..n].to_vec())
-        } else {
-            Err(())
-        }
-    })
-    .await
-    .map_err(|_: tokio::time::error::Elapsed| ())?
 }
 
 pub fn unix_ms() -> u64 {
@@ -127,14 +80,34 @@ fn fnv1a(b: &[u8]) -> u64 {
 /// The whole pipeline: cache -> single-flight -> ordered upstream chain.
 /// Returns the wire-ready reply; Reply::Owned(vec![]) means "drop / close".
 /// `client_ip` feeds both the geo-cluster cache key and the EDNS0 Client Subnet.
-pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip: std::net::IpAddr) -> Reply {
+pub async fn handle_query(
+    app: &Arc<App>,
+    q: Vec<u8>,
+    transport: &str,
+    client_ip: std::net::IpAddr,
+) -> Reply {
     let t0 = Instant::now();
     match transport {
         "dot" => Stats::bump(&app.stats.in_dot),
         "doq" => Stats::bump(&app.stats.in_doq),
         _ => {}
     }
+
+    // Layer 1: per-IP rate limit (token bucket)
+    if !app.rate_limiter.check(client_ip) {
+        Stats::bump(&app.stats.ratelimited);
+        return Reply::Owned(dnsmsg::make_servfail(&q));
+    } // Layer 2: global concurrency gate (prevents OOM under flood)
+    let permit = match app.query_gate.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            Stats::bump(&app.stats.servfail);
+            return Reply::Owned(Vec::new()); // overloaded, drop
+        }
+    };
+
     if q.len() < 12 {
+        drop(permit);
         return Reply::Owned(Vec::new());
     }
     let id = [q[0], q[1]];
@@ -149,6 +122,18 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
             key.extend_from_slice(&cluster.to_bytes());
             let n = dnsmsg::qname_str(&pq.qname);
             let t = pq.qtype;
+            // Layer 2: per-domain limit keyed on the lowercase qname — one
+            // hot name (NAT household or random-qname flood) cannot crowd out
+            // everything else
+            if !app.domain_limiter.check(n.to_lowercase().into_bytes()) {
+                Stats::bump(&app.stats.domain_limited);
+                return Reply::Owned(dnsmsg::make_refused(&q));
+            }
+            // Layer 3: global QPS ceiling protecting upstreams + bandwidth
+            if !app.global_limiter.check() {
+                Stats::bump(&app.stats.global_limited);
+                return Reply::Owned(dnsmsg::make_refused(&q));
+            }
             // build upstream query; embed ECS if enabled
             let mut uq = dnsmsg::build_query(&pq);
             if app.cfg.ecs_enabled {
@@ -182,7 +167,9 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
                 if app.cfg.log_queries {
                     eprintln!(
                         "Q {} {} {} hit0 rcode={} {}us",
-                        transport, qname, qtype,
+                        transport,
+                        qname,
+                        qtype,
                         dnsmsg::rcode(&body),
                         t0.elapsed().as_micros()
                     );
@@ -194,7 +181,9 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
                 if app.cfg.log_queries {
                     eprintln!(
                         "Q {} {} {} hit rcode={} {}us",
-                        transport, qname, qtype,
+                        transport,
+                        qname,
+                        qtype,
                         dnsmsg::rcode(&m),
                         t0.elapsed().as_micros()
                     );
@@ -205,28 +194,38 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
         }
     }
 
-    // split routing: CN domains bypass cache + chain, go direct to domestic resolver
+    // split routing: CN domains go to the domestic pool (fan-out across
+    // legs, single-flight merged). Without a configured pool the query
+    // falls through to the foreign chain instead of guessing a resolver.
     if is_cn {
-        let result = cn_udp_resolve(app, &upstream_query, deadline).await;
-        return match result {
-            Ok(mut r) => {
-                dnsmsg::patch_id(&mut r, &id);
-                if app.cfg.log_queries {
-                    eprintln!("Q {} {} {} CN-direct rcode={} {}us",
-                        transport, qname, qtype, dnsmsg::rcode(&r), t0.elapsed().as_micros());
+        #[cfg(feature = "up-udp")]
+        if let Some(pool) = app.cn_pool.as_ref() {
+            return match pool.resolve(&upstream_query, deadline).await {
+                Ok(mut r) => {
+                    dnsmsg::patch_id(&mut r, &id);
+                    if app.cfg.log_queries {
+                        eprintln!(
+                            "Q {} {} {} CN rcode={} {}us",
+                            transport,
+                            qname,
+                            qtype,
+                            dnsmsg::rcode(&r),
+                            t0.elapsed().as_micros()
+                        );
+                    }
+                    Reply::Owned(r)
                 }
-                Reply::Owned(r)
-            }
-            Err(_) => {
-                Stats::bump(&app.stats.servfail);
-                Reply::Owned(dnsmsg::make_servfail(&q))
-            }
-        };
+                Err(_) => {
+                    Stats::bump(&app.stats.servfail);
+                    Reply::Owned(dnsmsg::make_servfail(&q))
+                }
+            };
+        }
     }
 
     let result = app
         .chain
-        .resolve(key, cacheable, deadline, || upstream_query.clone())
+        .resolve(key.clone(), cacheable, deadline, || upstream_query.clone())
         .await;
 
     match result {
@@ -234,7 +233,9 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
             if app.cfg.log_queries {
                 eprintln!(
                     "Q {} {} {} miss0 rcode={} {}us",
-                    transport, qname, qtype,
+                    transport,
+                    qname,
+                    qtype,
                     dnsmsg::rcode(&body),
                     t0.elapsed().as_micros()
                 );
@@ -246,7 +247,9 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
             if app.cfg.log_queries {
                 eprintln!(
                     "Q {} {} {} miss rcode={} {}us",
-                    transport, qname, qtype,
+                    transport,
+                    qname,
+                    qtype,
                     dnsmsg::rcode(&r),
                     t0.elapsed().as_micros()
                 );
@@ -254,6 +257,14 @@ pub async fn handle_query(app: &Arc<App>, q: Vec<u8>, transport: &str, client_ip
             Reply::Owned(r)
         }
         Err(_) => {
+            // stale fallback: serve expired cache entry rather than SERVFAIL
+            if cacheable {
+                if let Some(mut stale) = app.cache.lock().unwrap().get_stale(&key) {
+                    dnsmsg::patch_id(&mut stale, &id);
+                    Stats::bump(&app.stats.stale_serves);
+                    return Reply::Owned(stale);
+                }
+            }
             Stats::bump(&app.stats.servfail);
             Reply::Owned(dnsmsg::make_servfail(&q))
         }
@@ -285,12 +296,16 @@ pub fn dual_tcp_socket(addr: SocketAddr, backlog: i32) -> Result<std::net::TcpLi
     let sock = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))
         .map_err(|e| format!("socket: {e}"))?;
     if addr.is_ipv6() {
-        sock.set_only_v6(false).map_err(|e| format!("v6only: {e}"))?;
+        sock.set_only_v6(false)
+            .map_err(|e| format!("v6only: {e}"))?;
     }
-    sock.set_reuse_address(true).map_err(|e| format!("reuse: {e}"))?;
-    sock.bind(&addr.into()).map_err(|e| format!("bind {addr}: {e}"))?;
+    sock.set_reuse_address(true)
+        .map_err(|e| format!("reuse: {e}"))?;
+    sock.bind(&addr.into())
+        .map_err(|e| format!("bind {addr}: {e}"))?;
     sock.listen(backlog).map_err(|e| format!("listen: {e}"))?;
-    sock.set_nonblocking(true).map_err(|e| format!("nonblocking: {e}"))?;
+    sock.set_nonblocking(true)
+        .map_err(|e| format!("nonblocking: {e}"))?;
     Ok(sock.into())
 }
 
@@ -300,9 +315,12 @@ pub fn dual_udp_socket(addr: SocketAddr) -> Result<std::net::UdpSocket, String> 
     let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
         .map_err(|e| format!("socket: {e}"))?;
     if addr.is_ipv6() {
-        sock.set_only_v6(false).map_err(|e| format!("v6only: {e}"))?;
+        sock.set_only_v6(false)
+            .map_err(|e| format!("v6only: {e}"))?;
     }
-    sock.bind(&addr.into()).map_err(|e| format!("bind {addr}: {e}"))?;
-    sock.set_nonblocking(true).map_err(|e| format!("nonblocking: {e}"))?;
+    sock.bind(&addr.into())
+        .map_err(|e| format!("bind {addr}: {e}"))?;
+    sock.set_nonblocking(true)
+        .map_err(|e| format!("nonblocking: {e}"))?;
     Ok(sock.into())
 }
