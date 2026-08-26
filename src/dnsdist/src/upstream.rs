@@ -7,7 +7,7 @@
 // Concurrency is bounded (semaphore + inflight cap) so worst-case memory
 // stays proportional to config, not to attacker load.
 use crate::cache::MagCache;
-use crate::cfg::{Cfg, SourceSpec, SrcKind};
+use crate::cfg::{Cfg, SrcKind};
 use crate::dnsmsg;
 use crate::flightmap::{await_flight, Entered, FlightMap};
 use crate::stats::Stats;
@@ -75,36 +75,6 @@ impl Health {
     }
 }
 
-#[cfg(test)]
-mod health_tests {
-    use super::*;
-
-    #[test]
-    fn two_strikes_down_then_recover() {
-        let h = Health::new();
-        assert!(h.alive(0));
-        h.record_failure(100, 3000);
-        assert!(h.alive(200), "single failure keeps source alive");
-        h.record_failure(400, 3000);
-        assert!(!h.alive(500), "two strikes mark it down");
-        assert!(h.alive(4000), "down window expires");
-        h.record_failure(4100, 3000);
-        h.record_failure(4150, 3000);
-        assert!(!h.alive(4200));
-        h.record_success();
-        assert!(h.alive(1), "success clears immediately");
-    }
-
-    #[test]
-    fn probe_slot_is_exclusive() {
-        let h = Health::new();
-        assert!(h.take_probe_slot());
-        assert!(!h.take_probe_slot());
-        h.release_probe_slot();
-        assert!(h.take_probe_slot());
-    }
-}
-
 enum Kind {
     #[cfg(feature = "up-quic")]
     Doq(crate::doq::DoqClient),
@@ -136,11 +106,7 @@ impl Source {
         let kind = match spec.kind {
             #[cfg(feature = "up-quic")]
             SrcKind::Quic => {
-                let rc = tlsconf::client_config(
-                    roots,
-                    &[b"doq", b"doq-i03", b"doq-i02"],
-                    false,
-                );
+                let rc = tlsconf::client_config(roots, &[b"doq", b"doq-i03", b"doq-i02"], false);
                 Kind::Doq(crate::doq::DoqClient::new(
                     spec.clone(),
                     Arc::new(rc),
@@ -207,7 +173,10 @@ impl Source {
 
     async fn probe_once(&self) -> bool {
         let q = dnsmsg::build_probe_query();
-        match self.attempt(&q, Instant::now() + Duration::from_millis(2000)).await {
+        match self
+            .attempt(&q, Instant::now() + Duration::from_millis(2000))
+            .await
+        {
             Ok(r) => dnsmsg::rcode(&r) != 2,
             Err(_) => false,
         }
@@ -488,5 +457,35 @@ impl Chain {
                 s.health.release_probe_slot();
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    #[test]
+    fn two_strikes_down_then_recover() {
+        let h = Health::new();
+        assert!(h.alive(0));
+        h.record_failure(100, 3000);
+        assert!(h.alive(200), "single failure keeps source alive");
+        h.record_failure(400, 3000);
+        assert!(!h.alive(500), "two strikes mark it down");
+        assert!(h.alive(4000), "down window expires");
+        h.record_failure(4100, 3000);
+        h.record_failure(4150, 3000);
+        assert!(!h.alive(4200));
+        h.record_success();
+        assert!(h.alive(1), "success clears immediately");
+    }
+
+    #[test]
+    fn probe_slot_is_exclusive() {
+        let h = Health::new();
+        assert!(h.take_probe_slot());
+        assert!(!h.take_probe_slot());
+        h.release_probe_slot();
+        assert!(h.take_probe_slot());
     }
 }

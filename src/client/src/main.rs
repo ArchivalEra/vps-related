@@ -174,10 +174,10 @@ async fn run(c: ClientCfg) {
     );
 
     // Listener loops never return; only a signal ends the process.
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("SIGTERM");
-    let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-        .expect("SIGINT");
+    let mut term =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM");
+    let mut int =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("SIGINT");
     tokio::select! {
         _ = term.recv() => eprintln!("magdns-client: terminating"),
         _ = int.recv() => eprintln!("magdns-client: interrupted"),

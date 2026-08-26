@@ -253,7 +253,11 @@ pub struct JsonUpstream {
 }
 
 // small typed getters over the Value maps with friendly errors
-fn get_u64(m: &BTreeMap<String, serde_json::Value>, key: &str, what: &str) -> Result<Option<u64>, String> {
+fn get_u64(
+    m: &BTreeMap<String, serde_json::Value>,
+    key: &str,
+    what: &str,
+) -> Result<Option<u64>, String> {
     match m.get(key) {
         None => Ok(None),
         Some(v) => v
@@ -262,7 +266,11 @@ fn get_u64(m: &BTreeMap<String, serde_json::Value>, key: &str, what: &str) -> Re
             .ok_or_else(|| format!("{what}.{key}: expected a non-negative integer")),
     }
 }
-fn get_bool(m: &BTreeMap<String, serde_json::Value>, key: &str, what: &str) -> Result<Option<bool>, String> {
+fn get_bool(
+    m: &BTreeMap<String, serde_json::Value>,
+    key: &str,
+    what: &str,
+) -> Result<Option<bool>, String> {
     match m.get(key) {
         None => Ok(None),
         Some(v) => v
@@ -293,9 +301,10 @@ fn build_spec(ju: &JsonUpstream, what: &str) -> Result<SourceSpec, String> {
         }
     }
     if let Some(kind) = &ju.auth_kind {
-        let env_name = ju.auth_key_env.as_deref().ok_or_else(|| {
-            format!("{what} `{}`: auth_kind requires auth_key_env", ju.url)
-        })?;
+        let env_name = ju
+            .auth_key_env
+            .as_deref()
+            .ok_or_else(|| format!("{what} `{}`: auth_kind requires auth_key_env", ju.url))?;
         let key = std::env::var(env_name).map_err(|_| {
             format!(
                 "{what} `{url}`: environment variable {env_name} is not set (secrets are env-injected by design)",
@@ -303,7 +312,10 @@ fn build_spec(ju: &JsonUpstream, what: &str) -> Result<SourceSpec, String> {
             )
         })?;
         if key.is_empty() {
-            return Err(format!("{what} `{}`: {} is set but empty", ju.url, env_name));
+            return Err(format!(
+                "{what} `{}`: {} is set but empty",
+                ju.url, env_name
+            ));
         }
         spec.auth = Some(match kind.as_str() {
             "token" => ("token".to_string(), key),
@@ -371,8 +383,8 @@ fn strip_comments(text: &str) -> String {
 
 /// Parse a config.json into the runtime configuration.
 pub fn parse(text: &str) -> Result<Cfg, String> {
-    let j: JsonConfig = serde_json::from_str(&strip_comments(text))
-        .map_err(|e| format!("config.json: {e}"))?;
+    let j: JsonConfig =
+        serde_json::from_str(&strip_comments(text)).map_err(|e| format!("config.json: {e}"))?;
     let mut c = Cfg::default();
 
     if let Some(dot) = get_str(&j.listen, "dot") {
@@ -432,7 +444,7 @@ pub fn parse(text: &str) -> Result<Cfg, String> {
         c.cn_enabled = cn.enabled;
         c.cn_domain_file = cn.domain_file;
         for ju in cn.upstreams.iter().flatten() {
-            let mut spec = build_spec(ju, "cn_split upstream")?;
+            let spec = build_spec(ju, "cn_split upstream")?;
             if spec.kind != SrcKind::Udp {
                 return Err(format!(
                     "cn_split upstream `{}`: domestic legs speak udp:// only",
@@ -525,9 +537,7 @@ pub fn parse_upstream(raw: &str) -> Result<SourceSpec, String> {
             .split_once(']')
             .ok_or_else(|| format!("upstream `{raw}`: unterminated [ipv6]"))?;
         let p = match tail.strip_prefix(':') {
-            Some(p) => p
-                .parse()
-                .map_err(|_| format!("upstream `{raw}`: bad port")),
+            Some(p) => p.parse().map_err(|_| format!("upstream `{raw}`: bad port")),
             None => Ok(default_port),
         }?;
         (h.to_string(), p)
@@ -585,11 +595,15 @@ pub fn addr_allowed(ip: IpAddr, allow_private: bool) -> bool {
     }
     match ip {
         IpAddr::V4(v4) => {
-            !(v4.is_loopback() || v4.is_private() || v4.is_link_local()
-                || v4.is_broadcast() || v4.is_unspecified())
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified())
         }
         IpAddr::V6(v6) => {
-            !(v6.is_loopback() || v6.is_unspecified()
+            !(v6.is_loopback()
+                || v6.is_unspecified()
                 || (v6.segments()[0] & 0xfe00) == 0xfe00
                 || (v6.segments()[0] & 0xffc0) == 0xfe80
                 || (v6.segments()[0] & 0xff00) == 0xfc00)
@@ -599,13 +613,19 @@ pub fn addr_allowed(ip: IpAddr, allow_private: bool) -> bool {
 
 pub fn validate(c: &Cfg) -> Result<(), String> {
     if !c.listen_dot.is_empty() {
-        c.listen_dot.parse::<SocketAddr>().map_err(|_| format!("bad listen.dot `{}`", c.listen_dot))?;
+        c.listen_dot
+            .parse::<SocketAddr>()
+            .map_err(|_| format!("bad listen.dot `{}`", c.listen_dot))?;
     }
     if !c.listen_doq.is_empty() {
-        c.listen_doq.parse::<SocketAddr>().map_err(|_| format!("bad listen.doq `{}`", c.listen_doq))?;
+        c.listen_doq
+            .parse::<SocketAddr>()
+            .map_err(|_| format!("bad listen.doq `{}`", c.listen_doq))?;
     }
     if !c.listen_doh.is_empty() {
-        c.listen_doh.parse::<SocketAddr>().map_err(|_| format!("bad listen.doh `{}`", c.listen_doh))?;
+        c.listen_doh
+            .parse::<SocketAddr>()
+            .map_err(|_| format!("bad listen.doh `{}`", c.listen_doh))?;
     }
     if (!c.listen_dot.is_empty() || !c.listen_doq.is_empty() || !c.listen_doh.is_empty())
         && (c.cert_file.is_empty() || c.key_file.is_empty())
@@ -626,8 +646,7 @@ pub fn validate(c: &Cfg) -> Result<(), String> {
     }
     if !c.cn_enabled && !c.cn_upstreams.is_empty() {
         return Err(
-            "cn_split section present but disabled — remove cn_split.upstreams or enable it"
-                .into(),
+            "cn_split section present but disabled — remove cn_split.upstreams or enable it".into(),
         );
     }
     if c.cn_enabled && c.cn_upstreams.is_empty() {
@@ -712,7 +731,8 @@ mod tests {
 
     #[test]
     fn absent_sections_disable_features() {
-        let c = parse(r#"{"listen":{"dot":"[::]:853"},"tls":{"cert_file":"/a","key_file":"/b"}}"#).unwrap();
+        let c = parse(r#"{"listen":{"dot":"[::]:853"},"tls":{"cert_file":"/a","key_file":"/b"}}"#)
+            .unwrap();
         validate(&c).unwrap();
         assert!(!c.foreign_enabled || c.upstreams.is_empty());
         assert!(c.cn_upstreams.is_empty() && !c.cn_enabled);

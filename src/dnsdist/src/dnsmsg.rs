@@ -333,7 +333,7 @@ pub fn ecs_source_ok(ip: std::net::IpAddr) -> bool {
                 || (o[0] == 100 && o[1] >= 64 && o[1] < 128) // 100.64/10 CGNAT
                 || (o[0] == 192 && o[1] == 0 && o[2] == 0)   // 192.0.0.0/24
                 || v4.is_documentation()            // TEST-NET-1/2/3
-                || o[0] >= 240)                     // 240/4 reserved + broadcast
+                || o[0] >= 240) // 240/4 reserved + broadcast
         }
         std::net::IpAddr::V6(v6) => {
             let s = v6.segments();
@@ -354,7 +354,7 @@ pub fn ecs_option_bytes(ip: std::net::IpAddr, source_prefix: u8) -> Vec<u8> {
     match ip {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
-            let nbytes = ((source_prefix as usize) + 7) / 8;
+            let nbytes = (source_prefix as usize).div_ceil(8);
             let mut v = vec![0x00, 0x01]; // family = 1 (IPv4)
             v.push(source_prefix);
             v.push(0); // scope prefix (must be 0 in queries)
@@ -363,7 +363,7 @@ pub fn ecs_option_bytes(ip: std::net::IpAddr, source_prefix: u8) -> Vec<u8> {
         }
         std::net::IpAddr::V6(v6) => {
             let o = v6.octets();
-            let nbytes = ((source_prefix as usize) + 7) / 8;
+            let nbytes = (source_prefix as usize).div_ceil(8);
             let mut v = vec![0x00, 0x02]; // family = 2 (IPv6)
             v.push(source_prefix);
             v.push(0);
@@ -410,7 +410,7 @@ pub fn append_ecs_to_query(msg: &mut Vec<u8>, ecs_data: &[u8]) {
         }
     }
     // Walk additional looking for OPT (type 41)
-    for i in 0..arcount {
+    for _i in 0..arcount {
         let name_end = match skip_name(msg, off) {
             Some(v) => v,
             None => break,
@@ -537,8 +537,8 @@ mod tests {
             id: [(rng.next() % 256) as u8, (rng.next() % 256) as u8],
             qname: rand_name(rng),
             qtype: [1u16, 2, 16, 28, 33, 65][(rng.next() % 6) as usize],
-            qclass: if rng.next() % 8 == 0 { 3 } else { 1 },
-            do_bit: rng.next() % 2 == 0,
+            qclass: if rng.next().is_multiple_of(8) { 3 } else { 1 },
+            do_bit: rng.next().is_multiple_of(2),
         }
     }
 
@@ -751,13 +751,21 @@ mod tests {
         assert!(ok("8.8.8.8") && ok("2001:4860:4860::8888") && ok("1.1.1.1"));
         // every banned range
         for bad in [
-            "10.0.0.9", "172.16.1.1", "192.168.1.7",       // RFC1918
-            "127.0.0.1", "127.9.9.9",                      // loopback
-            "169.254.169.254",                             // link-local metadata
-            "100.64.0.1", "100.127.255.254",               // CGNAT
-            "0.0.0.5",                                     // this-network
-            "192.0.0.9", "192.0.2.9", "198.51.100.9", "203.0.113.9", // reserved/TEST-NET
-            "240.0.0.1", "255.255.255.255",                // reserved/broadcast
+            "10.0.0.9",
+            "172.16.1.1",
+            "192.168.1.7", // RFC1918
+            "127.0.0.1",
+            "127.9.9.9",       // loopback
+            "169.254.169.254", // link-local metadata
+            "100.64.0.1",
+            "100.127.255.254", // CGNAT
+            "0.0.0.5",         // this-network
+            "192.0.0.9",
+            "192.0.2.9",
+            "198.51.100.9",
+            "203.0.113.9", // reserved/TEST-NET
+            "240.0.0.1",
+            "255.255.255.255", // reserved/broadcast
         ] {
             assert!(!ok(bad), "{bad} must be banned as ECS");
         }

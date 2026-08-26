@@ -185,8 +185,7 @@ mod tests {
         // served TTL ≈ 300 − 100 (residence time), never above
         // answer RR tail: type(2) class(2) ttl(4) rdlen(2) rdata(4)
         let t = got.len() - 10;
-        let served_ttl =
-            u32::from_be_bytes([got[t], got[t + 1], got[t + 2], got[t + 3]]);
+        let served_ttl = u32::from_be_bytes([got[t], got[t + 1], got[t + 2], got[t + 3]]);
         assert!(
             (194..=200).contains(&served_ttl),
             "aged ttl {served_ttl}, want ~200"
@@ -204,8 +203,14 @@ mod tests {
         assert_eq!(c.snapshot().3, 1);
 
         c.put(k.clone(), answer(300));
-        assert!(c.get_at(&k, t0 + Duration::from_secs(301)).is_none(), "expired");
-        assert!(c.get_at(&k, t0 + Duration::from_secs(302)).is_none(), "stays gone");
+        assert!(
+            c.get_at(&k, t0 + Duration::from_secs(301)).is_none(),
+            "expired"
+        );
+        assert!(
+            c.get_at(&k, t0 + Duration::from_secs(302)).is_none(),
+            "stays gone"
+        );
         let (_, _, hits, misses) = c.snapshot();
         assert_eq!((hits, misses), (0, 3), "expiry counts as miss");
     }
