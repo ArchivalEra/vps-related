@@ -5,7 +5,6 @@ use crate::app::{self, App};
 use crate::cfg::SourceSpec;
 use crate::frame::{read_frame, write_frame};
 use crate::ingress;
-use mgb1;
 use crate::upstream::UpErr;
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use quinn::{
@@ -58,14 +57,11 @@ pub async fn run_server(app: Arc<App>, endpoint: Endpoint) {
             if app.stats.doq_conns.load(Ordering::Relaxed) >= 256 {
                 return; // let it time out; guard against conn flooding
             }
-            match incoming.await {
-                Ok(conn) => {
-                    app.stats.doq_conns.fetch_add(1, Ordering::Relaxed);
-                    let peer_ip = conn.remote_address().ip();
-                    serve_conn(&app, conn, peer_ip).await;
-                    app.stats.doq_conns.fetch_sub(1, Ordering::Relaxed);
-                }
-                Err(_) => {}
+            if let Ok(conn) = incoming.await {
+                app.stats.doq_conns.fetch_add(1, Ordering::Relaxed);
+                let peer_ip = conn.remote_address().ip();
+                serve_conn(&app, conn, peer_ip).await;
+                app.stats.doq_conns.fetch_sub(1, Ordering::Relaxed);
             }
         });
     }
@@ -75,22 +71,17 @@ async fn serve_conn(app: &Arc<App>, conn: Connection, peer_ip: std::net::IpAddr)
     // connection-level MGB1 authentication state, shared by every stream:
     // the first handshake frame flips it, later containers require it.
     let batch_authed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    loop {
-        match conn.accept_bi().await {
-            Ok((mut tx, mut rx)) => {
-                let app = app.clone();
-                let batch_authed = batch_authed.clone();
-                tokio::spawn(async move {
-                    if let Err(()) =
-                        handle_stream(&app, &mut tx, &mut rx, peer_ip, batch_authed).await
-                    {
-                        return;
-                    }
-                    let _ = tx.finish();
-                });
+    while let Ok((mut tx, mut rx)) = conn.accept_bi().await {
+        let app = app.clone();
+        let batch_authed = batch_authed.clone();
+        tokio::spawn(async move {
+            if handle_stream(&app, &mut tx, &mut rx, peer_ip, batch_authed)
+                .await
+                .is_ok()
+            {
+                let _ = tx.finish();
             }
-            Err(_) => break,
-        }
+        });
     }
 }
 

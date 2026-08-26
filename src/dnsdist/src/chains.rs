@@ -14,8 +14,8 @@
 // SPLITS map a query to its chain: first split whose domain set and source
 // subnets both match wins; unmatched queries use the default chain. This
 // replaces ad-hoc CN branching — "cn" becomes just another split.
-use crate::app::{self, App};
-use crate::cfg::{RoutingCfg, SrcKind};
+use crate::app::App;
+use crate::cfg::RoutingCfg;
 use crate::dnsmsg;
 use crate::stats::Stats;
 use crate::upstream::{Health, Source};
@@ -99,7 +99,7 @@ impl Chain {
         &self,
         app: &Arc<App>,
         query: &[u8],
-        peer_ip: std::net::IpAddr,
+        _peer_ip: std::net::IpAddr,
         deadline: Instant,
     ) -> Result<Answer, StepError> {
         let mut last_fail: Option<Answer> = None;
@@ -195,7 +195,11 @@ pub fn subnet_contains(net: std::net::IpAddr, prefix: u8, ip: std::net::IpAddr) 
                     return true;
                 }
                 let take = remaining.min(16);
-                let mask = if take == 0 { 0 } else { u16::MAX << (16 - take) };
+                let mask = if take == 0 {
+                    0
+                } else {
+                    u16::MAX << (16 - take)
+                };
                 if n[k] & mask != i[k] & mask {
                     return false;
                 }
@@ -228,7 +232,12 @@ impl Engine {
                     healths.push(Health::new());
                     members.push(Member {
                         spec: spec.clone(),
-                        source: Source::build(spec, cfg, roots.clone(), Arc::new(Stats::default()))?,
+                        source: Source::build(
+                            spec,
+                            cfg,
+                            roots.clone(),
+                            Arc::new(Stats::default()),
+                        )?,
                     });
                 }
                 groups.push(Group {
@@ -251,7 +260,7 @@ impl Engine {
         for sp in &routing.splits {
             let chain_index = chains
                 .iter()
-                .position(|c| &c.name == &sp.chain)
+                .position(|c| c.name == sp.chain)
                 .ok_or_else(|| format!("split `{}`: unknown chain `{}`", sp.name, sp.chain))?;
             let (router, route_id) = match (&sp.domains_file, sp.domains.is_empty()) {
                 (None, true) => (None, usize::MAX),
@@ -269,7 +278,10 @@ impl Engine {
                         count = r.load_domain_list(&content, 0);
                     }
                     for d in &sp.domains {
-                        let lower = d.trim_start_matches("+.").trim_start_matches('.').to_lowercase();
+                        let lower = d
+                            .trim_start_matches("+.")
+                            .trim_start_matches('.')
+                            .to_lowercase();
                         count += r.load_domain_list(&format!(".{lower}"), 0);
                     }
                     eprintln!("magdns: split `{}` loaded {count} domains", sp.name);
@@ -305,7 +317,10 @@ impl Engine {
                 return self.chains.get(sp.chain_index);
             }
         }
-        let idx = self.chains.iter().position(|c| c.name == self.default_chain)?;
+        let idx = self
+            .chains
+            .iter()
+            .position(|c| c.name == self.default_chain)?;
         self.chains.get(idx)
     }
 
@@ -331,4 +346,3 @@ fn parse_cidr(cidr: &str) -> Option<(std::net::IpAddr, u8)> {
     let prefix: u8 = p_s.parse().ok()?;
     Some((ip, prefix))
 }
-

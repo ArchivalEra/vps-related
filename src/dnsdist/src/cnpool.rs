@@ -73,7 +73,11 @@ fn flight_key(msg: &[u8]) -> Vec<u8> {
 #[cfg(feature = "up-udp")]
 impl CnPool {
     /// None when no `cn_upstream` is configured (split routing disabled).
-    pub fn new(cfg: &Cfg, stats: Arc<Stats>, cache: Arc<std::sync::Mutex<crate::cache::MagCache>>) -> Result<Option<Self>, String> {
+    pub fn new(
+        cfg: &Cfg,
+        stats: Arc<Stats>,
+        cache: Arc<std::sync::Mutex<crate::cache::MagCache>>,
+    ) -> Result<Option<Self>, String> {
         if cfg.cn_upstreams.is_empty() {
             return Ok(None);
         }

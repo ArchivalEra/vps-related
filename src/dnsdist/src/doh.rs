@@ -19,7 +19,7 @@ use hyper::body::Bytes;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::TokioExecutor;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Instant;
 
 const BODY_CAP: usize = 128 * 1024;
@@ -82,7 +82,13 @@ impl Batcher {
     /// Enqueue this query. The caller that flips `dispatching` becomes the
     /// dispatcher and receives the first batch (older queries first, its own
     /// last). Everyone else just awaits their receiver.
-    fn enter(&self, msg: Vec<u8>) -> (tokio::sync::oneshot::Receiver<Result<Vec<u8>, UpErr>>, Option<Vec<Pending>>) {
+    fn enter(
+        &self,
+        msg: Vec<u8>,
+    ) -> (
+        tokio::sync::oneshot::Receiver<Result<Vec<u8>, UpErr>>,
+        Option<Vec<Pending>>,
+    ) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut st = self.state.lock().unwrap();
         if st.dispatching {
@@ -203,7 +209,11 @@ impl DoHPool {
             rr: AtomicUsize::new(0),
             allow_private,
             auth_header,
-            batcher: if wants_batch { Some(Batcher::new()) } else { None },
+            batcher: if wants_batch {
+                Some(Batcher::new())
+            } else {
+                None
+            },
         })
     }
 
@@ -263,9 +273,8 @@ impl DoHPool {
                     // outcomes, not transport ones.
                     let answers = unpack_batch(&body, batch.len());
                     for (p, slot) in batch.drain(..).zip(answers) {
-                        let _ = p
-                            .tx
-                            .send(slot.ok_or(UpErr::Conn("batch: empty slot".into())));
+                        let _ =
+                            p.tx.send(slot.ok_or(UpErr::Conn("batch: empty slot".into())));
                     }
                     return true;
                 }
@@ -273,7 +282,13 @@ impl DoHPool {
                     // relay can't decompress what we picked — switch this
                     // source to raw containers for good and retry the same
                     // batch uncompressed; no AIMD penalty, it's a handshake
-                    self.batcher.as_ref().unwrap().state.lock().unwrap().compress = false;
+                    self.batcher
+                        .as_ref()
+                        .unwrap()
+                        .state
+                        .lock()
+                        .unwrap()
+                        .compress = false;
                     continue;
                 }
                 Err(e) => {
@@ -357,7 +372,8 @@ impl DoHPool {
     }
 
     async fn query_single(&self, msg: &[u8], deadline: Instant) -> Result<Vec<u8>, UpErr> {
-        self.post_http(msg, "application/dns-message", None, deadline).await
+        self.post_http(msg, "application/dns-message", None, deadline)
+            .await
     }
 }
 
@@ -377,12 +393,18 @@ mod tests {
 
     fn pending(msg: &[u8]) -> Pending {
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        Pending { msg: msg.to_vec(), tx }
+        Pending {
+            msg: msg.to_vec(),
+            tx,
+        }
     }
 
     #[test]
     fn batch_pack_unpack_roundtrip() {
-        let items = [pending(b"\x00\x01query-one"), pending(b"\x00\x02query-two-longer")];
+        let items = [
+            pending(b"\x00\x01query-one"),
+            pending(b"\x00\x02query-two-longer"),
+        ];
         let refs: Vec<&Pending> = items.iter().collect();
         let packed = pack_batch(&refs);
         // header
@@ -390,7 +412,10 @@ mod tests {
         let slots = unpack_batch(&packed, 2);
         assert_eq!(slots.len(), 2);
         assert_eq!(slots[0].as_deref(), Some(b"\x00\x01query-one".as_slice()));
-        assert_eq!(slots[1].as_deref(), Some(b"\x00\x02query-two-longer".as_slice()));
+        assert_eq!(
+            slots[1].as_deref(),
+            Some(b"\x00\x02query-two-longer".as_slice())
+        );
     }
 
     #[test]
@@ -398,7 +423,10 @@ mod tests {
         // count=2 but body carries only an empty slot for slot 0
         let body = [0u8, 2, 0, 0];
         let slots = unpack_batch(&body, 2);
-        assert!(slots[0].is_none() && slots[1].is_none(), "empty slot stays None");
+        assert!(
+            slots[0].is_none() && slots[1].is_none(),
+            "empty slot stays None"
+        );
         // garbage must not panic and must not fabricate answers
         let slots = unpack_batch(&[9, 9, 1, 2], 3);
         assert_eq!(slots.len(), 3);
@@ -412,14 +440,22 @@ mod tests {
                 let mut m = vec![0u8; 12];
                 m.extend_from_slice(format!("z{i}.burst{i}.example.com\x00").as_bytes());
                 m.extend_from_slice(&[0, 1, 0, 1]);
-                Pending { msg: m, tx: tokio::sync::oneshot::channel().0 }
+                Pending {
+                    msg: m,
+                    tx: tokio::sync::oneshot::channel().0,
+                }
             })
             .collect();
         let refs: Vec<&Pending> = items.iter().collect();
         let raw = pack_batch(&refs);
         let gz = gzip_compress(&raw);
         // compression pays for itself on realistic batches
-        assert!(gz.len() < raw.len() * 4 / 10, "gz={} raw={}", gz.len(), raw.len());
+        assert!(
+            gz.len() < raw.len() * 4 / 10,
+            "gz={} raw={}",
+            gz.len(),
+            raw.len()
+        );
     }
 
     #[test]
@@ -429,12 +465,16 @@ mod tests {
         b.next_batch(true);
         b.next_batch(true);
         assert_eq!(b.cap(), BATCH_INIT * 4);
-        for _ in 0..10 { b.next_batch(true); }
+        for _ in 0..10 {
+            b.next_batch(true);
+        }
         assert_eq!(b.cap(), BATCH_MAX, "growth saturates at the ceiling");
         b.next_batch(false);
         b.next_batch(false);
         assert_eq!(b.cap(), BATCH_MAX / 4);
-        for _ in 0..20 { b.next_batch(false); }
+        for _ in 0..20 {
+            b.next_batch(false);
+        }
         assert_eq!(b.cap(), BATCH_MIN, "shrink floors at single-query mode");
     }
 
