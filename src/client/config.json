@@ -1,0 +1,10 @@
+{
+  "listen": { "doh": "127.0.0.1:8053", "udp": "127.0.0.1:53", "tcp": "127.0.0.1:53" },
+  "servers": [
+    { "name": "box", "url": "tls://box.example.com:853",
+      "auth_kind": "uuid-header", "auth_key_env": "BOX_UUID",
+      "proto": "dot", "batch": true, "compress": "gzip", "h2": 0 },
+    { "url": "https://1.1.1.1/dns-query", "proto": "doh" }
+  ],
+  "cache": { "bytes": 20971520, "ttl": 300 }
+}
