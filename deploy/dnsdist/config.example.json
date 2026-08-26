@@ -1,0 +1,43 @@
+{
+  // magdns box configuration — restart applies everything by default;
+  // hot_reload makes sources/splits live under SIGHUP (see bottom).
+  "listen": { "dot": "[::]:853", "doq": "[::]:8853", "doh": "[::]:443" },
+  "tls": { "cert_file": "/etc/magdns/cert.pem", "key_file": "/etc/magdns/key.pem" },
+  "auth": {
+    // non-empty = hard gate: connections without a valid MGB1 handshake
+    // UUID are refused entirely, standard queries included.
+    "client_uuids": ["d1f5-9a2c-4e77-b3a0"]
+  },
+  "cache": { "bytes": 104857600, "ttl": 1200 },
+  "ecs": { "enabled": true, "prefix_v4": 24, "prefix_v6": 56 },
+  "foreign": {
+    "enabled": true,
+    "spread": false,
+    "upstreams": [
+      { "url": "https://maker-a.isui.ren/dns-query", "h2": 8, "batch": true,
+        "auth_kind": "token", "auth_key_env": "MAKER_A_TOKEN", "cache": true },
+      { "url": "https://maker-b.isui.ren/dns-query", "h2": 8, "batch": true,
+        "auth_kind": "token", "auth_key_env": "MAKER_B_TOKEN", "cache": true },
+      { "url": "https://dns9.quad9.net/dns-query", "noecs": true, "h2": 4 }
+    ]
+  },
+  "cn_split": {
+    "enabled": true,
+    "domain_file": "/etc/magdns/accelerated-domains.china.conf",
+    "upstreams": [
+      { "url": "udp://223.5.5.5:53", "cache": false },
+      { "url": "udp://119.29.29.29:53", "cache": false }
+    ]
+  },
+  "rate_limit": { "per_ip_qps": 50, "per_ip_burst": 100,
+                  "domain_qps": 100, "domain_burst": 200,
+                  "global_qps": 5000, "global_burst": 10000,
+                  "max_concurrent": 1024 },
+  "timeouts_ms": { "query": 500, "attempt": 200, "idle": 30000 },
+  "probe_interval_s": 12,
+  "stale_on_failure": true,
+  "hot_reload": true,
+  "allow_private_upstream": false,
+  "verbose": false,
+  "log_queries": false
+}

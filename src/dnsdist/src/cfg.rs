@@ -215,7 +215,10 @@ struct JsonForeign {
     enabled: bool,
     #[serde(default)]
     spread: bool,
-    upstreams: Vec<JsonUpstream>,
+    // optional when the section only toggles state; empty+enabled is still
+    // rejected by validate()
+    #[serde(default)]
+    upstreams: Option<Vec<JsonUpstream>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -224,8 +227,8 @@ struct JsonCnSplit {
     enabled: bool,
     #[serde(default)]
     domain_file: String,
-    #[serde(default)]
-    upstreams: Vec<JsonUpstream>,
+    // optional: a split can exist for routing rules alone
+    upstreams: Option<Vec<JsonUpstream>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -312,10 +315,60 @@ fn build_spec(ju: &JsonUpstream, what: &str) -> Result<SourceSpec, String> {
     Ok(spec)
 }
 
+/// Strip // and /* */ comments outside of string literals, so operator
+/// configs can carry annotations. String-aware: `https://` inside a value
+/// is never touched.
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+                i += 1;
+            }
+            '/' if i + 1 < bytes.len() && bytes[i + 1] == '/' => {
+                while i < bytes.len() && bytes[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < bytes.len() && bytes[i + 1] == '*' => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == '*' && bytes[i + 1] == '/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 /// Parse a config.json into the runtime configuration.
 pub fn parse(text: &str) -> Result<Cfg, String> {
-    let j: JsonConfig =
-        serde_json::from_str(text).map_err(|e| format!("config.json: {e}"))?;
+    let j: JsonConfig = serde_json::from_str(&strip_comments(text))
+        .map_err(|e| format!("config.json: {e}"))?;
     let mut c = Cfg::default();
 
     if let Some(dot) = get_str(&j.listen, "dot") {
@@ -365,7 +418,7 @@ pub fn parse(text: &str) -> Result<Cfg, String> {
     if let Some(f) = j.foreign {
         c.foreign_enabled = f.enabled;
         c.spread_upstreams = f.spread;
-        for ju in &f.upstreams {
+        for ju in f.upstreams.iter().flatten() {
             c.upstreams.push(build_spec(ju, "foreign upstream")?);
         }
     }
@@ -373,7 +426,7 @@ pub fn parse(text: &str) -> Result<Cfg, String> {
     if let Some(cn) = j.cn_split {
         c.cn_enabled = cn.enabled;
         c.cn_domain_file = cn.domain_file;
-        for ju in &cn.upstreams {
+        for ju in cn.upstreams.iter().flatten() {
             let mut spec = build_spec(ju, "cn_split upstream")?;
             if spec.kind != SrcKind::Udp {
                 return Err(format!(
@@ -679,4 +732,20 @@ mod tests {
              "auth_key_env":"MAGDNS_DEFINITELY_UNSET_VAR_42","h2":4}]}}"#;
         assert!(parse(bad).is_err(), "unset env must fail fast");
     }
+}
+
+#[test]
+fn comments_strip_without_harming_urls() {
+    let annotated = r#"{
+        // leading note
+        "listen": { "dot": "[::]:853" }, /* block
+              spanning lines */
+        "foreign": { "enabled": false },
+        "cn_split": { "enabled": true,
+            "upstreams": [{ "url": "udp://223.5.5.5:53" }] }
+    }"#;
+    let c = parse(annotated).unwrap();
+    assert!(c.cn_enabled);
+    assert_eq!(c.cn_upstreams[0].raw, "udp://223.5.5.5:53");
+    assert!(!c.foreign_enabled);
 }
