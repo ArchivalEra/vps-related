@@ -81,7 +81,10 @@ fn bad_magic_is_rejected_not_guessed() {
 #[test]
 fn handshake_roundtrip_and_rejection() {
     let hs = encode_handshake("client-uuid-1234").unwrap();
-    assert_eq!(decode_handshake(&hs).unwrap().as_deref(), Some("client-uuid-1234"));
+    assert_eq!(
+        decode_handshake(&hs).unwrap().as_deref(),
+        Some("client-uuid-1234")
+    );
     // a regular container is NOT a handshake
     let a = wire(5, 12);
     let packed = encode(&[a.as_slice()]).unwrap();

@@ -5,7 +5,11 @@
 // Public resolvers are never contacted here; everything flows through
 // handle_query (cache → ingress → split → chains), same as DoT/DoQ.
 use crate::app::{self, App};
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
+
+/// Inbound body cap: a single DoH/batch request may not buffer more than
+/// this on a 1 GB box, enforced while streaming (never after the fact).
+const BODY_LIMIT: usize = 256 * 1024;
 use hyper::body::{Bytes, Incoming};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -98,12 +102,20 @@ async fn handle_http(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ct| ct.starts_with("application/mgb1+v1"));
 
-    match *req.method() {
+    // split ownership once: headers/uri stay readable, body becomes a
+    // stream we can cap BEFORE buffering anything
+    let (parts, body_in) = req.into_parts();
+    match parts.method {
         hyper::Method::POST => {
-            let body = match req.collect().await {
-                Ok(c) => c.to_bytes(),
-                Err(_) => return text_response(400, "bad body"),
-            };
+            let limited = Limited::new(body_in, BODY_LIMIT);
+            let collected =
+                match tokio::time::timeout(std::time::Duration::from_secs(10), limited.collect())
+                    .await
+                {
+                    Ok(Ok(c)) => c,
+                    Ok(Err(_)) | Err(_) => return text_response(413, "body too large"),
+                };
+            let body = collected.to_bytes();
             if is_batch {
                 return match crate::ingress::run_container(&app, "doh", peer_ip, &body).await {
                     Ok(packed) => wire_response(200, "application/mgb1+v1", packed),
@@ -120,8 +132,8 @@ async fn handle_http(
             }
         }
         hyper::Method::GET => {
-            let Some(dns_b64) = req
-                .uri()
+            let Some(dns_b64) = parts
+                .uri
                 .query()
                 .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("dns=")))
             else {
