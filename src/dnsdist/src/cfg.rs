@@ -104,6 +104,8 @@ pub struct Cfg {
     pub cn_upstreams: Vec<SourceSpec>,
     /// pin/block table applied before cache and splits (T8)
     pub overrides: Vec<JsonOverride>,
+    /// GeoIP tables + consolidation/masquerade knobs; absent = disabled
+    pub geo: Option<GeoCfg>,
     pub routing: Option<RoutingCfg>,
     pub query_timeout_ms: u64,
     pub attempt_timeout_ms: u64,
@@ -152,6 +154,7 @@ impl Default for Cfg {
             cn_domain_file: String::new(),
             cn_upstreams: Vec::new(),
             overrides: Vec::new(),
+            geo: None,
             routing: None,
             query_timeout_ms: 500,
             attempt_timeout_ms: 200,
@@ -218,6 +221,25 @@ struct JsonConfig {
     log_queries: bool,
     #[serde(default)]
     overrides: Vec<JsonOverride>,
+    #[serde(default)]
+    geo: Option<GeoCfg>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct GeoCfg {
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub dir: String,
+    #[serde(default)]
+    pub sources: BTreeMap<String, String>,
+    #[serde(default = "consolidate_default")]
+    pub consolidate_above_qps: u64,
+    #[serde(default = "d_false")]
+    pub residential_masquerade: bool,
+}
+fn consolidate_default() -> u64 {
+    10000
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

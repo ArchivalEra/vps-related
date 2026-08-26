@@ -12,6 +12,7 @@ mod doq;
 mod dot;
 mod flightmap;
 mod frame;
+mod geo;
 mod ingress;
 mod maker_auth;
 mod ratelimit;
@@ -303,10 +304,26 @@ async fn run(c: Cfg) {
     let global_limiter = crate::ratelimit::GlobalLimiter::new(c.qps_global, c.burst_global);
     let query_gate = std::sync::Arc::new(tokio::sync::Semaphore::new(c.max_concurrent_queries));
 
+    let (consolidation, geo_tables) = match &c.geo {
+        Some(g) if g.enabled => match crate::geo::GeoTables::load(std::path::Path::new(&g.dir)) {
+            Ok(t) => (
+                Some(crate::geo::ConsolidationGate::new(g.consolidate_above_qps)),
+                Some(Arc::new(t)),
+            ),
+            Err(e) => {
+                eprintln!("magdns: WARN geo tables unavailable, ECS stays precise: {e}");
+                (None, None)
+            }
+        },
+        _ => (None, None),
+    };
+
     let app = Arc::new(App {
         cfg: c.clone(),
         stats: stats.clone(),
         cache: cache.clone(),
+        consolidation,
+        geo_tables,
         routing,
         router: RwLock::new(Some(router)),
         rate_limiter,
