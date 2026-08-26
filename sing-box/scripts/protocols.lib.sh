@@ -112,7 +112,7 @@ paths = ["type","tag","listen_port","users.0.uuid","users.0.flow","users.0.passw
            "tls.reality.private_key",
            "tls.reality.short_id","tls.reality.short_id.0","transport.type","transport.path",
            "transport.headers.Host","transport.service_name","obfs.type","obfs.password",
-           "congestion_control","method","password","version","handshake.server","detour"]
+           "congestion_control","heartbeat","method","password","version","handshake.server","detour"]
 with open(sys.argv[2], "w") as out:
     for idx, ib in enumerate(ibs):
         for p in paths:
@@ -272,19 +272,23 @@ convert_shadowtls() { # $1=inbound index — server shadowtls (chain→ss) → c
 }
 
 convert_tuic() { # $1=inbound index — server tuic → client tuic
-  local i="$1" uuid pass cc tag ctag
+  local i="$1" uuid pass cc hb ctag
   uuid="$(inb_field "$i" 'users.0.uuid')"
   pass="$(inb_field "$i" 'users.0.password')"
   cc="$(inb_field "$i" 'congestion_control')"
   [[ -z "$cc" ]] && cc="bbr"
+  # heartbeat keeps QUIC alive through NAT; carry the server's value through
+  hb="$(inb_field "$i" 'heartbeat')"
+  local hb_json=""
+  [[ -n "$hb" ]] && hb_json=", \"heartbeat\": \"$hb\""
   local ins=""
   [[ $INSECURE -eq 1 ]] && ins=', "insecure": true'
   local port; port="$(inb_field "$i" 'listen_port')"
   ctag="$(ctag_of "$i" tuic)"
   OUTS+="${OUTS:+,
-        }{ \"type\": \"tuic\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\", \"tls\": { \"enabled\": true, \"server_name\": \"${SNI_OVERRIDE:-$SERVER}\"$ins$(ech_suffix "$i") } }"
+        }{ \"type\": \"tuic\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"uuid\": \"$uuid\", \"password\": \"$pass\", \"congestion_control\": \"$cc\"$hb_json, \"tls\": { \"enabled\": true, \"server_name\": \"${SNI_OVERRIDE:-$SERVER}\"$ins$(ech_suffix "$i") } }"
   TAGS+=" $ctag"
-  debug "tuic ← inbound[$i] port=$port tag=$ctag"
+  debug "tuic ← inbound[$i] port=$port heartbeat=$hb tag=$ctag"
 }
 
 convert_anytls() { # $1=inbound index — server anytls → client anytls
