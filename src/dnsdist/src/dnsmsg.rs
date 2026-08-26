@@ -481,6 +481,57 @@ pub fn make_refused(q: &[u8]) -> Vec<u8> {
 }
 
 /// Debug-ish printable qname ("a.b.test.")
+/// Synthesize a NOERROR answer for an override pin: the caller's question
+/// section is preserved verbatim, one A and/or AAAA record per address at
+/// a short TTL (overrides are policy, not truth — keep them refreshable).
+pub fn make_pin_answer(q: &[u8], v4: &[std::net::Ipv4Addr], v6: &[std::net::Ipv6Addr]) -> Vec<u8> {
+    let answers = v4.len() + v6.len();
+    let mut v = q.to_vec();
+    if v.len() < 12 {
+        return make_servfail(q);
+    }
+    v[2] = 0x80 | (v[2] & 0x78) | (v[2] & 0x01); // QR, keep opcode/RD
+    v[3] = 0x80; // RA
+    v[6..8].copy_from_slice(&(answers as u16).to_be_bytes());
+    v[8..10].copy_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+    v[10..12].copy_from_slice(&0u16.to_be_bytes()); // ARCOUNT (no OPT on pinned answers)
+    for ip in v4 {
+        v.extend_from_slice(b"\xc0\x0c"); // name pointer to QNAME
+        v.extend_from_slice(&1u16.to_be_bytes());
+        v.extend_from_slice(&1u16.to_be_bytes());
+        v.extend_from_slice(&60u32.to_be_bytes());
+        v.extend_from_slice(&4u16.to_be_bytes());
+        v.extend_from_slice(&ip.octets());
+    }
+    for ip in v6 {
+        v.extend_from_slice(b"\xc0\x0c");
+        v.extend_from_slice(&28u16.to_be_bytes());
+        v.extend_from_slice(&1u16.to_be_bytes());
+        v.extend_from_slice(&60u32.to_be_bytes());
+        v.extend_from_slice(&16u16.to_be_bytes());
+        v.extend_from_slice(&ip.octets());
+    }
+    v
+}
+
+/// Synthesize an empty NOERROR — the ad-block flavor of "blocked": the
+/// name exists but has no records. NXDOMAIN would leak that filtering
+/// happened; empty NOERROR is what CDNs serve natively.
+pub fn make_empty_noerror(q: &[u8]) -> Vec<u8> {
+    let mut v = q.to_vec();
+    if v.len() < 12 {
+        return make_servfail(q);
+    }
+    v[2] = 0x80 | (v[2] & 0x78) | (v[2] & 0x01);
+    v[3] = 0x80;
+    match skip_name(q, 12) {
+        Some(o) if o + 4 <= q.len() => v.truncate(o + 4),
+        _ => v.truncate(12),
+    }
+    v[6..12].fill(0);
+    v
+}
+
 pub fn qname_str(wire: &[u8]) -> String {
     let mut s = String::new();
     let mut off = 0usize;
@@ -773,5 +824,56 @@ mod tests {
         for bad in ["fe80::1", "fc00::5", "ff02::1", "::1", "::", "2001:db8::9"] {
             assert!(!ok(bad), "{bad} must be banned as ECS");
         }
+    }
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    fn sample_q() -> Vec<u8> {
+        let mut v = build_query(&ParsedQuery {
+            id: [0x12, 0x34],
+            qname: b"\x03www\x07openai\x03com\x00".to_vec(),
+            qtype: 1,
+            qclass: 1,
+            do_bit: false,
+        });
+        v[0] = 0x12;
+        v[1] = 0x34;
+        v
+    }
+
+    #[test]
+    fn pin_answer_shape() {
+        let q = sample_q();
+        let r = make_pin_answer(&q, &[Ipv4Addr::new(1, 2, 3, 4)], &[Ipv6Addr::LOCALHOST]);
+        assert_eq!(rcode(&r), 0);
+        assert_eq!(&r[0..2], &q[0..2], "txid echoed");
+        assert_eq!(r[3] & 0x80, 0x80, "RA set by the synthesizer");
+        let an = u16::from_be_bytes([r[6], r[7]]);
+        assert_eq!(an, 2);
+        // one A record at the tail carries the pinned address
+        assert!(r.windows(4).any(|w| w == [1, 2, 3, 4]));
+        assert_eq!(r[3] & 0x80, 0x80, "QR set");
+    }
+
+    #[test]
+    fn empty_noerror_blocks_without_nxdomain_leak() {
+        let q = sample_q();
+        let r = make_empty_noerror(&q);
+        assert_eq!(rcode(&r), 0);
+        let an = u16::from_be_bytes([r[6], r[7]]);
+        assert_eq!(an, 0, "blocked = zero answers");
+        assert_eq!(&r[0..2], &q[0..2]);
+    }
+
+    #[test]
+    fn short_query_fails_closed() {
+        let r = make_pin_answer(&[0u8; 5][..], &[], &[]);
+        assert_eq!(rcode(&r), 2);
+        let r = make_empty_noerror(&[0u8; 5][..]);
+        assert_eq!(rcode(&r), 2);
     }
 }

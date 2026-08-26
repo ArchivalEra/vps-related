@@ -44,7 +44,61 @@ pub async fn write_reply<W: AsyncWrite + Unpin>(w: &mut W, r: &Reply) -> std::io
 /// The hot-reloadable face of the system: everything that a validated
 /// config.json can rebuild from scratch. Swapped atomically on reload;
 /// in-flight queries keep the old generation alive via their Arc snapshot.
+/// One compiled override rule (T8): pin addresses or block with an empty
+/// NOERROR. Matching is suffix-based so subdomains inherit the policy.
+pub struct OverrideEntry {
+    /// lowercase suffix, leading dot for unambiguous subdomain matching
+    pub suffix: String,
+    pub block: bool,
+    pub v4: Vec<std::net::Ipv4Addr>,
+    pub v6: Vec<std::net::Ipv6Addr>,
+}
+
+impl OverrideEntry {
+    pub fn matches(&self, name_dot: &str) -> bool {
+        name_dot == self.suffix || name_dot.ends_with(&self.suffix)
+    }
+}
+
+fn compile_overrides(cfg: &Cfg) -> Result<Vec<OverrideEntry>, String> {
+    let mut out = Vec::with_capacity(cfg.overrides.len());
+    for o in &cfg.overrides {
+        let mut suffix = o.pattern.to_lowercase();
+        if !suffix.starts_with('.') {
+            suffix.insert(0, '.');
+        }
+        if o.block && (!o.a.is_empty() || !o.aaaa.is_empty()) {
+            return Err(format!(
+                "override `{}`: block and pinned addresses are mutually exclusive",
+                o.pattern
+            ));
+        }
+        out.push(OverrideEntry {
+            suffix,
+            block: o.block,
+            v4: o
+                .a
+                .iter()
+                .map(|x| {
+                    x.parse()
+                        .map_err(|_| format!("override `{}`: bad IPv4 `{x}`", o.pattern))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            v6: o
+                .aaaa
+                .iter()
+                .map(|x| {
+                    x.parse()
+                        .map_err(|_| format!("override `{}`: bad IPv6 `{x}`", o.pattern))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        });
+    }
+    Ok(out)
+}
+
 pub struct Routing {
+    pub overrides: Arc<Vec<OverrideEntry>>,
     pub chain: Chain,
     #[cfg(feature = "up-udp")]
     pub cn_pool: Option<crate::cnpool::CnPool>,
@@ -66,7 +120,9 @@ impl Routing {
             Some(r) => Some(crate::chains::Engine::build(r, cfg)?),
             None => None,
         };
+        let overrides = Arc::new(compile_overrides(cfg)?);
         Ok(Routing {
+            overrides: Arc::clone(&overrides),
             chain,
             cn_pool,
             engine,
@@ -127,6 +183,29 @@ pub async fn handle_query(
     // one routing-generation snapshot for the whole query lifetime; a
     // concurrent reload swaps the pointer but this query keeps its world
     let routing = Arc::clone(&*app.routing.read().unwrap());
+
+    // T8 overrides outrank everything — cache, splits, rate shaping: a hit
+    // answers from policy before any other layer runs.
+    if !routing.overrides.is_empty() {
+        if let Some(pq) = dnsmsg::parse_query(&q) {
+            let name_dot = format!(".{}", dnsmsg::qname_str(&pq.qname).to_lowercase());
+            for o in routing.overrides.iter() {
+                if o.matches(&name_dot) {
+                    let answer = if o.block {
+                        dnsmsg::make_empty_noerror(&q)
+                    } else {
+                        dnsmsg::make_pin_answer(&q, &o.v4, &o.v6)
+                    };
+                    let mut a = answer;
+                    dnsmsg::patch_id(&mut a, &[q[0], q[1]]);
+                    if app.cfg.log_queries {
+                        eprintln!("Q {transport} {} override hit", o.suffix);
+                    }
+                    return Reply::Owned(a);
+                }
+            }
+        }
+    }
     match transport {
         "dot" => Stats::bump(&app.stats.in_dot),
         "doq" => Stats::bump(&app.stats.in_doq),
@@ -402,4 +481,46 @@ pub fn dual_udp_socket(addr: SocketAddr) -> Result<std::net::UdpSocket, String> 
     sock.set_nonblocking(true)
         .map_err(|e| format!("nonblocking: {e}"))?;
     Ok(sock.into())
+}
+
+#[cfg(test)]
+mod override_entry_tests {
+    use super::*;
+
+    fn entry(pattern: &str) -> OverrideEntry {
+        let cfg = Cfg {
+            overrides: vec![crate::cfg::JsonOverride {
+                pattern: pattern.into(),
+                block: false,
+                a: vec!["203.0.113.9".into()],
+                aaaa: vec![],
+            }],
+            ..Cfg::default()
+        };
+        compile_overrides(&cfg).unwrap().remove(0)
+    }
+
+    #[test]
+    fn suffix_matching_covers_subdomains_only_downward() {
+        let e = entry("openai.com");
+        assert!(e.matches(".openai.com"));
+        assert!(e.matches(".api.openai.com"));
+        // the leading dot prevents substring collisions with lookalikes
+        assert!(!e.matches(".evil-openai.com"));
+        assert!(!e.matches(".notopenai.com"));
+    }
+
+    #[test]
+    fn block_plus_pin_is_rejected() {
+        let cfg = Cfg {
+            overrides: vec![crate::cfg::JsonOverride {
+                pattern: "x.test".into(),
+                block: true,
+                a: vec!["203.0.113.9".into()],
+                aaaa: vec![],
+            }],
+            ..Cfg::default()
+        };
+        assert!(compile_overrides(&cfg).is_err());
+    }
 }
