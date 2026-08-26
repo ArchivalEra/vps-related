@@ -203,21 +203,13 @@ impl Chain {
                 #[cfg(feature = "up-doh")]
                 SrcKind::Doh => {
                     let rc = tlsconf::client_config(roots.clone(), &[], true);
-                    // Maker relay auth: "bearer" -> Authorization: Bearer <key>,
-                    // "token" -> raw `token:` header (EdgeOne trigger-rule style)
-                    let auth = match (cfg.maker_auth_kind.as_str(), cfg.maker_auth_key.is_empty()) {
-                        ("bearer", false) => Some((
-                            "authorization".to_string(),
-                            format!("Bearer {}", cfg.maker_auth_key),
-                        )),
-                        ("token", false) => Some(("token".to_string(), cfg.maker_auth_key.clone())),
-                        _ => None,
-                    };
+                    // auth header resolved from the environment at config
+                    // parse time; lives on the spec itself now
                     Kind::Doh(crate::doh::DoHPool::new(
                         spec.clone(),
                         rc,
                         cfg.allow_private_upstream,
-                        auth,
+                        spec.auth.clone(),
                     )?)
                 }
                 #[cfg(feature = "up-udp")]

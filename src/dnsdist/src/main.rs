@@ -26,11 +26,11 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::signal::unix::{signal, SignalKind};
 
-const DEFAULT_CONF: &str = "/etc/magdns/magdns.conf";
+const DEFAULT_CONF: &str = "/etc/magdns/config.json";
 
 fn usage() {
     eprintln!("magdns - private DoT/DoQ relay with magazine cache");
-    eprintln!("usage: magdns [-c /path/magdns.conf] [-v] [--check]");
+    eprintln!("usage: magdns [-c /path/config.json] [-v] [--check]");
 }
 
 /// Operator-supplied config path: must be absolute, no `..` components.
@@ -103,20 +103,30 @@ fn main() {
         std::process::exit(1);
     }
     if check {
+        println!(
+            "listen dot={} doq={} doh={} cache={}B/{}s",
+            c.listen_dot, c.listen_doq,
+            if c.listen_doh.is_empty() { "off" } else { &c.listen_doh },
+            c.cache_bytes, c.cache_ttl
+        );
+        println!("foreign: enabled={} spread={} sources={}",
+            c.foreign_enabled, c.spread_upstreams, c.upstreams.len());
         for (i, s) in c.upstreams.iter().enumerate() {
             println!(
-                "upstream #{} {}://{}:{}{}",
-                i + 1,
-                s.kind.tag(),
-                s.host,
-                s.port,
-                s.path
+                "  #{} {}://{}:{}{} batch={} h2={} cache={}",
+                i + 1, s.kind.tag(), s.host, s.port, s.path,
+                s.batch, s.h2_fanout, s.cache
             );
         }
-        println!(
-            "listen_dot={} listen_doq={} cache={}B/{}s cert={}",
-            c.listen_dot, c.listen_doq, c.cache_bytes, c.cache_ttl, c.cert_file
-        );
+        if c.cn_enabled {
+            println!("cn_split: enabled domains={} legs={}",
+                c.cn_domain_file, c.cn_upstreams.len());
+        }
+        println!("auth client_uuids={} ecs={} rate per_ip={}/{} global={}/{} domain={}/{}",
+            c.client_uuids.len(), c.ecs_enabled,
+            c.qps_per_ip, c.burst_per_ip,
+            c.qps_global, c.burst_global,
+            c.qps_domain, c.burst_domain);
         println!("config OK");
         std::process::exit(0);
     }
@@ -157,13 +167,13 @@ async fn run(c: Cfg) {
         c.cache_ttl,
         c.cache_ttl_ignore,
     )));
-    let chain = match upstream::Chain::new(&c, stats.clone(), cache.clone()) {
-        Ok(ch) => ch,
+    let routing = RwLock::new(match app::Routing::build(&c, stats.clone(), cache.clone()) {
+        Ok(r) => Arc::new(r),
         Err(e) => {
             eprintln!("magdns: {e}");
             std::process::exit(1);
         }
-    };
+    });
 
     let dot_addr = c.listen_dot.parse().unwrap();
     let doq_addr = c.listen_doq.parse().unwrap();
@@ -230,33 +240,17 @@ async fn run(c: Cfg) {
     let domain_limiter =
         crate::ratelimit::KeyedLimiter::new(c.qps_domain, c.burst_domain, c.domain_limit_entries);
     let global_limiter = crate::ratelimit::GlobalLimiter::new(c.qps_global, c.burst_global);
-    #[cfg(feature = "up-udp")]
-    let cn_pool: Option<crate::cnpool::CnPool> = match crate::cnpool::CnPool::new(&c, stats.clone())
-    {
-        Ok(p) => {
-            if let Some(pool) = &p {
-                eprintln!("magdns: cn_upstreams=[{}]", pool.legs_desc().join(", "));
-            }
-            p
-        }
-        Err(e) => {
-            eprintln!("magdns: {e}");
-            std::process::exit(1);
-        }
-    };
     let query_gate = std::sync::Arc::new(tokio::sync::Semaphore::new(c.max_concurrent_queries));
 
     let app = Arc::new(App {
         cfg: c.clone(),
         stats: stats.clone(),
         cache: cache.clone(),
-        chain,
+        routing,
         router: RwLock::new(Some(router)),
         rate_limiter,
         domain_limiter,
         global_limiter,
-        #[cfg(feature = "up-udp")]
-        cn_pool,
         query_gate,
         server_tls_dot: RwLock::new(rustls_dot),
         server_tls_doq: RwLock::new(rustls_doq),
@@ -271,12 +265,22 @@ async fn run(c: Cfg) {
         env!("CARGO_PKG_VERSION"),
         c.listen_dot,
         c.listen_doq,
-        app.chain.sources_desc().join(", ")
+        app.routing.read().unwrap().sources_desc().join(", ")
     );
 
+    // Hot reload is opt-in via config.json (`"hot_reload": true`). When off,
+    // SIGHUP does nothing and config changes take effect on restart — the
+    // steady-state costs nothing. When on, SIGHUP rebuilds ONLY the routing
+    // generation (foreign sources + CN legs): a fresh validated Routing is
+    // built first and swapped in atomically; a broken file keeps the old
+    // generation untouched. Certs/cache/rate limits remain startup-only.
     let mut term = signal(SignalKind::terminate()).expect("SIGTERM");
     let mut int = signal(SignalKind::interrupt()).expect("SIGINT");
-    let mut hup = signal(SignalKind::hangup()).expect("SIGHUP");
+    let mut hup = if c.hot_reload {
+        Some(signal(SignalKind::hangup()).expect("SIGHUP"))
+    } else {
+        None
+    };
     let mut usr1 = signal(SignalKind::user_defined1()).expect("SIGUSR1");
 
     loop {
@@ -291,10 +295,24 @@ async fn run(c: Cfg) {
                 dump_stats(&app);
                 break;
             }
-            _ = hup.recv() => {
-                match reload_dynamic(&app) {
-                    Ok(()) => eprintln!("magdns: dynamic reload ok (certs + magazine + rate limits)"),
-                    Err(e) => eprintln!("magdns: reload failed, keeping old: {e}"),
+            _ = async {
+                match hup.as_mut() {
+                    Some(h) => h.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match app::Routing::build(&c, stats.clone(), app.cache.clone()) {
+                    Ok(new_gen) => {
+                        *app.routing.write().unwrap() = Arc::new(new_gen);
+                        app.stats.reloads.fetch_add(1, Ordering::Relaxed);
+                        eprintln!(
+                            "magdns: hot reload applied — foreign={} cn={} (gen {})",
+                            app.routing.read().unwrap().chain.sources_desc().join(", "),
+                            c.cn_enabled,
+                            app.stats.reloads.load(Ordering::Relaxed)
+                        );
+                    }
+                    Err(e) => eprintln!("magdns: hot reload rejected, keeping old generation: {e}"),
                 }
             }
             _ = usr1.recv() => {
@@ -323,60 +341,4 @@ fn rss_bytes() -> u64 {
         }
     }
     0
-}
-
-/// SIGHUP: re-read the config file and apply the hot-reloadable knobs:
-/// listener certificates + magazine size/TTL. Everything else keeps its
-/// startup value until a process restart.
-fn reload_dynamic(app: &Arc<App>) -> Result<(), String> {
-    let text = std::fs::read_to_string(&app.cfg.conf_path)
-        .map_err(|e| format!("read {}: {e}", app.cfg.conf_path))?;
-    let c = cfg::parse(&text)?;
-    cfg::validate(&c)?;
-    // certs (paths may have changed too)
-    let new_dot = tlsconf::load_server_config(&c.cert_file, &c.key_file, &[b"dot"], true)?;
-    let new_doq = tlsconf::load_server_config(&c.cert_file, &c.key_file, &[b"doq"], false)?;
-    *app.server_tls_dot.write().unwrap() = Arc::new(new_dot);
-    *app.server_tls_doq.write().unwrap() = Arc::new(new_doq);
-    let quinn_cfg = doq::build_server_config(
-        app.server_tls_doq.read().unwrap().clone(),
-        app.cfg.idle_timeout_ms,
-    );
-    if let Some(ep) = app.doq_endpoint.read().unwrap().as_ref() {
-        ep.set_server_config(Some(quinn_cfg));
-    }
-    // magazine resize (evicts from the tail on shrink)
-    {
-        let mut cache = app.cache.lock().unwrap();
-        let snap = cache.snapshot();
-        if snap.cap_bytes != c.cache_bytes
-            || snap.ttl_secs != c.cache_ttl
-            || snap.ignore_ttl != c.cache_ttl_ignore
-        {
-            eprintln!(
-                "magdns: magazine resize {}B/{}s{} -> {}B/{}s{}",
-                snap.cap_bytes,
-                snap.ttl_secs,
-                if snap.ignore_ttl {
-                    " (ttl ignored)"
-                } else {
-                    ""
-                },
-                c.cache_bytes,
-                c.cache_ttl,
-                if c.cache_ttl_ignore {
-                    " (ttl ignored)"
-                } else {
-                    ""
-                }
-            );
-            cache.resize(c.cache_bytes, c.cache_ttl, c.cache_ttl_ignore);
-        }
-    }
-    // layered rate limits: swap live so operators can tune under attack
-    app.rate_limiter.set_limits(c.qps_per_ip, c.burst_per_ip);
-    app.domain_limiter.set_limits(c.qps_domain, c.burst_domain);
-    app.global_limiter.set_limits(c.qps_global, c.burst_global);
-    app.stats.reloads.fetch_add(1, Ordering::Relaxed);
-    Ok(())
 }
