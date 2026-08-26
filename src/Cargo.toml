@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["dnsdist", "mgb1"]
+# client joins here when its skeleton lands
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

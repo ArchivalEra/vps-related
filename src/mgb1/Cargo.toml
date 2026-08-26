@@ -1,0 +1,8 @@
+[package]
+name = "mgb1"
+version = "0.1.0"
+edition = "2021"
+description = "MGB1 private DNS batch container: wire codec, handshake frames, capability constants. Zero IO, shared by client/box/relay tests."
+license = "MIT"
+
+[dependencies]

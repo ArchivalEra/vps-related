@@ -35,6 +35,7 @@ struct CnLeg {
 #[cfg(feature = "up-udp")]
 pub struct CnPool {
     legs: Vec<Arc<CnLeg>>,
+    cache: Arc<std::sync::Mutex<crate::cache::MagCache>>,
     flights: FlightMap,
     rr: AtomicUsize,
     stats: Arc<Stats>,
@@ -72,16 +73,17 @@ fn flight_key(msg: &[u8]) -> Vec<u8> {
 #[cfg(feature = "up-udp")]
 impl CnPool {
     /// None when no `cn_upstream` is configured (split routing disabled).
-    pub fn new(cfg: &Cfg, stats: Arc<Stats>) -> Result<Option<Self>, String> {
+    pub fn new(cfg: &Cfg, stats: Arc<Stats>, cache: Arc<std::sync::Mutex<crate::cache::MagCache>>) -> Result<Option<Self>, String> {
         if cfg.cn_upstreams.is_empty() {
             return Ok(None);
         }
         let mut legs = Vec::with_capacity(cfg.cn_upstreams.len());
-        for raw in &cfg.cn_upstreams {
-            let spec = crate::cfg::parse_upstream(raw)?;
+        for spec_spec in &cfg.cn_upstreams {
+            let spec = spec_spec.clone();
             if spec.kind != SrcKind::Udp {
                 return Err(format!(
-                    "cn_upstream `{raw}`: domestic legs speak udp:// only"
+                    "cn_upstream `{}`: domestic legs speak udp:// only",
+                    spec.raw
                 ));
             }
             legs.push(Arc::new(CnLeg {
@@ -92,6 +94,7 @@ impl CnPool {
         }
         Ok(Some(CnPool {
             legs,
+            cache,
             flights: FlightMap::new(),
             rr: AtomicUsize::new(0),
             stats,
@@ -116,6 +119,7 @@ impl CnPool {
         msg: &[u8],
         wants_ecs: bool,
         deadline: Instant,
+        cache_key: Option<&[u8]>,
     ) -> Result<Vec<u8>, UpErr> {
         let key = flight_key(msg);
         // one takeover round: a failed joined flight means we run it ourselves
@@ -125,15 +129,15 @@ impl CnPool {
                     Ok(v) => return Ok((*v).clone()),
                     Err(_) => continue,
                 },
-                Entered::Bypass => return self.run_legs(msg, wants_ecs, deadline).await,
+                Entered::Bypass => return self.run_legs(msg, wants_ecs, deadline, cache_key).await,
                 Entered::Initiator(guard) => {
-                    let result = self.run_legs(msg, wants_ecs, deadline).await;
+                    let result = self.run_legs(msg, wants_ecs, deadline, cache_key).await;
                     guard.settle(result.as_ref().ok().map(|v| Arc::new(v.clone())));
                     return result;
                 }
             }
         }
-        self.run_legs(msg, wants_ecs, deadline).await
+        self.run_legs(msg, wants_ecs, deadline, cache_key).await
     }
 
     async fn run_legs(
@@ -141,6 +145,7 @@ impl CnPool {
         query: &[u8],
         wants_ecs: bool,
         deadline: Instant,
+        cache_key: Option<&[u8]>,
     ) -> Result<Vec<u8>, UpErr> {
         let now_ms = crate::app::unix_ms();
         let start = self.rr.fetch_add(1, Ordering::Relaxed);
@@ -174,6 +179,15 @@ impl CnPool {
                 Ok(v) => {
                     Stats::bump(&self.stats.cn_ok);
                     leg.health.record_success();
+                    // per-leg cache granularity: only cache-eligible legs
+                    // feed the magazine (and only when a key was provided)
+                    if leg.spec.cache && v.len() >= 12 {
+                        if let (Some(k), rc) = (cache_key, crate::dnsmsg::rcode(&v)) {
+                            if rc == 0 || rc == 3 {
+                                let _ = self.cache.lock().unwrap().put(k.to_vec(), v.clone());
+                            }
+                        }
+                    }
                     return Ok(v);
                 }
                 Err(e) => {

@@ -1,0 +1,4 @@
+# Build artifacts live on the HDD workplace, not in the repo/home disk
+# (home is space-constrained; only committed sources stay local).
+[build]
+target-dir = "/mnt/hdd/dns-workplace/target"
