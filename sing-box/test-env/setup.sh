@@ -75,7 +75,7 @@ cat > "$T/server/config.json" <<EOF
       "method": "2022-blake3-aes-256-gcm", "${PASS_KEY}": "__SS_PASS__" },
     { "type": "tuic", "tag": "tuic", "listen": "127.0.0.1", "listen_port": 10005,
       "users": [ { "uuid": "__TU_UUID__", "${PASS_KEY}": "__ST_PASS__" } ],
-      "congestion_control": "bbr",
+      "congestion_control": "bbr", "heartbeat": "10s",
       "tls": { "enabled": true, "certificate_path": "$T/server/hy2.crt", "key_path": "$T/server/hy2.key" } },
     { "type": "anytls", "tag": "anytls", "listen": "127.0.0.1", "listen_port": 10006,
       "users": [ { "name": "sb", "${PASS_KEY}": "__ANY_PASS__" } ],

@@ -91,6 +91,11 @@ declare -A PROTO_CRED_VAR=(
   [hysteria2]=GEN_HY2_PASS [anytls]=GEN_ANYTLS_PASS [shadowtls]=GEN_ST_PASS [tuic]=GEN_TU_PASS
   [shadowsocks]=GEN_SS_PASS [naive]=GEN_NAIVE_PASS
 )
+# Per-protocol hardening constants (not credentials, but protocol behavior):
+# - hysteria2: salamander obfs password (QUIC traffic padding to defeat DPI) — fresh per run.
+# - tuic: heartbeat keeps the QUIC connection alive through NAT/NAT64 (10s is the
+#   sweet spot: alive behind UDP timeouts without meaningful overhead).
+TUIC_HEARTBEAT="10s"
 
 # ---------- Port conflict check (TCP and UDP each must be unique; TCP/UDP may share) ----------
 check_port_conflicts() {
@@ -181,6 +186,7 @@ render_reality() {
 render_hysteria2() {
   echo "{ \"type\": \"hysteria2\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"password\": \"$GEN_HY2_PASS\" } ],
+    \"obfs\": { \"type\": \"salamander\", \"password\": \"$GEN_HY2_OBFS\" },
     \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
 render_vless_ws() {
@@ -222,7 +228,7 @@ render_shadowsocks() {
 render_tuic() {
   echo "{ \"type\": \"tuic\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
     \"users\": [ { \"uuid\": \"$GEN_UUID\", \"password\": \"$GEN_TU_PASS\" } ],
-    \"congestion_control\": \"bbr\",
+    \"congestion_control\": \"bbr\", \"heartbeat\": \"$TUIC_HEARTBEAT\",
     \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
 render_naive() {
@@ -249,7 +255,7 @@ ech_json() {
 render_config() {
   local cert="$1" key="$2" out="$3" inbounds="" t proto c
   local GEN_CERT GEN_KEY GEN_UUID GEN_PRIV GEN_PUB GEN_SID
-  local GEN_HY2_PASS GEN_ANYTLS_PASS GEN_ST_PASS GEN_TU_PASS GEN_SS_PASS GEN_NAIVE_PASS GEN_SS_CHAIN_PASS GEN_ECH_KEY_ARR
+  local GEN_HY2_PASS GEN_HY2_OBFS GEN_ANYTLS_PASS GEN_ST_PASS GEN_TU_PASS GEN_SS_PASS GEN_NAIVE_PASS GEN_SS_CHAIN_PASS GEN_ECH_KEY_ARR
   local INST_TAG INST_PORT INST_ST_N ST_N
   GEN_CERT="$cert"; GEN_KEY="$key"
   GEN_UUID="$(gen_uuid)" || die1 "failed to generate uuid"
@@ -262,6 +268,7 @@ render_config() {
     printf -v "${PROTO_CRED_VAR[$c]}" '%s' "$(${PROTO_CRED_GEN[$c]})"
   done
   GEN_SS_CHAIN_PASS="$(gen_ss_pass)"
+  GEN_HY2_OBFS="$(gen_hex_pass)"   # hysteria2 salamander obfs password (fresh per run)
   GEN_ECH_KEY_ARR=""
   [[ $ECH -eq 1 ]] && gen_ech
   INST_ST_N=0
