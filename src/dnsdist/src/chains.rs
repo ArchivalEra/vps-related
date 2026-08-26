@@ -165,7 +165,7 @@ impl Split {
         if self.domains.is_none() && self.source_subnets.is_empty() {
             // a split with no matchers matches everything (default override)
         } else if let Some(r) = &self.domains {
-            if r.resolve(qname_lower).is_none() {
+            if !r.contains(qname_lower) {
                 return false;
             }
         }
