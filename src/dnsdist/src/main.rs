@@ -6,6 +6,7 @@ mod cnpool;
 mod dnsmsg;
 #[cfg(feature = "up-doh")]
 mod doh;
+mod dohserver;
 mod doq;
 mod dot;
 mod flightmap;
@@ -176,6 +177,36 @@ async fn run(c: Cfg) {
         }
     });
 
+    // optional inbound standard DoH (443): same pipeline, UUID-gated
+    let (doh_listener, doh_tls) = if c.listen_doh.is_empty() {
+        (None, None)
+    } else {
+        let addr: std::net::SocketAddr = c.listen_doh.parse().unwrap_or_else(|e| {
+            eprintln!("magdns: bad listen.doh: {e}");
+            std::process::exit(1);
+        });
+        let tls = tlsconf::load_server_config(&c.cert_file, &c.key_file, &[b"h2", b"http/1.1"], false)
+            .map(Arc::new)
+            .map_err(|e| {
+                eprintln!("magdns: {e}");
+                std::process::exit(1);
+            })
+            .unwrap();
+        match app::dual_tcp_socket(addr, 256) {
+            Ok(std_l) => match tokio::net::TcpListener::from_std(std_l) {
+                Ok(l) => (Some(l), Some(tls)),
+                Err(e) => {
+                    eprintln!("magdns: doh bind: {e}");
+                    std::process::exit(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("magdns: doh socket: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
+
     let dot_addr = c.listen_dot.parse().unwrap();
     let doq_addr = c.listen_doq.parse().unwrap();
     let tcp_listener = match app::dual_tcp_socket(dot_addr, 1024)
@@ -254,12 +285,20 @@ async fn run(c: Cfg) {
         global_limiter,
         query_gate,
         server_tls_dot: RwLock::new(rustls_dot),
+        server_tls_doh: RwLock::new(doh_tls.clone().unwrap_or_else(|| {
+            Arc::new(tlsconf::load_server_config(&c.cert_file, &c.key_file, &[], false).expect("doh tls"))
+        })),
         server_tls_doq: RwLock::new(rustls_doq),
         doq_endpoint: RwLock::new(Some(doq_endpoint.clone())),
     });
 
     tokio::spawn(dot::run_listener(app.clone(), tcp_listener));
     tokio::spawn(doq::run_server(app.clone(), doq_endpoint));
+    if let (Some(l), Some(t)) = (doh_listener, doh_tls) {
+        *app.server_tls_doh.write().unwrap() = t;
+        tokio::spawn(dohserver::run_listener(app.clone(), l));
+        eprintln!("magdns: serving inbound DoH on {}", c.listen_doh);
+    }
 
     eprintln!(
         "magdns {} up: dot={} doq={} upstreams=[{}]",
