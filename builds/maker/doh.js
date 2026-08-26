@@ -1,4 +1,5 @@
-// EdgeOne Function — RFC 8484 DoH relay (GET + POST), blind pipe to Google.
+// EdgeOne Function — RFC 8484 DoH relay (GET + POST + private batch),
+// blind pipe to Google.
 //
 // Auth lives entirely in the trigger rule (token header): abuse is rejected
 // at the CDN edge before any function time or quota is spent. Zero auth
@@ -13,23 +14,42 @@
 //     Cache API when present (cross-isolate share). Identical concurrent
 //     queries single-flight into one upstream round trip.
 //   * GET ?dns=<b64url>: same pipeline after decode.
-//   TTL is fixed (600s) — this is an upstream acceleration layer; magdns's
-//   magazine re-applies real per-record TTLs downstream.
+//   TTL is fixed and short — an anti-stampede / transoceanic-loss layer.
+//     The authoritative cache is magdns's magazine downstream.
 //
-// Stability: 3s upstream deadline, exactly one retry on transport errors,
-// strict size guards. CPU cost on a hit is one map lookup.
+// Upstream discipline:
+//   * global semaphore caps concurrent fetches to Google (queueing happens
+//     here, cheaply, instead of as connection resets out there)
+//   * 3 s deadline per fetch, exactly one retry for transport errors AND
+//     transient 5xx; never for 4xx
+//   * error logs are rate-limited to one per second (no log floods under
+//     sustained outage)
+//
+// CPU cost on a hit: one map lookup.
 
-const UPSTREAM = "https://dns.google/dns-query";
-const TTL_MS = 10000; // 10s anti-stampede layer only: absorbs identical
-                      // concurrent/repeat queries so the first answer has
-                      // time to land. The authoritative cache is magdns's
-                      // magazine; this layer must never outlive its freshness.
+// Three independent authorities, rotated round-robin, failover to the next
+// on any transport error or 5xx. 8.8.4.4 is a full peer of 8.8.8.8 (its
+// cert carries both IPs), and AdGuard-unfiltered passes ECS untouched.
+const UPSTREAMS = [
+  "https://8.8.8.8/dns-query",
+  "https://8.8.4.4/dns-query",
+  "https://unfiltered.adguard-dns.com/dns-query",
+];
+let upstreamCursor = 0; // module state: spreads load across isolates' lifetimes
+const TTL_MS = 10000; // anti-stampede window only
 const DEADLINE_MS = 3000;
 const MEM_MAX = 1024; // entries; ~300B each worst case -> bounded isolate RAM
+const UPSTREAM_CONCURRENCY = 48; // global cap on in-flight Google fetches
 
 const mem = new Map(); // hexKey -> { exp, body(Uint8Array, ID-less) }
 const inflight = new Map(); // hexKey -> Promise<Uint8Array>
 let lastSweep = 0;
+
+let statsHits = 0,
+  statsMisses = 0,
+  statsUpstream = 0,
+  statsErrors = 0,
+  statsQueuedPeak = 0;
 
 const HAS_CACHE_API =
   typeof caches !== "undefined" &&
@@ -42,17 +62,29 @@ addEventListener("fetch", (event) => {
 
 async function handle(req) {
   const url = new URL(req.url);
+
   if (url.pathname === "/health") {
-    const caps = HAS_CACHE_API ? " cache-api" : "";
-    caps += typeof DecompressionStream !== "undefined" ? " br" : "";
-    return new Response("ok" + caps, { status: 200 });
+    return new Response("ok", { status: 200 });
+  }
+  if (url.pathname === "/stats") {
+    return new Response(
+      JSON.stringify({
+        mem_entries: mem.size,
+        inflight_queries: inflight.size,
+        cache_hits: statsHits,
+        cache_misses: statsMisses,
+        upstream_fetches: statsUpstream,
+        upstream_errors: statsErrors,
+        queue_peak: statsQueuedPeak,
+        cache_api: HAS_CACHE_API,
+        decompress_gzip: typeof DecompressionStream !== "undefined",
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
   }
   if (url.pathname !== "/dns-query") return new Response(null, { status: 404 });
 
   try {
-    // batch container: N length-prefixed wire queries, one HTTP round trip.
-    // Private protocol between magdns and this function — slashes the billed
-    // request count and sidesteps per-connection stream limits.
     if (
       req.method === "POST" &&
       (req.headers.get("content-type") || "").startsWith("application/dns-batch")
@@ -80,10 +112,13 @@ async function handle(req) {
     const answer = await cached(key, wire);
     return dnsResponse(answer);
   } catch (e) {
-    console.error("doh-relay:", e && e.message ? e.message : e);
+    statsErrors++;
+    logThrottled(e && e.message ? e.message : e);
     return new Response(null, { status: 502 });
   }
 }
+
+// ---- batch container: [u16 count][u16 len][wire]..., gzip/br/raw accepted
 
 const BATCH_MAX = 64; // hard safety ceiling; magdns AIMDs well below this
 
@@ -102,7 +137,6 @@ async function handleBatch(req) {
   const count = dv.getUint16(0);
   if (count === 0 || count > BATCH_MAX) return new Response(null, { status: 400 });
 
-  // parse + resolve every slot through the shared cache/single-flight path
   const slots = [];
   let off = 2;
   for (let i = 0; i < count; i++) {
@@ -120,7 +154,6 @@ async function handleBatch(req) {
   }
   const answers = await Promise.all(slots);
 
-  // pack: [count][len][answer]... ; empty slot = that query failed alone
   const parts = [new Uint8Array([answers.length >> 8, answers.length & 0xff])];
   for (const a of answers) {
     const len = a ? a.byteLength : 0;
@@ -145,6 +178,8 @@ function concat(chunks) {
   return out.buffer;
 }
 
+// ---- cache core
+
 function dnsResponse(body) {
   return new Response(body.buffer, {
     status: 200,
@@ -165,11 +200,15 @@ async function cached(key, wire) {
   const now = Date.now();
   sweep(now);
 
-  const m = mem.get(key);
-  if (m && m.exp > now) return withId(m.body, wire);
+  const entry = mem.get(key);
+  if (entry && entry.exp > now) {
+    statsHits++;
+    return withId(entry.body, wire);
+  }
 
   let p = inflight.get(key);
   if (!p) {
+    statsMisses++;
     p = (async () => {
       if (HAS_CACHE_API) {
         try {
@@ -202,13 +241,11 @@ async function cached(key, wire) {
     inflight.set(key, p);
   }
 
-  // patch the caller's own txid into the shared answer — every waiter gets
-  // the same ID-less body and stamps their identity on a private copy
   return withId(await p, wire);
 }
 
 function withId(body, wire) {
-  const out = new Uint8Array(body); // copy: stored/SharedArray must not leak
+  const out = new Uint8Array(body); // copy: stored bodies must not leak
   out[0] = wire[0];
   out[1] = wire[1];
   return out;
@@ -222,34 +259,83 @@ function putMem(key, body, now) {
   }
 }
 
-async function upstreamFetch(wire) {
-  for (let attempt = 0; ; attempt++) {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), DEADLINE_MS);
-    try {
-      const r = await fetch(UPSTREAM, {
-        method: "POST",
-        headers: {
-          "content-type": "application/dns-message",
-          accept: "application/dns-message",
-        },
-        body: wire.slice(), // detach from request lifetime
-        signal: ac.signal,
-      });
-      if (!r.ok) throw new Error("upstream " + r.status);
-      const buf = new Uint8Array(await r.arrayBuffer());
-      if (buf.byteLength < 12) throw new Error("short upstream reply");
-      return buf;
-    } catch (e) {
-      if (attempt === 1) throw e; // one retry, transport errors only
-    } finally {
-      clearTimeout(timer);
-    }
+// ---- upstream: queued, deadline-bound, retried once
+
+const upstreamQueue = { active: 0, waiters: [] };
+
+async function withUpstreamSlot(fn) {
+  if (upstreamQueue.active >= UPSTREAM_CONCURRENCY) {
+    const waiter = new Promise((r) => upstreamQueue.waiters.push(r));
+    // track the deepest queue for observability
+    if (upstreamQueue.waiters.length > statsQueuedPeak)
+      statsQueuedPeak = upstreamQueue.waiters.length;
+    await waiter;
+  }
+  upstreamQueue.active++;
+  try {
+    return await fn();
+  } finally {
+    upstreamQueue.active--;
+    const w = upstreamQueue.waiters.shift();
+    if (w) w();
   }
 }
 
+async function upstreamFetch(wire) {
+  return withUpstreamSlot(async () => {
+    statsUpstream++;
+    let lastErr = null;
+    // each of the three authorities gets one attempt, in rotation order:
+    // a dead or throttling upstream costs one RTT before the next answers
+    for (let i = 0; i < UPSTREAMS.length; i++) {
+      const idx = (upstreamCursor + i) % UPSTREAMS.length;
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), DEADLINE_MS);
+      try {
+        const r = await fetch(UPSTREAMS[idx], {
+          method: "POST",
+          headers: {
+            "content-type": "application/dns-message",
+            accept: "application/dns-message",
+          },
+          body: wire.slice(), // detach from request lifetime
+          signal: ac.signal,
+        });
+        // 5xx/transport -> try the NEXT authority; 4xx means the request
+        // itself is wrong, no point asking a different resolver the same thing
+        if (r.status >= 500) {
+          lastErr = new Error("upstream[" + idx + "] " + r.status);
+          continue;
+        }
+        if (!r.ok) throw new Error("upstream[" + idx + "] " + r.status);
+        const buf = new Uint8Array(await r.arrayBuffer());
+        if (buf.byteLength < 12) throw new Error("short upstream reply");
+        upstreamCursor = (idx + 1) % UPSTREAMS.length; // keep spreading load
+        return buf;
+      } catch (e) {
+        lastErr = e;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    statsErrors++;
+    logThrottled(lastErr && lastErr.message ? lastErr.message : "all upstreams failed");
+    throw lastErr || new Error("all upstreams failed");
+  });
+}
+
+// ---- misc
+
+let lastErrLog = 0;
+function logThrottled(msg) {
+  const now = Date.now();
+  if (now - lastErrLog < 1000) return; // max one line per second under fire
+  lastErrLog = now;
+  console.error("doh-relay:", msg);
+}
+
 function cacheKey(hexKey) {
-  return "https://" + UPSTREAM.split("//")[1] + "/__cache/" + hexKey;
+  return "https://maker-cache/__doh/" + hexKey;
 }
 
 function hex(bytes) {

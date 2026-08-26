@@ -1,59 +1,46 @@
 # doh.js — EdgeOne DoH relay function
 
 Usage manual for [`doh.js`](doh.js), the EdgeOne edge function that fronts
-Google DoH for `magdns`. It is a blind RFC 8484 pipe (GET and POST) with an
-edge-side **anti-stampede cache** and a **batch endpoint** that packs many
-queries into one billed request. The authoritative cache is magdns's
-magazine on the box; this function only absorbs identical concurrent or
-rapidly-repeated queries so the first upstream answer has time to land
-(also covering transoceanic packet-loss windows).
+public resolvers for `magdns`. It is a blind RFC 8484 pipe (GET and POST)
+with an edge-side **anti-stampede cache**, a **private batch endpoint**, and
+a **balanced three-upstream fan-out**: `8.8.8.8` and `8.8.4.4` (full peers —
+Google's cert carries both IPs) plus `unfiltered.adguard-dns.com`, rotated
+round-robin with automatic failover to the next authority on any transport
+error or 5xx.
 
-## Caching design (why the old version never hit)
+## Architecture
 
-A naive DoH cache keys on the raw request — but the DNS transaction ID is
-random per client, so identical questions from different clients look
-different and the cache never hits. This function strips the two ID bytes
-and keys both cache layers on the remaining wire bytes. Answers are stored
-ID-less; each caller gets a private copy with their own transaction ID
-patched back in. Verified by `src/dnsdist/stage/doh_selftest.js` (run with
-node): memory hit consumes zero upstream calls, and ten concurrent identical
-queries consume exactly one.
+| Layer | What it does |
+|---|---|
+| trigger rule (token header) | auth at the CDN edge — abuse never reaches this function or its quota |
+| question-keyed cache (10 s TTL) | per-isolate memory map, then platform Cache API when present; keys strip the random DNS txid so identical questions from different clients actually hit |
+| single-flight | identical in-flight queries share one upstream round trip |
+| upstream semaphore | global cap of 48 concurrent Google fetches; excess queues here instead of turning into connection resets out there |
+| batch container | `[u16 count][u16 len][wire]...`, gzip/br/raw accepted; ~10–20× fewer billed requests under load |
 
-Two layers, both TTL 10 s:
+The 10 s TTL is deliberate: the authoritative cache is magdns's magazine on
+the box. This layer absorbs bursts and covers transoceanic packet-loss
+windows, nothing more. There is no stale-serving: with three independent
+authorities behind rotation, "the internet is down" is not a state this
+function needs to paper over.
 
-| Layer | Scope | Purpose |
-|---|---|---|
-| per-isolate memory map | one edge isolate | zero-cost hit, no platform API |
-| platform Cache API (`caches.default`, used only if present) | shared across isolates | cross-instance dedup |
-
-Plus single-flight: identical in-flight queries share one upstream round trip.
-TTL is deliberately short (10 s) — freshness belongs to the magazine; this
-layer must never outlive it.
-
-## Batch endpoint (private protocol, `application/dns-batch`)
-
-magdns with the `batch` source flag POSTs a container of N length-prefixed
-wire queries (`[u16 count][u16 len][wire]...`, gzip-compressed via
-`Content-Encoding: gzip`) as ONE request. The function decompresses
-(DecompressionStream — the platform does NOT auto-decompress request bodies),
-serves each slot through the same cache → single-flight → Google pipeline,
-and packs the answers back in the same layout. A zero-length slot means that
-one query failed alone; batches never fail as a whole.
-
-Effect under load: roughly 10–20× fewer billed requests (measured 198
-queries across 11 requests), and one compressed packet on the wire instead
-of dozens — a direct mitigation of transoceanic loss amplification. Plain
-single-query GET/POST keeps working unchanged; magdns's AIMD packer degrades
-to single queries automatically when the relay misbehaves, and drops its
-compression if the endpoint ever answers 415.
+Measured on the function's own code path (upstream stubbed to zero RTT,
+all-miss worst case, random domains × random subnets): 11.8k queries/s
+single-query, 16.9k queries/s batched, 50k queries/s pure memory hits.
+Reproduce with `src/dnsdist/stage/bench_doh.js`; correctness gates live in
+`src/dnsdist/stage/doh_selftest*.js`.
 
 ## Stability
 
-- 3 s upstream deadline (AbortController), one retry on transport errors
-  only (never on HTTP error statuses).
+- 3 s deadline per fetch (AbortController).
+- Upstream rotation IS the retry: one attempt per authority, up to three.
+  A 4xx stops immediately — the request itself is wrong.
 - Request size guards: wire messages outside 12..65535 bytes → 400.
-- Upstream non-OK / short replies → 502 to the caller, logged via
-  `console.error` (visible in the EdgeOne function log panel).
+- Failures log through a one-line-per-second throttle (visible in the
+  EdgeOne panel), counted in `/stats`.
+- `/stats` endpoint: JSON counters — cache hits/misses, upstream fetches,
+  errors, queue depth peak, platform capabilities. Health check stays
+  plain-text at `/health` (`ok`).
 
 ## Deployment (EdgeOne console)
 
@@ -63,8 +50,7 @@ compression if the endpoint ever answers 415.
 4. Trigger rule (this is where auth lives): match
    - request Host = your relay domain (e.g. `pure-dns.example.com`), AND
    - a custom request header `token` equal to the shared secret.
-   Requests failing the match never execute the function — Tencent's edge
-   rejects them before any quota is consumed.
+   Requests failing the match never execute the function.
 5. Deploy, then point the route/domain at the function.
 
 Generate the secret once with `openssl rand -base64 48`; put the same value
@@ -73,7 +59,7 @@ in the trigger rule and in magdns's config.
 ## magdns side
 
 ```ini
-upstream = https://<relay-domain>/dns-query h2=8
+upstream = https://<relay-domain>/dns-query h2=8 batch
 maker_auth_kind = token          # sends raw `token:` header (what the trigger matches)
 maker_auth_key = <same secret>
 ```
@@ -83,20 +69,20 @@ priority failover lines — see `deploy/dnsdist/magdns.conf.example`.
 
 ## Quota strategy
 
-EdgeOne bills per function invocation. Run accounts **serially**, not in
-parallel: list relays in priority order and let magdns drain account A's
-monthly allowance before touching B's. The magazine cache on the box absorbs
-repeat queries locally; this function's 10 s layer absorbs bursts at the
-edge. Never enable hedging or round-robin against metered relays — both
-multiply billed requests.
+EdgeOne bills per function invocation; the batch endpoint divides that
+count. Run relay accounts **serially**: list relays in priority order and
+let magdns drain account A's monthly allowance before touching B's. The
+magazine cache on the box absorbs repeats locally, this function's 10 s
+layer plus single-flight absorb them regionally, and batching compresses
+whatever still has to fly. Never enable hedging or round-robin against
+metered relays — both multiply billed requests.
 
 ## Smoke test
 
 ```bash
-# health (no auth)
 curl https://<relay-domain>/health                # -> ok
+curl https://<relay-domain>/stats                 # -> JSON counters
 
-# real query (binary DNS message over POST)
 TOKEN=<secret>
 python3 -c "
 import struct, os
