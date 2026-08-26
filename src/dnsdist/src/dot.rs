@@ -3,6 +3,7 @@
 use crate::app::{self, App};
 use crate::cfg::SourceSpec;
 use crate::frame::{read_frame, write_frame};
+use crate::ingress;
 use crate::upstream::UpErr;
 use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
@@ -49,11 +50,55 @@ async fn handle_conn(app: &Arc<App>, tcp: TcpStream, peer_ip: std::net::IpAddr) 
         _ => return,
     };
     let idle = Duration::from_millis(app.cfg.idle_timeout_ms.max(5000));
+    let mut batch_mode = false;
     loop {
         let q = match tokio::time::timeout(idle, read_frame(&mut tls)).await {
             Ok(Ok(Some(q))) => q,
             _ => break,
         };
+
+        // MGB1 first-contact: the very frame from a batch-capable client is
+        // its handshake. Validate the UUID against the ingress table.
+        if !batch_mode && mgb1::is_mgb1(&q) {
+            match mgb1::decode_handshake(&q) {
+                Ok(Some(uuid)) => {
+                    if !ingress::authed(app, Some(&uuid)) {
+                        break; // wrong UUID: drop the connection, no answers
+                    }
+                    batch_mode = true;
+                    if write_frame(&mut tls, &q).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                _ => {
+                    // a container that arrives without ever handshaking is a
+                    // protocol violation — close instead of guessing
+                    break;
+                }
+            }
+        }
+
+        // hard gate: configured UUIDs but the connection never authenticated
+        if !app.cfg.client_uuids.is_empty() && !batch_mode {
+            let refused = ingress::refused(&q);
+            if write_frame(&mut tls, &refused).await.is_err() {
+                break;
+            }
+            continue;
+        }
+
+        if batch_mode && mgb1::is_mgb1(&q) {
+            let packed = match ingress::run_container(app, "dot", peer_ip, &q).await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            if write_frame(&mut tls, &packed).await.is_err() {
+                break;
+            }
+            continue;
+        }
+
         if q.len() < 12 {
             break;
         }
