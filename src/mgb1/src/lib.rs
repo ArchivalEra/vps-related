@@ -85,6 +85,32 @@ pub fn encode(slots: &[&[u8]]) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+/// Response-side variant: `None` slots encode as zero-length (that query
+/// failed alone) instead of failing the whole container.
+pub fn encode_slots<'a>(slots: impl IntoIterator<Item = Option<&'a [u8]>>) -> Result<Vec<u8>, Error> {
+    let slots: Vec<Option<&[u8]>> = slots.into_iter().collect();
+    if slots.len() > MAX_SLOTS {
+        return Err(Error::BadCount(slots.len()));
+    }
+    let mut out = Vec::with_capacity(8 + slots.iter().map(|s| s.map_or(2, |s| s.len() + 2)).sum::<usize>());
+    out.extend_from_slice(&MAGIC.to_be_bytes());
+    out.extend_from_slice(&0u16.to_be_bytes());
+    out.extend_from_slice(&(slots.len() as u16).to_be_bytes());
+    for s in slots {
+        match s {
+            Some(w) => {
+                if w.len() < MIN_WIRE || w.len() > MAX_WIRE {
+                    continue; // degrade to an empty slot, keep the batch alive
+                }
+                out.extend_from_slice(&(w.len() as u16).to_be_bytes());
+                out.extend_from_slice(w);
+            }
+            None => out.extend_from_slice(&0u16.to_be_bytes()),
+        }
+    }
+    Ok(out)
+}
+
 /// Decode a container into per-slot answers. A missing/empty/oversized slot
 /// decodes to `None` (that query failed alone); structural corruption stops
 /// parsing and returns what was salvaged so far — callers decide whether a
