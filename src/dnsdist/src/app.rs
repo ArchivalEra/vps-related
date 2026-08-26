@@ -141,6 +141,8 @@ pub struct App {
     pub cache: Arc<Mutex<MagCache>>,
     /// current routing generation; readers take an Arc snapshot per query
     pub routing: RwLock<Arc<Routing>>,
+    pub consolidation: Option<crate::geo::ConsolidationGate>,
+    pub geo_tables: Option<Arc<crate::geo::GeoTables>>,
     /// CN domain router: match qname → route to domestic or foreign chain
     pub router: RwLock<Option<Router>>,
     /// Layered rate limiting: per-IP, per-domain (lowercase qname), global QPS
