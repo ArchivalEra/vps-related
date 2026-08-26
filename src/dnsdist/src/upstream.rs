@@ -117,17 +117,82 @@ enum Kind {
 }
 
 pub struct Source {
-    pub spec: SourceSpec,
+    pub spec: crate::cfg::SourceSpec,
     kind: Kind,
-    health: Health,
+    pub health: Health,
 }
 
 impl Source {
+    /// Construct a transport-backed source from its spec. Shared by the
+    /// legacy chain and the chain-group engine so every leg speaks the same
+    /// protocol stack. `stats` only feeds probe counters.
+    pub fn build(
+        spec: crate::cfg::SourceSpec,
+        cfg: &Cfg,
+        roots: rustls::RootCertStore,
+        stats: Arc<Stats>,
+    ) -> Result<Arc<Self>, String> {
+        let _ = stats;
+        let kind = match spec.kind {
+            #[cfg(feature = "up-quic")]
+            SrcKind::Quic => {
+                let rc = tlsconf::client_config(
+                    roots,
+                    &[b"doq", b"doq-i03", b"doq-i02"],
+                    false,
+                );
+                Kind::Doq(crate::doq::DoqClient::new(
+                    spec.clone(),
+                    Arc::new(rc),
+                    cfg.allow_private_upstream,
+                )?)
+            }
+            #[cfg(feature = "up-tls")]
+            SrcKind::Tls => {
+                let rc = tlsconf::client_config(roots, &[b"dot"], true);
+                Kind::Dot(crate::dot::DotPool::new(
+                    spec.clone(),
+                    Arc::new(rc),
+                    cfg.allow_private_upstream,
+                )?)
+            }
+            #[cfg(feature = "up-doh")]
+            SrcKind::Doh => {
+                let rc = tlsconf::client_config(roots, &[], true);
+                // auth header resolved from the environment at config
+                // parse time; lives on the spec itself now
+                Kind::Doh(crate::doh::DoHPool::new(
+                    spec.clone(),
+                    rc,
+                    cfg.allow_private_upstream,
+                    spec.auth.clone(),
+                )?)
+            }
+            #[cfg(feature = "up-udp")]
+            SrcKind::Udp => Kind::Udp(crate::udpsrc::UdpSource::new(
+                spec.clone(),
+                cfg.allow_private_upstream,
+            )?),
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Err(format!(
+                    "upstream `{}`: transport not compiled into this binary",
+                    spec.raw
+                ))
+            }
+        };
+        Ok(Arc::new(Source {
+            spec: spec.clone(),
+            kind,
+            health: Health::new(),
+        }))
+    }
+
     fn alive(&self, now_ms: u64) -> bool {
         self.health.alive(now_ms)
     }
 
-    async fn attempt(&self, msg: &[u8], deadline: Instant) -> Result<Vec<u8>, UpErr> {
+    pub async fn attempt(&self, msg: &[u8], deadline: Instant) -> Result<Vec<u8>, UpErr> {
         match &self.kind {
             #[cfg(feature = "up-quic")]
             Kind::Doq(c) => c.query(msg, deadline).await,
@@ -142,10 +207,7 @@ impl Source {
 
     async fn probe_once(&self) -> bool {
         let q = dnsmsg::build_probe_query();
-        match self
-            .attempt(&q, Instant::now() + Duration::from_millis(2000))
-            .await
-        {
+        match self.attempt(&q, Instant::now() + Duration::from_millis(2000)).await {
             Ok(r) => dnsmsg::rcode(&r) != 2,
             Err(_) => false,
         }
@@ -177,59 +239,12 @@ impl Chain {
         let roots = tlsconf::root_store(cfg.extra_ca.as_deref())?;
         let mut sources = Vec::new();
         for spec in &cfg.upstreams {
-            let kind = match spec.kind {
-                #[cfg(feature = "up-quic")]
-                SrcKind::Quic => {
-                    let rc = tlsconf::client_config(
-                        roots.clone(),
-                        &[b"doq", b"doq-i03", b"doq-i02"],
-                        false,
-                    );
-                    Kind::Doq(crate::doq::DoqClient::new(
-                        spec.clone(),
-                        Arc::new(rc),
-                        cfg.allow_private_upstream,
-                    )?)
-                }
-                #[cfg(feature = "up-tls")]
-                SrcKind::Tls => {
-                    let rc = tlsconf::client_config(roots.clone(), &[b"dot"], true);
-                    Kind::Dot(crate::dot::DotPool::new(
-                        spec.clone(),
-                        Arc::new(rc),
-                        cfg.allow_private_upstream,
-                    )?)
-                }
-                #[cfg(feature = "up-doh")]
-                SrcKind::Doh => {
-                    let rc = tlsconf::client_config(roots.clone(), &[], true);
-                    // auth header resolved from the environment at config
-                    // parse time; lives on the spec itself now
-                    Kind::Doh(crate::doh::DoHPool::new(
-                        spec.clone(),
-                        rc,
-                        cfg.allow_private_upstream,
-                        spec.auth.clone(),
-                    )?)
-                }
-                #[cfg(feature = "up-udp")]
-                SrcKind::Udp => Kind::Udp(crate::udpsrc::UdpSource::new(
-                    spec.clone(),
-                    cfg.allow_private_upstream,
-                )?),
-                #[allow(unreachable_patterns)]
-                _ => {
-                    return Err(format!(
-                        "upstream `{}`: transport not compiled into this binary",
-                        spec.raw
-                    ))
-                }
-            };
-            sources.push(Arc::new(Source {
-                spec: spec.clone(),
-                kind,
-                health: Health::new(),
-            }));
+            sources.push(Source::build(
+                spec.clone(),
+                cfg,
+                roots.clone(),
+                stats.clone(),
+            )?);
         }
         Ok(Chain {
             sources,

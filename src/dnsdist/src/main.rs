@@ -1,5 +1,6 @@
 mod app;
 mod cache;
+mod chains;
 mod cfg;
 #[cfg(feature = "up-udp")]
 mod cnpool;
