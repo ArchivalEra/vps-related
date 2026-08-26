@@ -4,6 +4,8 @@
 use crate::app::{self, App};
 use crate::cfg::SourceSpec;
 use crate::frame::{read_frame, write_frame};
+use crate::ingress;
+use mgb1;
 use crate::upstream::UpErr;
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use quinn::{
@@ -70,31 +72,93 @@ pub async fn run_server(app: Arc<App>, endpoint: Endpoint) {
 }
 
 async fn serve_conn(app: &Arc<App>, conn: Connection, peer_ip: std::net::IpAddr) {
+    // connection-level MGB1 authentication state, shared by every stream:
+    // the first handshake frame flips it, later containers require it.
+    let batch_authed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     loop {
         match conn.accept_bi().await {
             Ok((mut tx, mut rx)) => {
                 let app = app.clone();
+                let batch_authed = batch_authed.clone();
                 tokio::spawn(async move {
-                    let idle = Duration::from_millis(app.cfg.idle_timeout_ms.max(5000));
-                    let q = match tokio::time::timeout(idle, read_frame(&mut rx)).await {
-                        Ok(Ok(Some(q))) => q,
-                        _ => return,
-                    };
-                    if q.len() < 12 {
+                    if let Err(()) =
+                        handle_stream(&app, &mut tx, &mut rx, peer_ip, batch_authed).await
+                    {
                         return;
                     }
-                    let resp = app::handle_query(&app, q, "doq", peer_ip).await;
-                    if resp.is_empty() {
-                        return;
-                    }
-                    if app::write_reply(&mut tx, &resp).await.is_ok() {
-                        let _ = tx.finish();
-                    }
+                    let _ = tx.finish();
                 });
             }
             Err(_) => break,
         }
     }
+}
+
+/// One bidirectional stream = one standard query OR one MGB1 container.
+/// Returns Err to drop the stream without a reply (protocol violations).
+async fn handle_stream(
+    app: &Arc<App>,
+    tx: &mut quinn::SendStream,
+    rx: &mut quinn::RecvStream,
+    peer_ip: std::net::IpAddr,
+    batch_authed: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), ()> {
+    use std::sync::atomic::Ordering;
+    let idle = Duration::from_millis(app.cfg.idle_timeout_ms.max(5000));
+    let q = match tokio::time::timeout(idle, read_frame(rx)).await {
+        Ok(Ok(Some(q))) => q,
+        _ => return Err(()),
+    };
+
+    if mgb1::is_mgb1(&q) {
+        match mgb1::decode_handshake(&q) {
+            Ok(Some(uuid)) => {
+                if !ingress::authed(app, Some(&uuid)) {
+                    return Err(()); // wrong UUID: stream dropped cold
+                }
+                batch_authed.store(true, Ordering::Relaxed);
+                if write_frame(tx, &q).await.is_err() {
+                    return Err(());
+                }
+                return Ok(());
+            }
+            Ok(None) => {
+                // a bare container before any handshake is a violation unless
+                // this connection already authenticated on an earlier stream
+                if !batch_authed.load(Ordering::Relaxed) {
+                    return Err(());
+                }
+                let packed = match ingress::run_container(app, "doq", peer_ip, &q).await {
+                    Ok(p) => p,
+                    Err(_) => return Err(()),
+                };
+                if write_frame(tx, &packed).await.is_err() {
+                    return Err(());
+                }
+                return Ok(());
+            }
+            Err(_) => return Err(()),
+        }
+    }
+
+    // hard gate: UUIDs configured but this connection never authenticated
+    if !app.cfg.client_uuids.is_empty() && !batch_authed.load(Ordering::Relaxed) {
+        let refused = ingress::refused(&q);
+        let _ = write_frame(tx, &refused).await;
+        return Ok(());
+    }
+
+    if q.len() < 12 {
+        return Err(());
+    }
+    let resp = app::handle_query(app, q, "doq", peer_ip).await;
+    if resp.is_empty() {
+        return Err(());
+    }
+    if app::write_reply(tx, &resp).await.is_err() {
+        return Err(());
+    }
+    Ok(())
 }
 
 // ---------- upstream ----------

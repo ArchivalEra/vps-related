@@ -10,6 +10,7 @@ mod doq;
 mod dot;
 mod flightmap;
 mod frame;
+mod ingress;
 mod maker_auth;
 mod ratelimit;
 mod router;
