@@ -1,0 +1,30 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [magdns, magdns-client, mgb1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src
+      - name: format
+        run: cargo fmt --all -- --check
+        working-directory: src
+      - name: clippy (correctness lints deny; style/dead-code warn)
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings -A dead_code -A clippy::type_complexity -A clippy::large_enum_variant
+        working-directory: src
+      - name: tests (${{ matrix.crate }})
+        run: cargo test -p ${{ matrix.crate }} --all-features
+        working-directory: src

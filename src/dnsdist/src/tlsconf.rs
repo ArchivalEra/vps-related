@@ -10,9 +10,8 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-const V13: &[&'static SupportedProtocolVersion] = &[&rustls::version::TLS13];
-const V12_13: &[&'static SupportedProtocolVersion] =
-    &[&rustls::version::TLS13, &rustls::version::TLS12];
+const V13: &[&SupportedProtocolVersion] = &[&rustls::version::TLS13];
+const V12_13: &[&SupportedProtocolVersion] = &[&rustls::version::TLS13, &rustls::version::TLS12];
 
 fn versions(tls12: bool) -> &'static [&'static SupportedProtocolVersion] {
     if tls12 {
@@ -60,7 +59,7 @@ pub fn load_server_config(
 /// private CA fronting a ShadowTLS endpoint).
 pub fn root_store(extra_ca: Option<&str>) -> Result<RootCertStore, String> {
     let mut roots = RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
     if let Some(p) = extra_ca {
         for der in load_certs(p)? {

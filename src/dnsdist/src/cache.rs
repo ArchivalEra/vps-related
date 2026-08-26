@@ -37,7 +37,7 @@ impl GeoCluster {
         GeoCluster(0)
     }
 
-    pub fn to_bytes(&self) -> [u8; 8] {
+    pub fn to_bytes(self) -> [u8; 8] {
         self.0.to_be_bytes()
     }
 }

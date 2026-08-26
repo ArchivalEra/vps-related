@@ -1,7 +1,7 @@
 mod app;
 mod cache;
-mod chains;
 mod cfg;
+mod chains;
 #[cfg(feature = "up-udp")]
 mod cnpool;
 mod dnsmsg;
@@ -108,28 +108,53 @@ fn main() {
     if check {
         println!(
             "listen dot={} doq={} doh={} cache={}B/{}s",
-            c.listen_dot, c.listen_doq,
-            if c.listen_doh.is_empty() { "off" } else { &c.listen_doh },
-            c.cache_bytes, c.cache_ttl
+            c.listen_dot,
+            c.listen_doq,
+            if c.listen_doh.is_empty() {
+                "off"
+            } else {
+                &c.listen_doh
+            },
+            c.cache_bytes,
+            c.cache_ttl
         );
-        println!("foreign: enabled={} spread={} sources={}",
-            c.foreign_enabled, c.spread_upstreams, c.upstreams.len());
+        println!(
+            "foreign: enabled={} spread={} sources={}",
+            c.foreign_enabled,
+            c.spread_upstreams,
+            c.upstreams.len()
+        );
         for (i, s) in c.upstreams.iter().enumerate() {
             println!(
                 "  #{} {}://{}:{}{} batch={} h2={} cache={}",
-                i + 1, s.kind.tag(), s.host, s.port, s.path,
-                s.batch, s.h2_fanout, s.cache
+                i + 1,
+                s.kind.tag(),
+                s.host,
+                s.port,
+                s.path,
+                s.batch,
+                s.h2_fanout,
+                s.cache
             );
         }
         if c.cn_enabled {
-            println!("cn_split: enabled domains={} legs={}",
-                c.cn_domain_file, c.cn_upstreams.len());
+            println!(
+                "cn_split: enabled domains={} legs={}",
+                c.cn_domain_file,
+                c.cn_upstreams.len()
+            );
         }
-        println!("auth client_uuids={} ecs={} rate per_ip={}/{} global={}/{} domain={}/{}",
-            c.client_uuids.len(), c.ecs_enabled,
-            c.qps_per_ip, c.burst_per_ip,
-            c.qps_global, c.burst_global,
-            c.qps_domain, c.burst_domain);
+        println!(
+            "auth client_uuids={} ecs={} rate per_ip={}/{} global={}/{} domain={}/{}",
+            c.client_uuids.len(),
+            c.ecs_enabled,
+            c.qps_per_ip,
+            c.burst_per_ip,
+            c.qps_global,
+            c.burst_global,
+            c.qps_domain,
+            c.burst_domain
+        );
         println!("config OK");
         std::process::exit(0);
     }
@@ -170,13 +195,15 @@ async fn run(c: Cfg) {
         c.cache_ttl,
         c.cache_ttl_ignore,
     )));
-    let routing = RwLock::new(match app::Routing::build(&c, stats.clone(), cache.clone()) {
-        Ok(r) => Arc::new(r),
-        Err(e) => {
-            eprintln!("magdns: {e}");
-            std::process::exit(1);
-        }
-    });
+    let routing = RwLock::new(
+        match app::Routing::build(&c, stats.clone(), cache.clone()) {
+            Ok(r) => Arc::new(r),
+            Err(e) => {
+                eprintln!("magdns: {e}");
+                std::process::exit(1);
+            }
+        },
+    );
 
     // optional inbound standard DoH (443): same pipeline, UUID-gated
     let (doh_listener, doh_tls) = if c.listen_doh.is_empty() {
@@ -186,13 +213,14 @@ async fn run(c: Cfg) {
             eprintln!("magdns: bad listen.doh: {e}");
             std::process::exit(1);
         });
-        let tls = tlsconf::load_server_config(&c.cert_file, &c.key_file, &[b"h2", b"http/1.1"], false)
-            .map(Arc::new)
-            .map_err(|e| {
-                eprintln!("magdns: {e}");
-                std::process::exit(1);
-            })
-            .unwrap();
+        let tls =
+            tlsconf::load_server_config(&c.cert_file, &c.key_file, &[b"h2", b"http/1.1"], false)
+                .map(Arc::new)
+                .map_err(|e| {
+                    eprintln!("magdns: {e}");
+                    std::process::exit(1);
+                })
+                .unwrap();
         match app::dual_tcp_socket(addr, 256) {
             Ok(std_l) => match tokio::net::TcpListener::from_std(std_l) {
                 Ok(l) => (Some(l), Some(tls)),
@@ -287,7 +315,10 @@ async fn run(c: Cfg) {
         query_gate,
         server_tls_dot: RwLock::new(rustls_dot),
         server_tls_doh: RwLock::new(doh_tls.clone().unwrap_or_else(|| {
-            Arc::new(tlsconf::load_server_config(&c.cert_file, &c.key_file, &[], false).expect("doh tls"))
+            Arc::new(
+                tlsconf::load_server_config(&c.cert_file, &c.key_file, &[], false)
+                    .expect("doh tls"),
+            )
         })),
         server_tls_doq: RwLock::new(rustls_doq),
         doq_endpoint: RwLock::new(Some(doq_endpoint.clone())),

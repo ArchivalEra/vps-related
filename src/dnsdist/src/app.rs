@@ -54,7 +54,11 @@ pub struct Routing {
 }
 
 impl Routing {
-    pub fn build(cfg: &Cfg, stats: Arc<Stats>, cache: Arc<Mutex<MagCache>>) -> Result<Self, String> {
+    pub fn build(
+        cfg: &Cfg,
+        stats: Arc<Stats>,
+        cache: Arc<Mutex<MagCache>>,
+    ) -> Result<Self, String> {
         let chain = Chain::new(cfg, stats.clone(), cache.clone())?;
         #[cfg(feature = "up-udp")]
         let cn_pool = crate::cnpool::CnPool::new(cfg, stats.clone(), cache)?;
@@ -62,7 +66,11 @@ impl Routing {
             Some(r) => Some(crate::chains::Engine::build(r, cfg)?),
             None => None,
         };
-        Ok(Routing { chain, cn_pool, engine })
+        Ok(Routing {
+            chain,
+            cn_pool,
+            engine,
+        })
     }
 
     /// foreign-chain leg description for logs/--check parity
@@ -225,7 +233,6 @@ pub async fn handle_query(
             }
         }
     }
-
 
     // cache
     if cacheable {

@@ -139,20 +139,24 @@ impl DohUpstream {
     async fn send_batch(&self, batch: &mut Vec<Pending>, deadline: Instant) -> bool {
         loop {
             let refs: Vec<&[u8]> = batch.iter().map(|p| p.msg.as_slice()).collect();
-            let container =
-                match mgb1::encode(&refs) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        for p in batch.drain(..) {
-                            let _ = p.tx.send(Err(UpErr::Conn(format!("pack: {e}"))));
-                        }
-                        return false;
+            let container = match mgb1::encode(&refs) {
+                Ok(c) => c,
+                Err(e) => {
+                    for p in batch.drain(..) {
+                        let _ = p.tx.send(Err(UpErr::Conn(format!("pack: {e}"))));
                     }
-                };
+                    return false;
+                }
+            };
             // brotli is parsed in config but not shipped yet (TODO): raw until then
-            let want_gzip = self.compress == Compress::Gzip && !self.compress_off.load(Ordering::Relaxed);
+            let want_gzip =
+                self.compress == Compress::Gzip && !self.compress_off.load(Ordering::Relaxed);
             let gzipped = want_gzip && !container.is_empty();
-            let payload = if gzipped { gzip_compress(&container) } else { container };
+            let payload = if gzipped {
+                gzip_compress(&container)
+            } else {
+                container
+            };
             match self
                 .post(
                     &payload,
@@ -325,16 +329,31 @@ mod tests {
 
     #[test]
     fn construction_validates_and_configures() {
-        assert!(DohUpstream::new(&spec(0, false, Compress::None), Arc::new(crate::upstream::client_tls_config(&[]))).is_ok());
-        assert!(DohUpstream::new(&spec(8, true, Compress::Gzip), Arc::new(crate::upstream::client_tls_config(&[]))).is_ok());
+        assert!(DohUpstream::new(
+            &spec(0, false, Compress::None),
+            Arc::new(crate::upstream::client_tls_config(&[]))
+        )
+        .is_ok());
+        assert!(DohUpstream::new(
+            &spec(8, true, Compress::Gzip),
+            Arc::new(crate::upstream::client_tls_config(&[]))
+        )
+        .is_ok());
         // h2 fanout builds one client per slot
-        let fanned = DohUpstream::new(&spec(3, false, Compress::None), Arc::new(crate::upstream::client_tls_config(&[]))).unwrap();
+        let fanned = DohUpstream::new(
+            &spec(3, false, Compress::None),
+            Arc::new(crate::upstream::client_tls_config(&[])),
+        )
+        .unwrap();
         assert_eq!(fanned.clients.len(), 3);
         // uuid-header auth becomes the x-magdns-auth header
         assert_eq!(
-            DohUpstream::new(&spec(0, false, Compress::None), Arc::new(crate::upstream::client_tls_config(&[])))
-                .unwrap()
-                .auth_header,
+            DohUpstream::new(
+                &spec(0, false, Compress::None),
+                Arc::new(crate::upstream::client_tls_config(&[]))
+            )
+            .unwrap()
+            .auth_header,
             Some(("x-magdns-auth".into(), "test-uuid".into()))
         );
     }
@@ -352,19 +371,30 @@ mod tests {
         let refs: Vec<&[u8]> = msgs.iter().map(|m| m.as_slice()).collect();
         let raw = mgb1::encode(&refs).unwrap();
         let gz = gzip_compress(&raw);
-        assert!(gz.len() < raw.len() / 2, "gz={} raw={}", gz.len(), raw.len());
+        assert!(
+            gz.len() < raw.len() / 2,
+            "gz={} raw={}",
+            gz.len(),
+            raw.len()
+        );
         assert_eq!(gunzip(&gz).unwrap(), raw, "lossless round trip");
     }
 
     #[tokio::test]
     async fn batcher_attached_only_with_batch_flag() {
-        assert!(DohUpstream::new(&spec(0, true, Compress::Gzip), Arc::new(crate::upstream::client_tls_config(&[])))
-            .unwrap()
-            .batcher
-            .is_some());
-        assert!(DohUpstream::new(&spec(0, false, Compress::Gzip), Arc::new(crate::upstream::client_tls_config(&[])))
-            .unwrap()
-            .batcher
-            .is_none());
+        assert!(DohUpstream::new(
+            &spec(0, true, Compress::Gzip),
+            Arc::new(crate::upstream::client_tls_config(&[]))
+        )
+        .unwrap()
+        .batcher
+        .is_some());
+        assert!(DohUpstream::new(
+            &spec(0, false, Compress::Gzip),
+            Arc::new(crate::upstream::client_tls_config(&[]))
+        )
+        .unwrap()
+        .batcher
+        .is_none());
     }
 }

@@ -15,6 +15,12 @@ use crate::upstream::UpErr;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
 
+/// (receiver for this query, optional drain handed to the dispatcher)
+pub type BatchEnter = (
+    oneshot::Receiver<Result<Vec<u8>, UpErr>>,
+    Option<Vec<Pending>>,
+);
+
 /// AIMD bounds for the packer. Start small, grow to the fixed ceiling of 8.
 pub const BATCH_MIN: usize = 1;
 /// Hard per-container slot ceiling for this client (box allows up to 64).
@@ -51,13 +57,7 @@ impl Batcher {
     /// Enqueue this query. The caller that flips `dispatching` becomes the
     /// dispatcher and receives the first batch (older queries first, its own
     /// last). Everyone else just awaits their receiver.
-    pub fn enter(
-        &self,
-        msg: Vec<u8>,
-    ) -> (
-        oneshot::Receiver<Result<Vec<u8>, UpErr>>,
-        Option<Vec<Pending>>,
-    ) {
+    pub fn enter(&self, msg: Vec<u8>) -> BatchEnter {
         let (tx, rx) = oneshot::channel();
         let mut st = self.state.lock().unwrap();
         if st.dispatching {

@@ -122,8 +122,7 @@ impl DotUpstream {
         msgs: &[&[u8]],
         deadline: Instant,
     ) -> Result<Vec<Option<Vec<u8>>>, UpErr> {
-        let container =
-            mgb1::encode(msgs).map_err(|e| UpErr::Conn(format!("dot: pack: {e}")))?;
+        let container = mgb1::encode(msgs).map_err(|e| UpErr::Conn(format!("dot: pack: {e}")))?;
         let buf = self.exchange(&container, deadline).await?;
         if !mgb1::is_mgb1(&buf) {
             return Err(UpErr::Conn("dot: peer answered outside MGB1".into()));
@@ -139,9 +138,8 @@ impl DotUpstream {
         match self.slots(&refs, deadline).await {
             Ok(slots) => {
                 for (p, slot) in batch.drain(..).zip(slots) {
-                    let _ = p
-                        .tx
-                        .send(slot.ok_or_else(|| UpErr::Conn("batch: empty slot".into())));
+                    let _ =
+                        p.tx.send(slot.ok_or_else(|| UpErr::Conn("batch: empty slot".into())));
                 }
                 true
             }
@@ -247,7 +245,9 @@ impl DotUpstream {
         io_deadline(deadline, write_frame(s, &frame)).await?;
         let echo = io_deadline(deadline, read_frame(s)).await?;
         match echo {
-            Some(e) if mgb1::decode_handshake(&e) == Ok(Some(self.handshake_uuid.clone())) => Ok(()),
+            Some(e) if mgb1::decode_handshake(&e) == Ok(Some(self.handshake_uuid.clone())) => {
+                Ok(())
+            }
             _ => Err(UpErr::Conn("dot: handshake rejected".into())),
         }
     }
@@ -288,15 +288,30 @@ mod tests {
     #[test]
     fn wire_mode_follows_uuid_and_batch_flags() {
         let tls = Arc::new(crate::upstream::client_tls_config(&[b"dot"]));
-        assert!(!DotUpstream::new(&spec(None, false), tls.clone()).unwrap().mgb1_mode);
-        assert!(DotUpstream::new(&spec(None, true), tls.clone()).unwrap().mgb1_mode);
-        assert!(DotUpstream::new(&spec(Some("u"), false), tls.clone()).unwrap().mgb1_mode);
+        assert!(
+            !DotUpstream::new(&spec(None, false), tls.clone())
+                .unwrap()
+                .mgb1_mode
+        );
+        assert!(
+            DotUpstream::new(&spec(None, true), tls.clone())
+                .unwrap()
+                .mgb1_mode
+        );
+        assert!(
+            DotUpstream::new(&spec(Some("u"), false), tls.clone())
+                .unwrap()
+                .mgb1_mode
+        );
 
         let anon = DotUpstream::new(&spec(None, true), tls.clone()).unwrap();
         assert_eq!(anon.handshake_uuid, ANON_UUID, "anonymous fallback uuid");
         let named = DotUpstream::new(&spec(Some("secret-uuid"), true), tls.clone()).unwrap();
         assert_eq!(named.handshake_uuid, "secret-uuid");
         assert!(named.batcher.is_some(), "batch flag attaches a batcher");
-        assert!(DotUpstream::new(&spec(Some("u"), false), tls).unwrap().batcher.is_none());
+        assert!(DotUpstream::new(&spec(Some("u"), false), tls)
+            .unwrap()
+            .batcher
+            .is_none());
     }
 }

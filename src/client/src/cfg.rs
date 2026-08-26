@@ -191,7 +191,11 @@ fn split_url(raw: &str) -> Result<(String, String, u16, String), String> {
     let default_port = match scheme {
         "tls" | "quic" => 853u16,
         "https" => 443u16,
-        "http" => return Err(format!("server `{raw}`: plain http is not allowed, use https")),
+        "http" => {
+            return Err(format!(
+                "server `{raw}`: plain http is not allowed, use https"
+            ))
+        }
         other => {
             return Err(format!(
                 "server `{raw}`: unknown scheme `{other}` (tls|quic|https)"
@@ -211,9 +215,7 @@ fn split_url(raw: &str) -> Result<(String, String, u16, String), String> {
             .split_once(']')
             .ok_or_else(|| format!("server `{raw}`: unterminated [ipv6]"))?;
         let p = match tail.strip_prefix(':') {
-            Some(p) => p
-                .parse()
-                .map_err(|_| format!("server `{raw}`: bad port"))?,
+            Some(p) => p.parse().map_err(|_| format!("server `{raw}`: bad port"))?,
             None => default_port,
         };
         (h.to_string(), p)
@@ -221,8 +223,7 @@ fn split_url(raw: &str) -> Result<(String, String, u16, String), String> {
         match authority.rsplit_once(':') {
             Some((h, p)) if !h.contains(':') => (
                 h.to_string(),
-                p.parse()
-                    .map_err(|_| format!("server `{raw}`: bad port"))?,
+                p.parse().map_err(|_| format!("server `{raw}`: bad port"))?,
             ),
             _ => (authority.to_string(), default_port),
         }
@@ -287,9 +288,7 @@ fn build_server(js: &JsonServer, idx: usize) -> Result<ServerCfg, String> {
         (None, None) => None,
         (Some(kind), Some(env_name)) => {
             if kind != "uuid-header" {
-                return Err(format!(
-                    "{what}: unknown auth_kind `{kind}` (uuid-header)"
-                ));
+                return Err(format!("{what}: unknown auth_kind `{kind}` (uuid-header)"));
             }
             let key = std::env::var(env_name).map_err(|_| {
                 format!(
@@ -489,10 +488,18 @@ mod tests {
         assert_eq!(c.cache_ttl, Duration::from_secs(DEFAULT_CACHE_TTL_SECS));
         assert!(c.listen_udp.is_none(), "listeners off unless configured");
 
-        assert!(parse(r#"{"cache":{"bytes":1},"servers":[{"url":"https://a.test/dns-query"}]}"#)
-            .is_err());
-        assert!(parse(r#"{"servers":[]}"#).is_err(), "need at least one source");
+        assert!(
+            parse(r#"{"cache":{"bytes":1},"servers":[{"url":"https://a.test/dns-query"}]}"#)
+                .is_err()
+        );
+        assert!(
+            parse(r#"{"servers":[]}"#).is_err(),
+            "need at least one source"
+        );
         assert!(parse(r#"{}"#).is_err());
-        assert!(parse(r#"{"listen":{"udp":"not-an-addr"},"servers":[{"url":"https://a.test/dns-query"}]}"#).is_err());
+        assert!(parse(
+            r#"{"listen":{"udp":"not-an-addr"},"servers":[{"url":"https://a.test/dns-query"}]}"#
+        )
+        .is_err());
     }
 }

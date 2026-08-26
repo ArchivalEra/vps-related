@@ -36,7 +36,7 @@ impl std::error::Error for UpErr {}
 /// dispatcher); `query` is the per-query entry point that owns batching and
 /// the single-query formats.
 pub enum Transport {
-    Dot(dot::DotUpstream),
+    Dot(Box<dot::DotUpstream>),
     Doh(doh::DohUpstream),
     /// TODO(T-doq): quinn-based QUIC transport; parses in config today,
     /// answers a transport error so failover skips past it.
@@ -44,9 +44,15 @@ pub enum Transport {
 }
 
 impl Transport {
-    pub fn build(spec: &ServerCfg, dot_tls: Arc<rustls::ClientConfig>, doh_tls: Arc<rustls::ClientConfig>) -> Result<Transport, String> {
+    pub fn build(
+        spec: &ServerCfg,
+        dot_tls: Arc<rustls::ClientConfig>,
+        doh_tls: Arc<rustls::ClientConfig>,
+    ) -> Result<Transport, String> {
         match spec.proto {
-            Proto::Dot => Ok(Transport::Dot(dot::DotUpstream::new(spec, dot_tls)?)),
+            Proto::Dot => Ok(Transport::Dot(Box::new(dot::DotUpstream::new(
+                spec, dot_tls,
+            )?))),
             Proto::Doh => Ok(Transport::Doh(doh::DohUpstream::new(spec, doh_tls)?)),
             Proto::Doq => Ok(Transport::Doq(spec.clone())),
         }
@@ -120,7 +126,10 @@ impl Chain {
         }
 
         let n = self.sources.len();
-        let start = self.current.load(Ordering::Relaxed).min(n.saturating_sub(1));
+        let start = self
+            .current
+            .load(Ordering::Relaxed)
+            .min(n.saturating_sub(1));
         let deadline = Instant::now() + QUERY_TIMEOUT;
         for i in 0..n {
             let idx = (start + i) % n;
@@ -135,7 +144,10 @@ impl Chain {
                     return resp;
                 }
                 Ok(_) => {
-                    eprintln!("chain: {} returned a short body, skipping", self.sources[idx].describe());
+                    eprintln!(
+                        "chain: {} returned a short body, skipping",
+                        self.sources[idx].describe()
+                    );
                 }
                 Err(e) => {
                     eprintln!("chain: {}: {e}", self.sources[idx].describe());
@@ -156,7 +168,7 @@ impl Chain {
 /// tlsconf.rs. Pass an empty `alpn` for hyper-rustls legs.
 pub fn client_tls_config(alpn: &[&[u8]]) -> rustls::ClientConfig {
     let roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
     let mut conf = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -191,8 +203,20 @@ mod tests {
         };
         Chain {
             sources: vec![
-                Transport::Dot(dot::DotUpstream::new(&mk("tls://127.0.0.1:1"), Arc::new(client_tls_config(&[b"dot"]))).unwrap()),
-                Transport::Dot(dot::DotUpstream::new(&mk("tls://127.0.0.1:2"), Arc::new(client_tls_config(&[b"dot"]))).unwrap()),
+                Transport::Dot(Box::new(
+                    dot::DotUpstream::new(
+                        &mk("tls://127.0.0.1:1"),
+                        Arc::new(client_tls_config(&[b"dot"])),
+                    )
+                    .unwrap(),
+                )),
+                Transport::Dot(Box::new(
+                    dot::DotUpstream::new(
+                        &mk("tls://127.0.0.1:2"),
+                        Arc::new(client_tls_config(&[b"dot"])),
+                    )
+                    .unwrap(),
+                )),
             ],
             current: AtomicUsize::new(0),
             cache: Mutex::new(MagCache::new(65536, Duration::from_secs(300))),
@@ -215,8 +239,12 @@ mod tests {
 
     #[test]
     fn cache_key_ignores_the_requester_txid() {
-        let a = dnsmsg::parse_query(&[0, 1, 0x01, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1]);
-        let b = dnsmsg::parse_query(&[9, 9, 0x01, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1]);
+        let a = dnsmsg::parse_query(&[
+            0, 1, 0x01, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1,
+        ]);
+        let b = dnsmsg::parse_query(&[
+            9, 9, 0x01, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1,
+        ]);
         assert_eq!(
             a.as_ref().map(dnsmsg::cache_key),
             b.as_ref().map(dnsmsg::cache_key),

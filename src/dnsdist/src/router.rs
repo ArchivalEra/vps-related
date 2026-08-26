@@ -7,7 +7,6 @@
 // Route resolution is O(domain_labels): walk labels right-to-left through
 // a HashMap trie — no regex, no backtracking.
 use std::collections::HashMap;
-use std::sync::Arc;
 
 /// A named route with its own upstream chain and cache policy.
 pub struct Route {
@@ -48,9 +47,9 @@ pub struct Router {
 
 impl Router {
     pub fn new(routes: Vec<Route>) -> Self {
-        let mut root = TrieNode::new();
+        let root = TrieNode::new();
         // Insert each route's domain patterns; last-write-wins for overlapping
-        for (idx, _r) in routes.iter().enumerate() {
+        for _r in routes.iter() {
             // In production, these come from geosite.dat categories or config
             // For now we insert a wildcard at root level per route;
             // actual domain lists are populated by load_geosite() or add_domain()

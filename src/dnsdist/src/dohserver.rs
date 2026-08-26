@@ -10,7 +10,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 
 pub async fn run_listener(app: Arc<App>, listener: TcpListener) {
@@ -41,20 +41,15 @@ async fn serve_tls(app: &Arc<App>, tcp: TcpStream, peer_ip: std::net::IpAddr) {
         let g = app.server_tls_doh.read().unwrap();
         tokio_rustls::TlsAcceptor::from(g.clone())
     };
-    let tls = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        acceptor.accept(tcp),
-    )
-    .await
+    let tls = match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(tcp))
+        .await
     {
         Ok(Ok(s)) => s,
         _ => return,
     };
     let svc = service_fn(move |req| {
         let app = app.clone();
-        async move {
-            Ok::<_, std::convert::Infallible>(handle_http(app, req, peer_ip).await)
-        }
+        async move { Ok::<_, std::convert::Infallible>(handle_http(app, req, peer_ip).await) }
     });
     let _ = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
         .serve_connection_with_upgrades(TokioIo::new(tls), svc)
@@ -78,7 +73,7 @@ fn wire_response(status: u16, ctype: &str, wire: Vec<u8>) -> hyper::Response<Ful
 
 async fn handle_http(
     app: Arc<App>,
-    mut req: hyper::Request<Incoming>,
+    req: hyper::Request<Incoming>,
     peer_ip: std::net::IpAddr,
 ) -> hyper::Response<Full<Bytes>> {
     let path = req.uri().path().to_string();
@@ -110,9 +105,7 @@ async fn handle_http(
                 Err(_) => return text_response(400, "bad body"),
             };
             if is_batch {
-                return match crate::ingress::run_container(&app, "doh", peer_ip, &body)
-                    .await
-                {
+                return match crate::ingress::run_container(&app, "doh", peer_ip, &body).await {
                     Ok(packed) => wire_response(200, "application/mgb1+v1", packed),
                     Err(_) => text_response(400, "bad container"),
                 };

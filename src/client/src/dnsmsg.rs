@@ -359,6 +359,9 @@ mod tests {
 
     #[test]
     fn qname_printable() {
-        assert_eq!(qname_str(b"\x03www\x07example\x03com\x00"), "www.example.com.");
+        assert_eq!(
+            qname_str(b"\x03www\x07example\x03com\x00"),
+            "www.example.com."
+        );
     }
 }

@@ -62,9 +62,7 @@ pub async fn doh_loop(chain: Arc<Chain>, listener: TcpListener) -> std::io::Resu
                 tokio::spawn(async move {
                     let svc = service_fn(move |req| {
                         let chain = chain.clone();
-                        async move {
-                            Ok::<_, std::convert::Infallible>(handle_http(chain, req).await)
-                        }
+                        async move { Ok::<_, std::convert::Infallible>(handle_http(chain, req).await) }
                     });
                     let _ = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
                         .serve_connection_with_upgrades(TokioIo::new(tcp), svc)
@@ -219,8 +217,8 @@ mod tests {
 
     #[tokio::test]
     async fn udp_loop_answers_servfail_when_all_sources_fail() {
-        use crate::cfg::{Compress, Proto, ServerCfg};
         use crate::cache::MagCache;
+        use crate::cfg::{Compress, Proto, ServerCfg};
 
         let spec = ServerCfg {
             name: "dead".into(),
@@ -236,9 +234,9 @@ mod tests {
         };
         let dot_tls = Arc::new(crate::upstream::client_tls_config(&[b"dot"]));
         let chain = Arc::new(crate::upstream::Chain::from_sources(
-            vec![crate::upstream::Transport::Dot(
+            vec![crate::upstream::Transport::Dot(Box::new(
                 crate::dot::DotUpstream::new(&spec, dot_tls).unwrap(),
-            )],
+            ))],
             MagCache::new(65536, Duration::from_secs(300)),
         ));
 
@@ -255,14 +253,15 @@ mod tests {
         let bound = srv.local_addr().unwrap();
         let server = tokio::spawn(udp_loop(chain, srv));
 
-        let q = [0x11u8, 0x22, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1];
+        let q = [
+            0x11u8, 0x22, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0, 1,
+        ];
         cli.send_to(&q, bound).await.unwrap();
         let mut buf = [0u8; 1500];
-        let (n, _) =
-            tokio::time::timeout(Duration::from_secs(10), cli.recv_from(&mut buf))
-                .await
-                .expect("answer within deadline")
-                .expect("recv ok");
+        let (n, _) = tokio::time::timeout(Duration::from_secs(10), cli.recv_from(&mut buf))
+            .await
+            .expect("answer within deadline")
+            .expect("recv ok");
         assert_eq!(&buf[..2], &[0x11, 0x22], "requester txid patched back");
         assert_eq!(buf[3] & 0x0F, 2, "SERVFAIL after all sources fail");
         assert!(n > 12, "question section echoed");

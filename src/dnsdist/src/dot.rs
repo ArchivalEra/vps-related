@@ -193,25 +193,23 @@ impl DotPool {
     }
 
     async fn acquire(&self) -> mpsc::Sender<Job> {
-        loop {
-            {
-                let mut g = self.conn.lock().unwrap();
-                if let Some(s) = g.as_ref() {
-                    if !s.is_closed() {
-                        return s.clone();
-                    }
+        {
+            let mut g = self.conn.lock().unwrap();
+            if let Some(s) = g.as_ref() {
+                if !s.is_closed() {
+                    return s.clone();
                 }
-                let (tx, rx) = mpsc::channel::<Job>(512);
-                let spec = self.spec.clone();
-                let cfg = self.client_cfg.clone();
-                let name = self.server_name.clone();
-                let allow = self.allow_private;
-                tokio::spawn(async move {
-                    run_conn(spec, cfg, name, allow, rx).await;
-                });
-                *g = Some(tx.clone());
-                return tx;
             }
+            let (tx, rx) = mpsc::channel::<Job>(512);
+            let spec = self.spec.clone();
+            let cfg = self.client_cfg.clone();
+            let name = self.server_name.clone();
+            let allow = self.allow_private;
+            tokio::spawn(async move {
+                run_conn(spec, cfg, name, allow, rx).await;
+            });
+            *g = Some(tx.clone());
+            tx
         }
     }
 }
