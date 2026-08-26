@@ -41,20 +41,41 @@ pub async fn write_reply<W: AsyncWrite + Unpin>(w: &mut W, r: &Reply) -> std::io
     }
 }
 
+/// The hot-reloadable face of the system: everything that a validated
+/// config.json can rebuild from scratch. Swapped atomically on reload;
+/// in-flight queries keep the old generation alive via their Arc snapshot.
+pub struct Routing {
+    pub chain: Chain,
+    #[cfg(feature = "up-udp")]
+    pub cn_pool: Option<crate::cnpool::CnPool>,
+}
+
+impl Routing {
+    pub fn build(cfg: &Cfg, stats: Arc<Stats>, cache: Arc<Mutex<MagCache>>) -> Result<Self, String> {
+        let chain = Chain::new(cfg, stats.clone(), cache.clone())?;
+        #[cfg(feature = "up-udp")]
+        let cn_pool = crate::cnpool::CnPool::new(cfg, stats, cache)?;
+        Ok(Routing { chain, cn_pool })
+    }
+
+    /// foreign-chain leg description for logs/--check parity
+    pub fn sources_desc(&self) -> Vec<String> {
+        self.chain.sources_desc()
+    }
+}
+
 pub struct App {
     pub cfg: Cfg,
     pub stats: Arc<Stats>,
     pub cache: Arc<Mutex<MagCache>>,
-    pub chain: Chain,
+    /// current routing generation; readers take an Arc snapshot per query
+    pub routing: RwLock<Arc<Routing>>,
     /// CN domain router: match qname → route to domestic or foreign chain
     pub router: RwLock<Option<Router>>,
     /// Layered rate limiting: per-IP, per-domain (lowercase qname), global QPS
     pub rate_limiter: crate::ratelimit::RateLimiter,
     pub domain_limiter: crate::ratelimit::KeyedLimiter<Vec<u8>>,
     pub global_limiter: crate::ratelimit::GlobalLimiter,
-    /// domestic legs for split routing; None = no `cn_upstream` configured
-    #[cfg(feature = "up-udp")]
-    pub cn_pool: Option<crate::cnpool::CnPool>,
     pub query_gate: std::sync::Arc<tokio::sync::Semaphore>,
     pub server_tls_dot: RwLock<Arc<rustls::ServerConfig>>,
     pub server_tls_doq: RwLock<Arc<rustls::ServerConfig>>,
@@ -87,6 +108,9 @@ pub async fn handle_query(
     client_ip: std::net::IpAddr,
 ) -> Reply {
     let t0 = Instant::now();
+    // one routing-generation snapshot for the whole query lifetime; a
+    // concurrent reload swaps the pointer but this query keeps its world
+    let routing = Arc::clone(&*app.routing.read().unwrap());
     match transport {
         "dot" => Stats::bump(&app.stats.in_dot),
         "doq" => Stats::bump(&app.stats.in_doq),
@@ -204,8 +228,11 @@ pub async fn handle_query(
     // falls through to the foreign chain instead of guessing a resolver.
     if is_cn {
         #[cfg(feature = "up-udp")]
-        if let Some(pool) = app.cn_pool.as_ref() {
-            return match pool.resolve(&upstream_query, wants_ecs, deadline).await {
+        if let Some(pool) = routing.cn_pool.as_ref() {
+            return match pool
+                .resolve(&upstream_query, wants_ecs, deadline, Some(&key))
+                .await
+            {
                 Ok(mut r) => {
                     dnsmsg::patch_id(&mut r, &id);
                     if app.cfg.log_queries {
@@ -228,7 +255,7 @@ pub async fn handle_query(
         }
     }
 
-    let result = app
+    let result = routing
         .chain
         .resolve(key.clone(), cacheable, wants_ecs, deadline, || {
             upstream_query.clone()
