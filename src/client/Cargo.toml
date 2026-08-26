@@ -1,0 +1,22 @@
+[package]
+name = "magdns-client"
+version = "0.1.0"
+edition = "2021"
+description = "Local magdns stub: standard DNS in (UDP/TCP/DoH), magazine cache, MGB1 batched DoT/DoH out with ordered source failover"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "io-util", "signal", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+mgb1 = { path = "../mgb1" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std", "log"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+webpki-roots = "0.26"
+hyper = { version = "1", default-features = false, features = ["client", "server", "http1", "http2"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["ring", "http1", "http2", "logging", "tls12", "webpki-tokio"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "tokio", "http1", "http2", "server-auto"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

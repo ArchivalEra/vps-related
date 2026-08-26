@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["dnsdist", "mgb1"]
-# client joins here when its skeleton lands
+members = ["dnsdist", "mgb1", "client"]
 
 [workspace.package]
 edition = "2021"
