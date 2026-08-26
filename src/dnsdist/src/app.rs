@@ -48,14 +48,21 @@ pub struct Routing {
     pub chain: Chain,
     #[cfg(feature = "up-udp")]
     pub cn_pool: Option<crate::cnpool::CnPool>,
+    /// generalized split/chain engine — owns ALL domain decisions when the
+    /// config declares a `routing` section; None = legacy dual-track
+    pub engine: Option<crate::chains::Engine>,
 }
 
 impl Routing {
     pub fn build(cfg: &Cfg, stats: Arc<Stats>, cache: Arc<Mutex<MagCache>>) -> Result<Self, String> {
         let chain = Chain::new(cfg, stats.clone(), cache.clone())?;
         #[cfg(feature = "up-udp")]
-        let cn_pool = crate::cnpool::CnPool::new(cfg, stats, cache)?;
-        Ok(Routing { chain, cn_pool })
+        let cn_pool = crate::cnpool::CnPool::new(cfg, stats.clone(), cache)?;
+        let engine = match &cfg.routing {
+            Some(r) => Some(crate::chains::Engine::build(r, cfg)?),
+            None => None,
+        };
+        Ok(Routing { chain, cn_pool, engine })
     }
 
     /// foreign-chain leg description for logs/--check parity
@@ -189,6 +196,36 @@ pub async fn handle_query(
                 (k, false, q.clone(), String::new(), 0, false, false)
             }
         };
+
+    // generalized splits: when a routing section exists, the chain engine
+    // owns ALL domain decisions and the legacy dual-track below is bypassed.
+    if let Some(engine) = routing.engine.as_ref() {
+        let qname_lower = qname.to_lowercase();
+        match engine
+            .resolve(app, &qname_lower, &upstream_query, client_ip, deadline)
+            .await
+        {
+            Ok(mut v) => {
+                dnsmsg::patch_id(&mut v, &id);
+                if app.cfg.log_queries {
+                    eprintln!(
+                        "Q {} {} {} chain rcode={} {}us",
+                        transport,
+                        qname,
+                        qtype,
+                        dnsmsg::rcode(&v),
+                        t0.elapsed().as_micros()
+                    );
+                }
+                return Reply::Owned(v);
+            }
+            Err(_) => {
+                Stats::bump(&app.stats.servfail);
+                return Reply::Owned(dnsmsg::make_servfail(&q));
+            }
+        }
+    }
+
 
     // cache
     if cacheable {

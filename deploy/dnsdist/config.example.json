@@ -29,6 +29,38 @@
       { "url": "udp://119.29.29.29:53", "cache": false }
     ]
   },
+  // generalized routing (optional): declare this section and the chain
+  // engine owns ALL domain decisions — cn_split/foreign above are ignored.
+  "routing": {
+    "default_chain": "foreign-main",
+    "chains": {
+      "cn-fast": [
+        { "mode": "balance", "members": [
+            { "url": "udp://223.5.5.5:53" },
+            { "url": "udp://119.29.29.29:53" }
+        ] },
+        { "mode": "priority", "members": [
+            { "url": "tls://dot.pub:853" }
+        ] }
+      ],
+      "foreign-main": [
+        { "mode": "priority", "members": [
+            { "url": "https://maker-a.isui.ren/dns-query", "h2": 8, "batch": true,
+              "auth_kind": "token", "auth_key_env": "MAKER_A_TOKEN" }
+        ] },
+        { "mode": "balance", "members": [
+            { "url": "https://dns9.quad9.net/dns-query", "noecs": true, "h2": 4 },
+            { "url": "https://unfiltered.adguard-dns.com/dns-query", "h2": 4 }
+        ] }
+      ]
+    },
+    "splits": [
+      { "name": "cn", "domains_file": "/etc/magdns/accelerated-domains.china.conf",
+        "chain": "cn-fast" },
+      { "name": "fr-border", "domains": ["*.fr"], "source_subnets": ["82.64.0.0/14"],
+        "chain": "foreign-main" }
+    ]
+  },
   "rate_limit": { "per_ip_qps": 50, "per_ip_burst": 100,
                   "domain_qps": 100, "domain_burst": 200,
                   "global_qps": 5000, "global_burst": 10000,

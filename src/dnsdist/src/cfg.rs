@@ -100,6 +100,7 @@ pub struct Cfg {
     pub cn_enabled: bool,
     pub cn_domain_file: String,
     pub cn_upstreams: Vec<SourceSpec>,
+    pub routing: Option<RoutingCfg>,
     pub query_timeout_ms: u64,
     pub attempt_timeout_ms: u64,
     pub idle_timeout_ms: u64,
@@ -146,6 +147,7 @@ impl Default for Cfg {
             cn_enabled: false,
             cn_domain_file: String::new(),
             cn_upstreams: Vec::new(),
+            routing: None,
             query_timeout_ms: 500,
             attempt_timeout_ms: 200,
             idle_timeout_ms: 30_000,
@@ -190,6 +192,8 @@ struct JsonConfig {
     #[serde(default)]
     foreign: Option<JsonForeign>,
     #[serde(default)]
+    routing: Option<RoutingCfg>,
+    #[serde(default)]
     cn_split: Option<JsonCnSplit>,
     #[serde(default)]
     rate_limit: BTreeMap<String, serde_json::Value>,
@@ -231,21 +235,21 @@ struct JsonCnSplit {
     upstreams: Option<Vec<JsonUpstream>>,
 }
 
-#[derive(serde::Deserialize)]
-struct JsonUpstream {
-    url: String,
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct JsonUpstream {
+    pub url: String,
     #[serde(default)]
-    auth_kind: Option<String>,
+    pub auth_kind: Option<String>,
     #[serde(default)]
-    auth_key_env: Option<String>,
+    pub auth_key_env: Option<String>,
     #[serde(default)]
-    h2: Option<usize>,
+    pub h2: Option<usize>,
     #[serde(default = "d_false")]
-    batch: bool,
+    pub batch: bool,
     #[serde(default = "d_false")]
-    noecs: bool,
+    pub noecs: bool,
     #[serde(default = "d_true")]
-    cache: bool,
+    pub cache: bool,
 }
 
 // small typed getters over the Value maps with friendly errors
@@ -415,6 +419,7 @@ pub fn parse(text: &str) -> Result<Cfg, String> {
     if j.foreign.is_none() {
         c.foreign_enabled = false;
     }
+    c.routing = j.routing.clone();
     if let Some(f) = j.foreign {
         c.foreign_enabled = f.enabled;
         c.spread_upstreams = f.spread;
@@ -748,4 +753,48 @@ fn comments_strip_without_harming_urls() {
     assert!(c.cn_enabled);
     assert_eq!(c.cn_upstreams[0].raw, "udp://223.5.5.5:53");
     assert!(!c.foreign_enabled);
+}
+
+// ---- routing: chains of groups + named splits (the generalized model)
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RoutingCfg {
+    #[serde(default = "default_chain_name")]
+    pub default_chain: String,
+    #[serde(default)]
+    pub chains: BTreeMap<String, Vec<JsonChainGroup>>,
+    #[serde(default)]
+    pub splits: Vec<JsonSplit>,
+}
+fn default_chain_name() -> String {
+    "main".into()
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct JsonChainGroup {
+    /// balance = round-robin across members; priority = first alive wins.
+    /// On member failure the WHOLE group is skipped (no intra-group retry).
+    #[serde(default = "balance_mode")]
+    pub mode: String,
+    pub members: Vec<JsonUpstream>,
+}
+fn balance_mode() -> String {
+    "balance".into()
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct JsonSplit {
+    pub name: String,
+    #[serde(default)]
+    pub domains_file: Option<String>,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default)]
+    pub source_subnets: Vec<String>,
+    pub chain: String,
+}
+
+/// Convenience alias used by the chain-group engine builder.
+pub fn spec_from_member(ju: &JsonUpstream) -> Result<SourceSpec, String> {
+    build_spec(ju, "chain member")
 }
