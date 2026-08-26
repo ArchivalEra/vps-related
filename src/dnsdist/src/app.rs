@@ -78,6 +78,7 @@ pub struct App {
     pub global_limiter: crate::ratelimit::GlobalLimiter,
     pub query_gate: std::sync::Arc<tokio::sync::Semaphore>,
     pub server_tls_dot: RwLock<Arc<rustls::ServerConfig>>,
+    pub server_tls_doh: RwLock<Arc<rustls::ServerConfig>>,
     pub server_tls_doq: RwLock<Arc<rustls::ServerConfig>>,
     pub doq_endpoint: RwLock<Option<quinn::Endpoint>>,
 }

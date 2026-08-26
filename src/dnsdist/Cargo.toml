@@ -10,7 +10,9 @@ default = ["up-tls", "up-quic", "up-doh", "up-udp"]
 # upstream transports; listeners (DoT/DoQ) are always built
 up-tls = []
 up-quic = []
-up-doh = ["dep:hyper", "dep:hyper-util", "dep:http", "dep:http-body-util", "dep:bytes", "dep:tower-service", "dep:hyper-rustls", "dep:flate2"]
+up-doh = ["dep:hyper", "dep:hyper-util", "dep:http", "dep:http-body-util", "dep:bytes", "dep:tower-service", "dep:hyper-rustls", "dep:flate2", "serve-doh"]
+# inbound standard DoH (443) with MGB1 batch support
+serve-doh = []
 up-udp = []
 
 [dependencies]
@@ -24,14 +26,15 @@ rustls-pemfile = "2"
 webpki-roots = "0.26"
 socket2 = "0.5"
 ring = "0.17"
-hyper = { version = "1", default-features = false, optional = true, features = ["client", "http1", "http2"] }
+hyper = { version = "1", default-features = false, optional = true, features = ["client", "server", "http1", "http2"] }
 hyper-rustls = { version = "0.27", default-features = false, optional = true, features = ["ring", "http1", "http2", "logging", "tls12", "webpki-tokio"] }
-hyper-util = { version = "0.1", default-features = false, optional = true, features = ["client-legacy", "tokio", "http1", "http2"] }
+hyper-util = { version = "0.1", default-features = false, optional = true, features = ["client-legacy", "tokio", "http1", "http2", "server-auto"] }
 http = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
 tower-service = { version = "0.3", optional = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+mgb1 = { path = "../mgb1" }
 
 [profile.release]
 lto = "thin"
