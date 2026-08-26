@@ -26,6 +26,8 @@
 //                   "max_concurrent": 1024 },
 //   "timeouts_ms": { "query": 500, "attempt": 200, "idle": 30000 },
 //   "probe_interval_s": 10, "stale_on_failure": true, "hot_reload": false,
+//   "overrides": [ { "match": "openai.com", "A": ["1.2.3.4"] },
+//                  { "match": "ads.example", "block": true } ],
 //   "allow_private_upstream": false, "verbose": false, "log_queries": false
 // }
 //
@@ -100,6 +102,8 @@ pub struct Cfg {
     pub cn_enabled: bool,
     pub cn_domain_file: String,
     pub cn_upstreams: Vec<SourceSpec>,
+    /// pin/block table applied before cache and splits (T8)
+    pub overrides: Vec<JsonOverride>,
     pub routing: Option<RoutingCfg>,
     pub query_timeout_ms: u64,
     pub attempt_timeout_ms: u64,
@@ -147,6 +151,7 @@ impl Default for Cfg {
             cn_enabled: false,
             cn_domain_file: String::new(),
             cn_upstreams: Vec::new(),
+            overrides: Vec::new(),
             routing: None,
             query_timeout_ms: 500,
             attempt_timeout_ms: 200,
@@ -211,6 +216,22 @@ struct JsonConfig {
     verbose: bool,
     #[serde(default)]
     log_queries: bool,
+    #[serde(default)]
+    overrides: Vec<JsonOverride>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct JsonOverride {
+    /// exact name or a registrable suffix ("openai.com" covers subdomains)
+    #[serde(rename = "match")]
+    pub pattern: String,
+    /// empty NOERROR answer (ad-block semantics)
+    #[serde(default = "d_false")]
+    pub block: bool,
+    #[serde(default)]
+    pub a: Vec<String>,
+    #[serde(default)]
+    pub aaaa: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -432,6 +453,7 @@ pub fn parse(text: &str) -> Result<Cfg, String> {
         c.foreign_enabled = false;
     }
     c.routing = j.routing.clone();
+    c.overrides = j.overrides;
     if let Some(f) = j.foreign {
         c.foreign_enabled = f.enabled;
         c.spread_upstreams = f.spread;
