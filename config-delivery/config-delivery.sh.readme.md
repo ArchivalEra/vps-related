@@ -61,6 +61,15 @@ wget --no-check-certificate -O config-client.json https://localhost:443/<8-char-
 
 Run `config-delivery.sh --help` for the same flag summary at the terminal.
 
+## Python version (config-delivery.py)
+
+`config-delivery.py` is a 1:1 flag-compatible port of this script with **zero
+external dependencies**: no dufs, no wget — the HTTP server is Python stdlib
+(`http.server` + `ssl`, HTTP/1.1 only) and link verification uses `urllib`.
+Requires only python3 (3.8+) and `openssl` for the self-signed fallback cert.
+Every flag (`--port/--ttl/--hold/--host/--v4/--v6/--cert/--key/--argo`) behaves
+identically; see `config-delivery.py --help`.
+
 ## Requirements
 
 - **dufs** — the script resolves the binary from `$DUFS_BIN` (env), falling back to
