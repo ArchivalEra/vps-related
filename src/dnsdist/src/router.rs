@@ -101,6 +101,28 @@ impl Router {
         best_match.or(Some(self.default_route_idx))
     }
 
+    /// Trie membership WITHOUT the default-route fallback: true only when
+    /// the walk actually hits a node carrying a route index. This is what
+    /// split matching must use — `resolve()` intentionally falls back to
+    /// the default route and therefore matches everything.
+    pub fn contains(&self, qname: &str) -> bool {
+        let mut labels: Vec<&str> = qname.split('.').collect();
+        labels.reverse();
+        let mut node = &self.root;
+        for label in &labels {
+            match node.children.get(*label) {
+                Some(child) => {
+                    if child.route_idx.is_some() {
+                        return true;
+                    }
+                    node = child;
+                }
+                None => return false,
+            }
+        }
+        false
+    }
+
     /// Load geosite.dat category names into the trie.
     /// The .dat file is a protobuf-encoded trie; for now we support
     /// pre-extracted text lists (one domain per line, comments with #).

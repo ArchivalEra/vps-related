@@ -87,12 +87,19 @@ pub fn encode(slots: &[&[u8]]) -> Result<Vec<u8>, Error> {
 
 /// Response-side variant: `None` slots encode as zero-length (that query
 /// failed alone) instead of failing the whole container.
-pub fn encode_slots<'a>(slots: impl IntoIterator<Item = Option<&'a [u8]>>) -> Result<Vec<u8>, Error> {
+pub fn encode_slots<'a>(
+    slots: impl IntoIterator<Item = Option<&'a [u8]>>,
+) -> Result<Vec<u8>, Error> {
     let slots: Vec<Option<&[u8]>> = slots.into_iter().collect();
     if slots.len() > MAX_SLOTS {
         return Err(Error::BadCount(slots.len()));
     }
-    let mut out = Vec::with_capacity(8 + slots.iter().map(|s| s.map_or(2, |s| s.len() + 2)).sum::<usize>());
+    let mut out = Vec::with_capacity(
+        8 + slots
+            .iter()
+            .map(|s| s.map_or(2, |s| s.len() + 2))
+            .sum::<usize>(),
+    );
     out.extend_from_slice(&MAGIC.to_be_bytes());
     out.extend_from_slice(&0u16.to_be_bytes());
     out.extend_from_slice(&(slots.len() as u16).to_be_bytes());
@@ -100,7 +107,11 @@ pub fn encode_slots<'a>(slots: impl IntoIterator<Item = Option<&'a [u8]>>) -> Re
         match s {
             Some(w) => {
                 if w.len() < MIN_WIRE || w.len() > MAX_WIRE {
-                    continue; // degrade to an empty slot, keep the batch alive
+                    // degrade to an empty slot IN PLACE — skipping the length
+                    // prefix entirely would shift every later slot forward and
+                    // cross-contaminate answers between different queries
+                    out.extend_from_slice(&0u16.to_be_bytes());
+                    continue;
                 }
                 out.extend_from_slice(&(w.len() as u16).to_be_bytes());
                 out.extend_from_slice(w);
@@ -135,7 +146,7 @@ pub fn decode(buf: &[u8]) -> Result<Vec<Option<Vec<u8>>>, Error> {
         }
         let len = u16::from_be_bytes([buf[off], buf[off + 1]]) as usize;
         off += 2;
-        if len == 0 || len < MIN_WIRE || len > MAX_WIRE || off + len > buf.len() {
+        if len == 0 || !(MIN_WIRE..=MAX_WIRE).contains(&len) || off + len > buf.len() {
             continue;
         }
         *slot = Some(buf[off..off + len].to_vec());
@@ -186,10 +197,8 @@ pub fn decode_handshake(buf: &[u8]) -> Result<Option<String>, Error> {
         return Err(Error::TooShort);
     }
     let ulen = u16::from_be_bytes([buf[8], buf[9]]) as usize;
-    let uuid = buf
-        .get(10..10 + ulen)
-        .ok_or(Error::Truncated)?;
+    let uuid = buf.get(10..10 + ulen).ok_or(Error::Truncated)?;
     String::from_utf8(uuid.to_vec())
         .map(Some)
-        .map_err(|_| Error::Truncated.into())
+        .map_err(|_| Error::Truncated)
 }
