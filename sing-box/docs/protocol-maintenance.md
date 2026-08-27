@@ -33,6 +33,9 @@
 | 1.14 | missing domain_resolver is enforced | client route | [verified]: requires `route.default_domain_resolver` |
 | 1.14 | **wireguard outbound removed** → endpoint form | client wg | [verified] FATAL `outbounds[].server unknown field`; schema confirms endpoint |
 | 1.14 | reality client must set `utls.enabled:true` explicitly | client vless | [verified] FATAL `uTLS is required by reality client` |
+| 1.14 | tuic `heartbeat: "10s"` (QUIC NAT keep-alive) | server tuic + client `convert_tuic` | [verified] valid on both sides via `check` |
+| 1.14 | hysteria2 `obfs: { type: salamander, password }` (QUIC DPI padding) | server `render_hysteria2` + client `convert_hy2` | [verified] valid via `check` |
+| 1.14 | shadowsocks `multiplex: { enabled, padding }` for H2 multiplex (no `protocol` on inbound) | server `render_shadowsocks` + client `convert_ss` | [verified] inbound `{enabled,padding}` only; outbound also has `protocol: h2mux` |
 | 1.14 | `tls.acme` inline → `certificate_providers` | server (no client impact) | verified by sub-agent |
 | 1.14 | hy2 adds `disable_chrome_parrot` (default false = Chrome fingerprint) | client hy2 | verified by sub-agent |
 | 1.14 | naiveproxy → v150 (fields unchanged) | client naive | verified by sub-agent |
