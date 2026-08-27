@@ -136,7 +136,10 @@ impl Routing {
 }
 
 pub struct App {
-    pub cfg: Cfg,
+    /// startup config plus the latest hot-reloaded values; behind RwLock so
+    /// SIGHUP can publish fresh client_uuids / flags without a restart.
+    /// Per-query readers take one short read — this is not a hot path lock.
+    pub cfg: RwLock<Cfg>,
     pub stats: Arc<Stats>,
     pub cache: Arc<Mutex<MagCache>>,
     /// current routing generation; readers take an Arc snapshot per query
@@ -200,7 +203,7 @@ pub async fn handle_query(
                     };
                     let mut a = answer;
                     dnsmsg::patch_id(&mut a, &[q[0], q[1]]);
-                    if app.cfg.log_queries {
+                    if app.cfg.read().unwrap().log_queries {
                         eprintln!("Q {transport} {} override hit", o.suffix);
                     }
                     return Reply::Owned(a);
@@ -232,7 +235,7 @@ pub async fn handle_query(
         return Reply::Owned(Vec::new());
     }
     let id = [q[0], q[1]];
-    let deadline = Instant::now() + Duration::from_millis(app.cfg.query_timeout_ms);
+    let deadline = Instant::now() + Duration::from_millis(app.cfg.read().unwrap().query_timeout_ms);
     let cluster = crate::cache::GeoCluster::from_client_ip(client_ip);
 
     let (key, cacheable, upstream_query, qname, qtype, is_cn, wants_ecs) =
@@ -261,7 +264,7 @@ pub async fn handle_query(
                 // such queries outright. ecs_source_ok() is the full ban-list;
                 // household-WiFi clients simply resolve without ECS.
                 let mut uq = dnsmsg::build_query(&pq);
-                if app.cfg.ecs_enabled && dnsmsg::ecs_source_ok(client_ip) {
+                if app.cfg.read().unwrap().ecs_enabled && dnsmsg::ecs_source_ok(client_ip) {
                     dnsmsg::append_ecs_to_query(&mut uq, &dnsmsg::ecs_option_bytes(client_ip, 24));
                 }
                 // split routing: check router for CN domain classification
@@ -275,7 +278,7 @@ pub async fn handle_query(
                         None => false,
                     }
                 };
-                let wants = app.cfg.ecs_enabled && dnsmsg::ecs_source_ok(client_ip);
+                let wants = app.cfg.read().unwrap().ecs_enabled && dnsmsg::ecs_source_ok(client_ip);
                 (key, !cn, uq, n, t, cn, wants)
             }
             None => {
@@ -296,7 +299,7 @@ pub async fn handle_query(
         {
             Ok(mut v) => {
                 dnsmsg::patch_id(&mut v, &id);
-                if app.cfg.log_queries {
+                if app.cfg.read().unwrap().log_queries {
                     eprintln!(
                         "Q {} {} {} chain rcode={} {}us",
                         transport,
@@ -319,7 +322,7 @@ pub async fn handle_query(
     if cacheable {
         match app.cache.lock().unwrap().get(&key) {
             Some(crate::cache::Hit::Shared(body)) => {
-                if app.cfg.log_queries {
+                if app.cfg.read().unwrap().log_queries {
                     eprintln!(
                         "Q {} {} {} hit0 rcode={} {}us",
                         transport,
@@ -333,7 +336,7 @@ pub async fn handle_query(
             }
             Some(crate::cache::Hit::Owned(mut m)) => {
                 dnsmsg::patch_id(&mut m, &id);
-                if app.cfg.log_queries {
+                if app.cfg.read().unwrap().log_queries {
                     eprintln!(
                         "Q {} {} {} hit rcode={} {}us",
                         transport,
@@ -361,7 +364,7 @@ pub async fn handle_query(
             {
                 Ok(mut r) => {
                     dnsmsg::patch_id(&mut r, &id);
-                    if app.cfg.log_queries {
+                    if app.cfg.read().unwrap().log_queries {
                         eprintln!(
                             "Q {} {} {} CN rcode={} {}us",
                             transport,
@@ -390,7 +393,7 @@ pub async fn handle_query(
 
     match result {
         Ok(crate::upstream::Out::Shared(body)) => {
-            if app.cfg.log_queries {
+            if app.cfg.read().unwrap().log_queries {
                 eprintln!(
                     "Q {} {} {} miss0 rcode={} {}us",
                     transport,
@@ -404,7 +407,7 @@ pub async fn handle_query(
         }
         Ok(crate::upstream::Out::Owned(mut r)) => {
             dnsmsg::patch_id(&mut r, &id);
-            if app.cfg.log_queries {
+            if app.cfg.read().unwrap().log_queries {
                 eprintln!(
                     "Q {} {} {} miss rcode={} {}us",
                     transport,
