@@ -39,6 +39,7 @@ bash gen-client.sh --from-server /path/config-server.json \
 
 - Single input: reads only the server config.json; no intermediate files.
 - Never probes for IPs: `--addr` is user-specified (domain / IPv4 / IPv6); if omitted, prompts interactively.
+- Hardening passthrough: hysteria2 `obfs.salamander` and tuic `heartbeat: 10s` are carried from server → client; shadowsocks `multiplex: { enabled, padding }` is carried as `enabled+padding` (1.14 inbound has no `protocol` field). All verified against `sing-box check` (1.14.0-beta.14, SINGBOX_TAG).
 - `--insecure`: add for self-signed certs, not for real certs.
 - ECH: when the server config carries `tls.ech.key`, the client auto-adds `ech.enabled`; the CONFIGS comment block is carried over to the output.
 - `--test` self-check: internal assertions (conversion structure / idempotency / unique multi-instance tags).
