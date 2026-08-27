@@ -80,6 +80,9 @@ OUTS=""; TAGS=""
 # default: the connect address. reality/shadowtls keep their config-filtered SNI.
 # `${SNI_OVERRIDE:-}` (not `=""`) so gen-client may set it BEFORE sourcing this lib.
 SNI_OVERRIDE="${SNI_OVERRIDE:-}"
+# Multiplex padding override for ss lines: "" = follow the server config (default),
+# "off" = strip multiplex from the client outbound entirely, "on" = force enabled+padding.
+MUX_PADDING="${MUX_PADDING:-}"
 
 # Output path resolution — SB_OUTPUT env (full path) > outputpath+outputname >
 # outputname > outputpath > default $SCRIPT_DIR/$OUTPUT_NAME_DEFAULT.
@@ -322,15 +325,23 @@ convert_ss() { # $1=inbound index — direct shadowsocks → client ss (skip ss 
   method="$(inb_field "$i" 'method')"
   pass="$(inb_field "$i" 'password')"
   local mux_en mux_pad mux_json=""
-  mux_en="$(inb_field "$i" 'multiplex.enabled')"
-  mux_pad="$(inb_field "$i" 'multiplex.padding')"
-  [[ -n "$mux_en" ]] && mux_json=", \"multiplex\": { \"enabled\": $mux_en, \"padding\": ${mux_pad:-true} }"
+  if [[ "$MUX_PADDING" == "off" ]]; then
+    :                                   # --mux-padding off: strip multiplex entirely
+  elif [[ "$MUX_PADDING" == "on" ]]; then
+    mux_json=", \"multiplex\": { \"enabled\": true, \"padding\": true }"
+  else
+    mux_en="$(inb_field "$i" 'multiplex.enabled')"
+    mux_pad="$(inb_field "$i" 'multiplex.padding')"
+    [[ -n "$mux_en" ]] && mux_json=", \"multiplex\": { \"enabled\": $mux_en, \"padding\": ${mux_pad:-true} }"
+  fi
   local port; port="$(inb_field "$i" 'listen_port')"
   ctag="$(ctag_of "$i" ss2022)"
   OUTS+="${OUTS:+,
         }{ \"type\": \"shadowsocks\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"method\": \"$method\", \"password\": \"$pass\"$mux_json }"
   TAGS+=" $ctag"
-  debug "ss ← inbound[$i] port=$port tag=$ctag multiplex=$mux_en"
+  # Last direct ss snapshot — gen-client's --ss-argo builds its chained clone from this.
+  LAST_SS_TAG="$ctag"; LAST_SS_PORT="$port"; LAST_SS_METHOD="$method"; LAST_SS_PASS="$pass"; LAST_SS_MUX="$mux_json"
+  debug "ss ← inbound[$i] port=$port tag=$ctag multiplex=${mux_json:+set}"
 }
 
 convert_naive() { # $1=inbound index — server naive → client naive (no insecure; self-signed via certificate_path)

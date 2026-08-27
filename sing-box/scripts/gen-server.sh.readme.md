@@ -20,6 +20,7 @@ Flags (identical to the top-of-file usage block):
 | `--ports P,P,...` | comma list, positionally aligned with `--protocols` (tcp/udp may share a port) |
 | `--ss-methods M` | comma method list for ss instances (positional) |
 | `--chain-ss-port N` | shadowtls chained-ss port (default 8389; `0` = no chain) |
+| `--cdn` | CDN/argo fronting for ws/grpc: their inbounds render WITHOUT an origin tls block (the tunnel edge terminates TLS); cert is then only required if another protocol still needs it. Pair clients with `--addr <edge-host>`. |
 | `--ech` | add ECH (Encrypted Client Hello) to TLS-terminating inbounds |
 | `--outputname N` | output filename (default `config-server.json`; filename only, no path) |
 | `--outputpath D` | output directory (default: the script's own dir) |
@@ -47,6 +48,7 @@ bash gen-server.sh --domain your.domain \
 - Overwrite protection: refuses to overwrite an existing output file.
 - Hardening: every hysteria2 inbound ships `obfs: { type: salamander, password: <fresh> }`; every tuic inbound ships `heartbeat: 10s` — both verified against `sing-box check` (1.14.0-beta.14, SINGBOX_TAG). `server → client` carries them through (`convert_hy2` already had obfs passthrough; `convert_tuic` now carries heartbeat).
 - Shadowsocks in 1.14 has no `plugin` field (v2ray-plugin is outbound-only); the server's ss uses `multiplex: { enabled: true, padding: true }` for H2-style multiplexing instead, and the client carries it through. Outbound-side v2ray-plugin is out of scope for this suite.
+- CDN/argo (`--cdn`): ws/grpc origins go plain (edge terminates TLS), so one cert-less config fronts Cloudflare/CloudFront/EdgeOne. ss joins the tunnel via the client's `--ss-argo` chained line. Verified live: both quick-tunnel lines plus the ss-argo chain returned HTTP 204 end-to-end through a real CF edge.
 - ECH: with `--ech`, the CONFIGS are appended as `//` comments at the end of the output (sing-box accepts them) — publish them as the HTTPS/SVCB record so clients auto-load via DNS.
 - Default ports: reality 443/tcp, hy2 443/udp, ws 8443, grpc 8444, anytls 8445, shadowtls 8446, tuic 8447.
 - Interactive mode: no flags and stdin is a TTY → interactive (pick protocols/ports); non-TTY stdin → hints `try --help`.
