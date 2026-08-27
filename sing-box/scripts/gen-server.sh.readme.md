@@ -2,6 +2,9 @@
 
 This program and secrets.lib.sh exist only to quickly generate a server config.json:
 9 supported protocols, any protocol repeatable for multiple instances (unique tags `<proto>-N`).
+Two hidden hardenings are embedded and not exposed as flags: hysteria2
+`salamander` obfs password (fresh per-run, QUIC padding vs DPI) and tuic
+`"heartbeat": "10s"` (keeps QUIC alive through NAT/NAT64).
 
 ## Usage
 
@@ -42,6 +45,8 @@ bash gen-server.sh --domain your.domain \
 
 - Zero persistence: fresh keys every run, re-run rotates everything; the output file is the only artifact.
 - Overwrite protection: refuses to overwrite an existing output file.
+- Hardening: every hysteria2 inbound ships `obfs: { type: salamander, password: <fresh> }`; every tuic inbound ships `heartbeat: 10s` — both verified against `sing-box check` (1.14.0-beta.14, SINGBOX_TAG). `server → client` carries them through (`convert_hy2` already had obfs passthrough; `convert_tuic` now carries heartbeat).
+- Shadowsocks in 1.14 has no `plugin` field (v2ray-plugin is outbound-only); the server's ss uses `multiplex: { enabled: true, padding: true }` for H2-style multiplexing instead, and the client carries it through. Outbound-side v2ray-plugin is out of scope for this suite.
 - ECH: with `--ech`, the CONFIGS are appended as `//` comments at the end of the output (sing-box accepts them) — publish them as the HTTPS/SVCB record so clients auto-load via DNS.
 - Default ports: reality 443/tcp, hy2 443/udp, ws 8443, grpc 8444, anytls 8445, shadowtls 8446, tuic 8447.
 - Interactive mode: no flags and stdin is a TTY → interactive (pick protocols/ports); non-TTY stdin → hints `try --help`.
