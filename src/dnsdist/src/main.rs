@@ -319,7 +319,7 @@ async fn run(c: Cfg) {
     };
 
     let app = Arc::new(App {
-        cfg: c.clone(),
+        cfg: RwLock::new(c.clone()),
         stats: stats.clone(),
         cache: cache.clone(),
         consolidation,
@@ -390,18 +390,35 @@ async fn run(c: Cfg) {
                     None => std::future::pending().await,
                 }
             } => {
-                match app::Routing::build(&c, stats.clone(), app.cache.clone()) {
-                    Ok(new_gen) => {
-                        *app.routing.write().unwrap() = Arc::new(new_gen);
-                        app.stats.reloads.fetch_add(1, Ordering::Relaxed);
-                        eprintln!(
-                            "magdns: hot reload applied — foreign={} cn={} (gen {})",
-                            app.routing.read().unwrap().chain.sources_desc().join(", "),
-                            c.cn_enabled,
-                            app.stats.reloads.load(Ordering::Relaxed)
-                        );
-                    }
-                    Err(e) => eprintln!("magdns: hot reload rejected, keeping old generation: {e}"),
+                // H-3 fix: re-read + re-parse the FILE, not the startup Cfg.
+                // Env-based secret rotation (auth_key_env) also resolves here,
+                // because build_spec reads env during cfg::parse.
+                let reload: Result<Cfg, String> = (|| {
+                    let text = std::fs::read_to_string(&c.conf_path)
+                        .map_err(|e| format!("read {}: {e}", c.conf_path))?;
+                    let fresh = cfg::parse(&text)?;
+                    cfg::validate(&fresh)?;
+                    Ok(fresh)
+                })();
+                match reload {
+                    Ok(fresh) => match app::Routing::build(&fresh, stats.clone(), app.cache.clone()) {
+                        Ok(new_gen) => {
+                            *app.routing.write().unwrap() = Arc::new(new_gen);
+                            // keep App.cfg fresh so client_uuids / log flags
+                            // consulted per-query see the reloaded values
+                            *app.cfg.write().unwrap() = fresh;
+                            app.stats.reloads.fetch_add(1, Ordering::Relaxed);
+                            let gen = app.routing.read().unwrap();
+                            eprintln!(
+                                "magdns: hot reload applied — foreign={} cn={} (gen {})",
+                                gen.chain.sources_desc().join(", "),
+                                gen.engine.is_some(),
+                                app.stats.reloads.load(Ordering::Relaxed)
+                            );
+                        }
+                        Err(e) => eprintln!("magdns: hot reload rejected (transport build), keeping old generation: {e}"),
+                    },
+                    Err(e) => eprintln!("magdns: hot reload rejected (config invalid), keeping old generation: {e}"),
                 }
             }
             _ = usr1.recv() => {

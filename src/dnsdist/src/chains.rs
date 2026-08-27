@@ -109,7 +109,7 @@ impl Chain {
             Stats::bump(&app.stats.fallback);
             let attempt_deadline = Instant::now()
                 .checked_add(std::time::Duration::from_millis(
-                    app.cfg.attempt_timeout_ms.max(200),
+                    app.cfg.read().unwrap().attempt_timeout_ms.max(200),
                 ))
                 .unwrap_or(deadline)
                 .min(deadline);

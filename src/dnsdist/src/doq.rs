@@ -95,7 +95,7 @@ async fn handle_stream(
     batch_authed: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), ()> {
     use std::sync::atomic::Ordering;
-    let idle = Duration::from_millis(app.cfg.idle_timeout_ms.max(5000));
+    let idle = Duration::from_millis(app.cfg.read().unwrap().idle_timeout_ms.max(5000));
     let q = match tokio::time::timeout(idle, read_frame(rx)).await {
         Ok(Ok(Some(q))) => q,
         _ => return Err(()),
@@ -133,7 +133,7 @@ async fn handle_stream(
     }
 
     // hard gate: UUIDs configured but this connection never authenticated
-    if !app.cfg.client_uuids.is_empty() && !batch_authed.load(Ordering::Relaxed) {
+    if !app.cfg.read().unwrap().client_uuids.is_empty() && !batch_authed.load(Ordering::Relaxed) {
         let refused = ingress::refused(&q);
         let _ = write_frame(tx, &refused).await;
         return Ok(());
