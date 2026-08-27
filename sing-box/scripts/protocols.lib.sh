@@ -112,7 +112,8 @@ paths = ["type","tag","listen_port","users.0.uuid","users.0.flow","users.0.passw
            "tls.reality.private_key",
            "tls.reality.short_id","tls.reality.short_id.0","transport.type","transport.path",
            "transport.headers.Host","transport.service_name","obfs.type","obfs.password",
-           "congestion_control","heartbeat","method","password","version","handshake.server","detour"]
+           "congestion_control","heartbeat","method","password","version","handshake.server","detour",
+           "multiplex.enabled","multiplex.padding"]
 with open(sys.argv[2], "w") as out:
     for idx, ib in enumerate(ibs):
         for p in paths:
@@ -128,6 +129,12 @@ with open(sys.argv[2], "w") as out:
                     v = v.get(k, '')
                 else:
                     v = ''
+            # multiplex.enabled/padding are JSON booleans: normalize Python True/false to JSON true/false strings
+            if p in ("multiplex.enabled", "multiplex.padding"):
+                if isinstance(v, bool):
+                    v = "true" if v else "false"
+                elif v in (1, 0):
+                    v = "true" if v == 1 else "false"
             out.write(f"{idx}\t{p}\t{v}\n")
 PY
 }
@@ -314,12 +321,16 @@ convert_ss() { # $1=inbound index — direct shadowsocks → client ss (skip ss 
   fi
   method="$(inb_field "$i" 'method')"
   pass="$(inb_field "$i" 'password')"
+  local mux_en mux_pad mux_json=""
+  mux_en="$(inb_field "$i" 'multiplex.enabled')"
+  mux_pad="$(inb_field "$i" 'multiplex.padding')"
+  [[ -n "$mux_en" ]] && mux_json=", \"multiplex\": { \"enabled\": $mux_en, \"padding\": ${mux_pad:-true} }"
   local port; port="$(inb_field "$i" 'listen_port')"
   ctag="$(ctag_of "$i" ss2022)"
   OUTS+="${OUTS:+,
-        }{ \"type\": \"shadowsocks\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"method\": \"$method\", \"password\": \"$pass\" }"
+        }{ \"type\": \"shadowsocks\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"method\": \"$method\", \"password\": \"$pass\"$mux_json }"
   TAGS+=" $ctag"
-  debug "ss ← inbound[$i] port=$port tag=$ctag"
+  debug "ss ← inbound[$i] port=$port tag=$ctag multiplex=$mux_en"
 }
 
 convert_naive() { # $1=inbound index — server naive → client naive (no insecure; self-signed via certificate_path)

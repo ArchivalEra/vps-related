@@ -223,7 +223,7 @@ render_shadowtls() {
 render_shadowsocks() {
   local method="${INST_SS_METHOD[$INST_TAG]:-2022-blake3-aes-256-gcm}"
   echo "{ \"type\": \"shadowsocks\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
-    \"method\": \"$method\", \"password\": \"$GEN_SS_PASS\" }"
+    \"method\": \"$method\", \"password\": \"$GEN_SS_PASS\", \"multiplex\": { \"enabled\": true, \"padding\": true } }"
 }
 render_tuic() {
   echo "{ \"type\": \"tuic\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
