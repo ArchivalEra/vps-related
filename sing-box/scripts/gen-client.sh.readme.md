@@ -15,8 +15,6 @@ Flags (identical to the top-of-file usage block):
 | `--outputname NAME` | output filename (default `config-client.json`; filename only, no path) |
 | `--outputpath DIR` | output directory (default: the script's own dir) |
 | `--insecure` | add when the cert is self-signed; omit with a real cert |
-| `--mux-padding on\|off` | override ss multiplex padding (default: follow server config; `off` strips multiplex, `on` forces enabled+padding) |
-| `--ss-argo` | add an ss clone (`<sstag>-argo`) chained through the first vless-ws line (detour) so shadowsocks traffic rides the CDN/argo tunnel; pick it from the manual selector |
 | `--inbound tun\|socks[:port]` | `tun` = global TUN (default); `socks:1080` = local socks5 listener |
 | `--debug` | diagnostic output (fully silent by default) |
 | `--test` | run self-check assertions, then exit |

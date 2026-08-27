@@ -190,26 +190,15 @@ render_hysteria2() {
     \"tls\": { \"enabled\": true, \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) } }"
 }
 render_vless_ws() {
-  # CDN mode (--cdn): the tunnel/CDN edge terminates TLS, so the origin speaks
-  # plain ws — no tls block, no ECH (ECH lives inside tls). Clients still talk
-  # TLS to the edge; conversion keeps client-side TLS on with sni=edge host.
-  local tls_block=""
-  if [[ ${CDN:-0} -eq 0 ]]; then
-    tls_block=",
-    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) }"
-  fi
   echo "{ \"type\": \"vless\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
-    \"users\": [ { \"uuid\": \"$GEN_UUID\" } ]$tls_block,
+    \"users\": [ { \"uuid\": \"$GEN_UUID\" } ],
+    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) },
     \"transport\": { \"type\": \"ws\", \"path\": \"/ws\" } }"
 }
 render_vless_grpc() {
-  local tls_block=""
-  if [[ ${CDN:-0} -eq 0 ]]; then
-    tls_block=",
-    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) }"
-  fi
   echo "{ \"type\": \"vless\", \"tag\": \"$INST_TAG\", \"listen\": \"::\", \"listen_port\": $INST_PORT,
-    \"users\": [ { \"uuid\": \"$GEN_UUID\" } ]$tls_block,
+    \"users\": [ { \"uuid\": \"$GEN_UUID\" } ],
+    \"tls\": { \"enabled\": true, \"server_name\": \"$DOMAIN\", \"certificate_path\": \"$GEN_CERT\", \"key_path\": \"$GEN_KEY\"$(ech_json) },
     \"transport\": { \"type\": \"grpc\", \"service_name\": \"grpc\" } }"
 }
 render_anytls() {
