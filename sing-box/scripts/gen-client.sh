@@ -23,9 +23,6 @@
 #   --outputname NAME   output filename (default config-client.json; spaces/non-ASCII OK, filename only, no path)
 #   --outputpath DIR    output directory (default: this script's own dir)
 #   --insecure          add insecure:true when cert is self-signed (omit with real cert)
-#   --mux-padding on|off  override ss multiplex padding (default: follow server config)
-#   --ss-argo           add an ss clone chained through the first vless-ws line (detour)
-#                       so shadowsocks traffic rides the CDN/argo tunnel
 #   --inbound tun       default TUN global; --inbound socks:1080 generates socks5 local listener (testing)
 #   --debug             diagnostic output (fully silent by default)
 #   --test              run assert_gen self-check then exit
@@ -47,8 +44,6 @@ INBOUND_PORT=1080
 CONFIG_PATH=""
 SERVER=""
 ARG_INSECURE=0
-MUX_PADDING=""          # --mux-padding on|off (default: follow server config)
-SS_ARGO=0               # --ss-argo: chain a shadowsocks clone through the first ws line
 TEST_MODE=0
 DEBUG="${DEBUG:-0}"
 
@@ -65,10 +60,6 @@ gen-client.sh — converter: server config.json → client config.json (single i
   --outputname NAME   output filename (default: config-client.json; filename only, no path)
   --outputpath DIR    output directory (default: this script's own dir)
   --insecure          add insecure:true when the cert is self-signed (omit with a real cert)
-  --mux-padding on|off
-                      override ss multiplex padding (default: follow server config)
-  --ss-argo           add an ss clone chained through the first vless-ws line
-                      (detour) so shadowsocks traffic rides the CDN/argo tunnel
   --inbound tun|socks[:port]
                       inbound: tun (global) or socks:1080 for a local socks5 listener
   --debug             diagnostic output (fully silent by default)
@@ -97,13 +88,6 @@ while [[ $# -gt 0 ]]; do
     --outputname) shift; OUTPUT_NAME="${1:-}" ;;
     --outputpath) shift; OUTPUT_PATH="${1:-}" ;;
     --insecure) ARG_INSECURE=1 ;;
-    --mux-padding)
-      shift
-      case "${1:-}" in
-        on|off) MUX_PADDING="$1" ;;
-        *) die1 "bad --mux-padding: ${1:-<none>} (on or off)" ;;
-      esac ;;
-    --ss-argo) SS_ARGO=1 ;;
     --debug) DEBUG=1 ;;
     --test) TEST_MODE=1 ;;
     --inbound)
@@ -201,26 +185,6 @@ fi
 
 # ---------- Convert: server inbounds → client outbounds ----------
 render_from_server
-
-# ---------- --ss-argo: chain a shadowsocks clone through the first ws line ----------
-# 1.14's ss has no transport field, so it cannot traverse a CDN on its own. The
-# clone dials the SAME ss server, but through the ws outbound (detour): the wire
-# path becomes client → CDN/ws-tunnel → VPS → loopback ss. Requires a ws line
-# (direct or CDN-fronted); not included in auto (urltest health checks can't
-# exercise a chained dial reliably) — pick it from the manual selector.
-if [[ $SS_ARGO -eq 1 ]]; then
-  [[ -n "${LAST_SS_TAG:-}" ]] || die2 "--ss-argo needs a direct shadowsocks line in the server config"
-  THRU=""
-  for t in $TAGS; do
-    [[ "$t" == vless-ws || "$t" == vless-ws-* ]] && { THRU="$t"; break; }
-  done
-  [[ -z "$THRU" ]] && die2 "--ss-argo needs a vless-ws line to tunnel through (none converted)"
-  ARGO_TAG="${LAST_SS_TAG}-argo"
-  OUTS+=",
-        { \"type\": \"shadowsocks\", \"tag\": \"$ARGO_TAG\", \"server\": \"$SERVER\", \"server_port\": $LAST_SS_PORT, \"method\": \"$LAST_SS_METHOD\", \"password\": \"$LAST_SS_PASS\"${LAST_SS_MUX}, \"detour\": \"$THRU\" }"
-  TAGS+=" $ARGO_TAG"
-  ok "argo chain: ss-argo rides the ws line ($THRU)"
-fi
 
 # ---------- Validate: at least one line ----------
 [[ -n "$OUTS" ]] || die2 "no lines converted"
