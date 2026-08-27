@@ -70,6 +70,7 @@ PORTS_ARG=""
 SS_METHODS_ARG=""
 CHAIN_SS_PORT=""
 ECH=0                   # --ech: add ECH (Encrypted Client Hello) to TLS-terminating inbounds
+CDN=0                   # --cdn: ws/grpc render as plain (no origin tls) for CDN/argo fronting
 TEST_MODE=0
 DEBUG="${DEBUG:-0}"
 
@@ -88,6 +89,10 @@ gen-server.sh — flag-driven server config generator (flags only; no positional
   --ss-methods M    comma method list for ss instances (positional)
   --chain-ss-port N shadowtls chained ss port (default: 8389; 0 = no chain)
   --ech             add ECH (Encrypted Client Hello) to TLS-terminating inbounds
+  --cdn             CDN/argo fronting for ws/grpc: their inbounds render WITHOUT an
+                    origin tls block (the tunnel edge terminates TLS). Cert is then
+                    only required if another protocol still needs it. The client
+                    keeps TLS on toward the edge — pair with --addr <edge-host>.
   --outputname N    output filename (default: config-server.json; filename only, no path)
   --outputpath D    output directory (default: this script's own dir)
   --debug           diagnostic output (fully silent by default)
@@ -117,6 +122,7 @@ while [[ $# -gt 0 ]]; do
     --ss-methods) shift; SS_METHODS_ARG="${1:-}" ;;
     --chain-ss-port) shift; CHAIN_SS_PORT="${1:-}" ;;
     --ech) ECH=1 ;;
+    --cdn) CDN=1 ;;
     --outputname) shift; OUTPUT_NAME="${1:-}" ;;
     --outputpath) shift; OUTPUT_PATH="${1:-}" ;;
     --debug) DEBUG=1 ;;
@@ -281,11 +287,24 @@ if [[ $TEST_MODE -ne 1 ]]; then
     [[ -n "$DOMAIN" ]] || die1 "must provide domain (--domain arg or interactive input)"
   fi
   check_domain
-  if [[ "$CERT_FILE" == "/your/cert/at/here" || "$KEY_FILE" == "/your/key/at/here" ]]; then
-    die1 "--certpath/--keypath must point at real cert/key files (defaults are placeholders)"
+  # Cert is needed by inbounds that terminate TLS with a real cert (hy2 / tuic /
+  # anytls / naive) and by ws/grpc when NOT CDN-fronted. reality/shadowtls/ss never
+  # need it. With --cdn the ws+grpc pair drops out of the requirement set.
+  needs_cert=0
+  p=""
+  for p in $PROTOCOLS; do
+    case "$p" in
+      hysteria2|tuic|anytls|naive) needs_cert=1 ;;
+      vless-ws|vless-grpc) [[ $CDN -eq 0 ]] && needs_cert=1 ;;
+    esac
+  done
+  if [[ $needs_cert -eq 1 ]]; then
+    if [[ "$CERT_FILE" == "/your/cert/at/here" || "$KEY_FILE" == "/your/key/at/here" ]]; then
+      die1 "--certpath/--keypath must point at real cert/key files (defaults are placeholders)"
+    fi
+    [[ -r "$CERT_FILE" ]] || die1 "certificate not readable: $CERT_FILE"
+    [[ -r "$KEY_FILE" ]] || die1 "private key not readable: $KEY_FILE"
   fi
-  [[ -r "$CERT_FILE" ]] || die1 "certificate not readable: $CERT_FILE"
-  [[ -r "$KEY_FILE" ]] || die1 "private key not readable: $KEY_FILE"
   resolve_output_path
   if [[ "$OUTPUT_NAME" == */* ]]; then
     die1 "outputname must be a plain filename (no path): $OUTPUT_NAME"
@@ -343,6 +362,13 @@ fi
 
 ok "server config: $SB_OUTPUT (inbounds: $INST_TAGS)"
 ok "credentials embedded (fresh each run, nothing persisted). Reality public key: $PUB"
+if [[ $CDN -eq 1 ]]; then
+  ok "cdn mode: ws/grpc origins are plain (edge terminates TLS)"
+  ok "cloudflared: run one quick tunnel per origin port, e.g."
+  ok "  cloudflared tunnel --url http://127.0.0.1:<ws-port>    # vless-ws"
+  ok "  cloudflared tunnel --url http://127.0.0.1:<grpc-port> --http2-origin  # vless-grpc"
+  ok "then: gen-client.sh --from-server <out> --addr <trycloudflare-host> --sni <same>"
+fi
 if [[ $ECH -eq 1 && -f "$TMPD/ech.configs" && -s "$TMPD/ech.configs" ]]; then
   ok "ECH enabled — CONFIGS embedded as comments at the end of $SB_OUTPUT; publish them as the HTTPS/SVCB record for $DOMAIN (clients auto-load via DNS)"
 fi
