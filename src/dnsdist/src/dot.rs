@@ -49,7 +49,7 @@ async fn handle_conn(app: &Arc<App>, tcp: TcpStream, peer_ip: std::net::IpAddr) 
         Ok(Ok(s)) => s,
         _ => return,
     };
-    let idle = Duration::from_millis(app.cfg.idle_timeout_ms.max(5000));
+    let idle = Duration::from_millis(app.cfg.read().unwrap().idle_timeout_ms.max(5000));
     let mut batch_mode = false;
     loop {
         let q = match tokio::time::timeout(idle, read_frame(&mut tls)).await {
@@ -80,7 +80,7 @@ async fn handle_conn(app: &Arc<App>, tcp: TcpStream, peer_ip: std::net::IpAddr) 
         }
 
         // hard gate: configured UUIDs but the connection never authenticated
-        if !app.cfg.client_uuids.is_empty() && !batch_mode {
+        if !app.cfg.read().unwrap().client_uuids.is_empty() && !batch_mode {
             let refused = ingress::refused(&q);
             if write_frame(&mut tls, &refused).await.is_err() {
                 break;

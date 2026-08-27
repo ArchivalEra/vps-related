@@ -9,12 +9,14 @@ use crate::app::{self, App};
 /// present a matching handshake before ANY answer leaves the box — a bare
 /// standard-mode query gets REFUSED so SNI-driven freeloaders gain nothing.
 pub fn authed(app: &App, uuid: Option<&str>) -> bool {
-    if app.cfg.client_uuids.is_empty() {
+    if app.cfg.read().unwrap().client_uuids.is_empty() {
         return true;
     }
     match uuid {
         Some(u) => app
             .cfg
+            .read()
+            .unwrap()
             .client_uuids
             .iter()
             .any(|known| crate::maker_auth::ct_eq(known.as_bytes(), u.as_bytes())),

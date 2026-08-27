@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """config-delivery.py — one-time file delivery over stdlib http.server (zero deps)
 
-Python port of config-delivery.sh: every flag is a 1:1 replica. The heavy lifting
-dufs did (static serving, native TLS) is now stdlib http.server + ssl; wget probes
-become urllib.request. Zero garbage: the file lives in memory only, nothing hits
-disk beyond what the OS already provides.
+Python port of config-delivery.sh — with one deliberate divergence: the
+Python version has no self-signed fallback. TLS is two-state: valid cert
+pair → HTTPS, otherwise plain HTTP with a warning. No unverified HTTPS.
 
 Key decisions, and why:
   - Random 8-char key URL: the key IS the secret. A path without it is a 404 and
@@ -16,11 +15,10 @@ Key decisions, and why:
     ^C stops sharing immediately; TTL elapsing ends it by itself.
   - --host is user-supplied only, never auto-probed. --v4/--v6 force-resolve a
     DOMAIN to that family for an IP link (no sniffable SNI); domains stay dual-stack.
-  - TLS three states: readable --cert+--key = real cert HTTPS; only one given =
-    warning + self-signed fallback (clients use -k / --no-check-certificate);
-    neither = plain HTTP with a secrets-in-clear warning.
-  - --argo: cloudflared quick tunnel owns the public URL + cert; backend serves
-    plain HTTP on a random loopback port. --host/--v4/--v6/--cert/--key refused.
+  - TLS two states (no self-signed): readable --cert+--key = real cert HTTPS;
+    anything else = plain HTTP with a secrets-in-clear warning. --argo: cloudflared
+    quick tunnel owns the public URL + cert; backend serves plain HTTP on a random
+    loopback port. --host/--v4/--v6/--cert/--key refused in argo mode.
 
 Usage: config-delivery.py [serve] <file> [--port N] [--ttl SEC] [--hold]
                           [--host HOST] [--v4 | --v6] [--cert FILE] [--key FILE]
@@ -152,33 +150,23 @@ def _probe_allowed(url):
     return True
 
 
-def verify_link(url, insecure=True):
+def verify_link(url):
+    # Only http/https; host must pass _probe_allowed() first — this blocks
+    # localhost, loopback, private and link-local before any socket opens.
     if not _probe_allowed(url):
         err(f"refusing to probe non-public or link-local target: {url}")
         return False
     for _ in range(3):  # 3 attempts, ~2s apart
         try:
             req = urllib.request.Request(url, method="GET")
-            ctx = ssl._create_unverified_context() if insecure else None
-            urllib.request.urlopen(req, timeout=2, context=ctx).read(1)
+            # No unverified context — system CA + hostname checking only.
+            # There is no self-signed path in this Python version.
+            urllib.request.urlopen(req, timeout=2).read(1)
             return True
         except Exception:
             pass
         time.sleep(2)
     return False
-
-
-# ---------- Self-signed fallback cert (in-memory PEM via openssl CLI) ----------
-def mint_selfsigned(tmpdir):
-    cert = f"{tmpdir}/cert.pem"
-    key = f"{tmpdir}/key.pem"
-    subprocess.run(
-        ["openssl", "req", "-x509", "-newkey", "ec",
-         "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
-         "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=config-delivery"],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    return cert, key
 
 
 # ---------- Host resolution (--v4/--v6 force-resolve; never auto-probed) ----------
@@ -291,13 +279,11 @@ def main():
     file_path = args.file
 
     tls_mode = "http"
-    if args.cert or args.key:
-        if args.cert and args.key and os.access(args.cert, os.R_OK) and os.access(args.key, os.R_OK):
-            tls_mode = "cert"
-        else:
-            warn("--cert/--key unusable (missing or unreadable pair) — falling back to a "
-                 "self-signed HTTPS cert; clients must use --no-check-certificate")
-            tls_mode = "self-signed"
+    if args.cert and args.key and os.access(args.cert, os.R_OK) and os.access(args.key, os.R_OK):
+        tls_mode = "cert"
+    elif args.cert or args.key:
+        warn("--cert/--key requires a readable pair — serving plain HTTP instead; "
+             "no self-signed HTTPS in this Python version")
 
     if args.argo:
         # Guards ran above; here the backend just binds a random free loopback port
@@ -322,9 +308,7 @@ def main():
     tmpdir = tempfile.mkdtemp(prefix="config-delivery-")
     srv = make_server(args.port)
 
-    # ---- TLS material ----
-    if tls_mode == "self-signed":
-        args.cert, args.key = mint_selfsigned(tmpdir)
+    # ---- TLS material (only real certs; no self-signed in Python) ----
     if tls_mode != "http":
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(args.cert, args.key)
@@ -379,12 +363,11 @@ def main():
         print("warning: plain HTTP — the config contains secrets; anyone on the network path can read it")
         print("dir listing hidden; host is user-supplied (never auto-probed)")
         print(f"client: wget -O {bn} {link}")
-    else:
+    else:  # cert
         link = f"https://{display_host}:{args.port}/{DeliveryHandler.key}"
         print(f"one-time download link: {link}")
         print("dir listing hidden; host is user-supplied (never auto-probed)")
-        client_cmd = f"wget -O {bn} {link}" if tls_mode == "cert" else f"wget --no-check-certificate -O {bn} {link}"
-        print(f"client: {client_cmd}")
+        print(f"client: wget -O {bn} {link}")
 
     # ---- unified verification: 3s countdown doubles as argo warm-up ----
     print("checking link in 3...")
@@ -393,7 +376,9 @@ def main():
     time.sleep(1)
     print("checking link in 1...")
     time.sleep(1)
-    if not verify_link(link.replace("[", "").replace("]", "") if link.startswith("http") else link):
+    if not verify_link(
+        link.replace("[", "").replace("]", "") if link.startswith("http") else link,
+    ):
         err(f"link did not return HTTP 200 after 3 attempts — not printing the link")
         shutdown(srv, tmpdir, argo=args.argo)
         sys.exit(1)
