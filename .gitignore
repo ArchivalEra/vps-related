@@ -38,12 +38,13 @@
 # Build artifacts inside builds/ (regenerated, never tracked)
 builds/h2o-share/
 
-# 3f) Allow source code (magdns Rust; stage is local PGO harness, excluded below)
-!src/
-!src/**
-src/dnsdist/target*/
-src/dnsdist/pgo-data*/
-src/dnsdist/stage/
+# 3f) Allow puredns source (project workspace root; experiments excluded below)
+!puredns/
+!puredns/**
+puredns/server/target*/
+puredns/server/pgo-data/
+puredns/server/stage/
+experiments/
 
 # 3g) Allow deployment configs (systemd units, config examples)
 !deploy/
@@ -89,6 +90,3 @@ archived/
 config-delivery/config-delivery
 config-delivery/config-delivery-linux-amd64
 config-delivery/config-delivery-linux-arm64
-src/dnsdist/stage/certs/*.key
-src/dnsdist/stage/run/
-src/dnsdist/stage/__pycache__/

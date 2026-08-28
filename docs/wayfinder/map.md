@@ -27,29 +27,29 @@ Flutter console on top.
 
 ## Decisions so far
 
-- [T1 mgb1 crate](../../src/mgb1/) (5d42b8e): single wire codec, zero IO,
+- [T1 mgb1 crate](../../puredns/mgb1/) (5d42b8e): single wire codec, zero IO,
   7 vectors as contract; magic probe collision rate accepted at 2⁻³².
-- [T2 config.json](../../src/dnsdist/src/cfg.rs) (6937af0): serde mirror +
+- [T2 config.json](../../puredns/server/src/cfg.rs) (6937af0): serde mirror +
   string-aware comment stripping; absent section = feature disabled;
   dead config rejected both directions.
-- [T9 hot reload](../../src/dnsdist/src/app.rs) (5d42b8e): Routing
+- [T9 hot reload](../../puredns/server/src/app.rs) (5d42b8e): Routing
   generation behind RwLock<Arc>; per-query Arc snapshot; opt-in via
   `hot_reload`; broken file keeps old generation. Certs/cache/rate limits
   stay restart-only.
-- [T3 stream legs](../../src/dnsdist/src/dot.rs) (ae73619): handshake frame
+- [T3 stream legs](../../puredns/server/src/dot.rs) (ae73619): handshake frame
   carries UUID; wrong UUID = cold drop; bare queries REFUSED under gate.
-- [T4 DoH 443](../../src/dnsdist/src/dohserver.rs) (9a3980d): hyper server,
+- [T4 DoH 443](../../puredns/server/src/dohserver.rs) (9a3980d): hyper server,
   x-magdns-auth header, mgb1 containers alongside RFC 8484.
-- [T6 chains engine](../../src/chains.rs) (e108c42): unlimited named
+- [T6 chains engine](../../puredns/server/src/chains.rs) (e108c42): unlimited named
   splits × balance/priority groups; N4 failure semantics.
-- [T5 client skeleton](../../src/client/) (352f8e6): listeners + AIMD
+- [T5 client skeleton](../../puredns/client/) (352f8e6): listeners + AIMD
   packer + multi-source failover, 32 tests. TODOs inline: DoQ egress,
   brotli send, pipelined DoT pool.
 - [T7 GeoIP research](/mnt/hdd/dns-workplace/research/geoip-report.md):
   RIR delegated table + IPtoASN recommended; City-level DBs excluded
   (border jitter); residential-vs-datacenter classification identified
   as the anti-risk-control key field.
-- [T8 overrides](../../src/dnsdist/src/app.rs) (1670411): pin/block before
+- [T8 overrides](../../puredns/server/src/app.rs) (1670411): pin/block before
   cache & splits; suffix matching rejects lookalike collisions.
 - [CI](../../.github/workflows/ci.yml) (6be1b38): fmt/clippy/tests across
   magdns + magdns-client + mgb1.

@@ -23,14 +23,28 @@ struct V4Range {
 
 #[derive(Debug, Clone, Default)]
 pub struct GeoTables {
-    v4: Vec<V4Range>, // sorted by start; ranges assumed disjoint per table merge
+    v4: Vec<V4Range>,       // sorted by start; ranges assumed disjoint per table merge
     dc_v4: Vec<(u32, u32)>, // explicit datacenter overlay
 }
 
 const HOSTING_KEYWORDS: &[&str] = &[
-    "OVH", "HETZNER", "AWS", "AMAZON", "GOOGLE CLOUD", "MICROSOFT", "AZURE",
-    "ORACLE", "ALIBABA", "DIGITALOCEAN", "LINODE", "VULTR", "CHOOPA",
-    "SCALEWAY", "LEASEWEB", "M247", "DATACAMP",
+    "OVH",
+    "HETZNER",
+    "AWS",
+    "AMAZON",
+    "GOOGLE CLOUD",
+    "MICROSOFT",
+    "AZURE",
+    "ORACLE",
+    "ALIBABA",
+    "DIGITALOCEAN",
+    "LINODE",
+    "VULTR",
+    "CHOOPA",
+    "SCALEWAY",
+    "LEASEWEB",
+    "M247",
+    "DATACAMP",
 ];
 
 impl GeoTables {
@@ -187,9 +201,10 @@ fn parse_iptoasn(text: &str) -> Vec<V4Range> {
         if f.len() < 5 || !f[0].contains('.') {
             continue; // v6 rows skipped in v1
         }
-        let (Ok(start), Ok(end)) =
-            (f[0].parse::<std::net::Ipv4Addr>(), f[1].parse::<std::net::Ipv4Addr>())
-        else {
+        let (Ok(start), Ok(end)) = (
+            f[0].parse::<std::net::Ipv4Addr>(),
+            f[1].parse::<std::net::Ipv4Addr>(),
+        ) else {
             continue;
         };
         out.push(V4Range {
@@ -224,75 +239,6 @@ fn parse_x4bnet(text: &str) -> Vec<(u32, u32)> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const DELEGATED: &str = "version|20240101|000000
-apnic|CN|ipv4|1.2.3.0|1024|20240101|allocated
-ripencc|DE|ipv4|5.9.0.0|16384|20240101|allocated
-apnic|JP|ipv4|126.0.0.0|1048576|20240101|allocated
-";
-
-    const IPTOASN: &str = "3.5.140.0\t3.5.141.255\t16550\tUS\tGOOGLE-CLOUD-PLATFORM, US\n\
-8.8.8.0\t8.8.8.255\t15169\tUS\tGOOGLE, US\n\
-5.9.0.0\t5.9.255.255\t24940\tDE\tHETZNER-RZ-NBG-GERMANY, DE\n";
-
-    const X4BNET: &str = "3.5.128.0/17\n203.0.113.0/24\n";
-
-    fn tables() -> GeoTables {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static CTR: AtomicU64 = AtomicU64::new(0);
-        let n = CTR.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "magdns-geo-test-{}-{}",
-            std::process::id(),
-            n
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("delegated-extended-latest"), DELEGATED).unwrap();
-        std::fs::write(dir.join("ip2asn-v4.tsv"), IPTOASN).unwrap();
-        std::fs::write(dir.join("x4bnet-dc-v4.txt"), X4BNET).unwrap();
-        let t = GeoTables::load(&dir).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
-        t
-    }
-
-    #[test]
-    fn country_lookup_binary_search() {
-        let t = tables();
-        assert_eq!(t.country("1.2.3.99".parse().unwrap()).as_deref(), Some("CN"));
-        assert_eq!(t.country("5.9.200.1".parse().unwrap()).as_deref(), Some("DE"));
-        assert_eq!(
-            t.country("126.5.0.1".parse().unwrap()).as_deref(),
-            Some("JP")
-        );
-        assert_eq!(t.country("9.9.9.9".parse().unwrap()), None, "unallocated gap");
-    }
-
-    #[test]
-    fn hosting_overlay_beats_and_keyword_infers() {
-        let t = tables();
-        // 3.5.140.x is inside Google's range AND the X4BNet overlay — overlay wins
-        assert!(t.is_hosting("3.5.140.10".parse().unwrap()));
-        // Hetzner AS name keyword inference
-        assert!(t.is_hosting("5.9.100.7".parse().unwrap()));
-        // CN residential block is clean
-        assert!(!t.is_hosting("1.2.3.99".parse().unwrap()));
-    }
-
-    #[test]
-    fn biggest_residential_prefers_non_hosting_largest_block() {
-        let t = tables();
-        // DE's only delegated block is Hetzner-classified -> no residential
-        assert_eq!(t.biggest_residential_prefix("DE", 24), None);
-        // CN's 1.2.3.0/22-ish block is residential -> representative exists
-        let rep = t.biggest_residential_prefix("CN", 24).unwrap();
-        assert_eq!(rep.0, "1.2.3.0".parse::<std::net::Ipv4Addr>().unwrap());
-        assert!(rep.1 <= 24);
-    }
-}
-
 /// Load-gated consolidation switch (GeoIP design §Behavior-1): a five-bucket
 /// sliding window over outbound query counters. Enters at the watermark,
 /// exits at half of it — hysteresis against threshold flapping.
@@ -307,8 +253,11 @@ impl ConsolidationGate {
     pub fn new(watermark: u64) -> Self {
         ConsolidationGate {
             window: Mutex::new([
-                AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-                AtomicU64::new(0), AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
             ]),
             slot: AtomicUsize::new(0),
             entered: AtomicBool::new(false),
@@ -331,8 +280,14 @@ impl ConsolidationGate {
     }
 
     pub fn engaged(&self) -> bool {
-        let rate: u64 =
-            self.window.lock().unwrap().iter().map(|b| b.load(Ordering::Relaxed)).sum::<u64>() / 5;
+        let rate: u64 = self
+            .window
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| b.load(Ordering::Relaxed))
+            .sum::<u64>()
+            / 5;
         match self.entered.load(Ordering::Relaxed) {
             true => {
                 if rate < self.watermark / 2 {
@@ -351,5 +306,81 @@ impl ConsolidationGate {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DELEGATED: &str = "version|20240101|000000
+apnic|CN|ipv4|1.2.3.0|1024|20240101|allocated
+ripencc|DE|ipv4|5.9.0.0|16384|20240101|allocated
+apnic|JP|ipv4|126.0.0.0|1048576|20240101|allocated
+";
+
+    const IPTOASN: &str = "3.5.140.0\t3.5.141.255\t16550\tUS\tGOOGLE-CLOUD-PLATFORM, US\n\
+8.8.8.0\t8.8.8.255\t15169\tUS\tGOOGLE, US\n\
+5.9.0.0\t5.9.255.255\t24940\tDE\tHETZNER-RZ-NBG-GERMANY, DE\n";
+
+    const X4BNET: &str = "3.5.128.0/17\n203.0.113.0/24\n";
+
+    fn tables() -> GeoTables {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let n = CTR.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("magdns-geo-test-{}-{}", std::process::id(), n));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("delegated-extended-latest"), DELEGATED).unwrap();
+        std::fs::write(dir.join("ip2asn-v4.tsv"), IPTOASN).unwrap();
+        std::fs::write(dir.join("x4bnet-dc-v4.txt"), X4BNET).unwrap();
+        let t = GeoTables::load(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        t
+    }
+
+    #[test]
+    fn country_lookup_binary_search() {
+        let t = tables();
+        assert_eq!(
+            t.country("1.2.3.99".parse().unwrap()).as_deref(),
+            Some("CN")
+        );
+        assert_eq!(
+            t.country("5.9.200.1".parse().unwrap()).as_deref(),
+            Some("DE")
+        );
+        assert_eq!(
+            t.country("126.5.0.1".parse().unwrap()).as_deref(),
+            Some("JP")
+        );
+        assert_eq!(
+            t.country("9.9.9.9".parse().unwrap()),
+            None,
+            "unallocated gap"
+        );
+    }
+
+    #[test]
+    fn hosting_overlay_beats_and_keyword_infers() {
+        let t = tables();
+        // 3.5.140.x is inside Google's range AND the X4BNet overlay — overlay wins
+        assert!(t.is_hosting("3.5.140.10".parse().unwrap()));
+        // Hetzner AS name keyword inference
+        assert!(t.is_hosting("5.9.100.7".parse().unwrap()));
+        // CN residential block is clean
+        assert!(!t.is_hosting("1.2.3.99".parse().unwrap()));
+    }
+
+    #[test]
+    fn biggest_residential_prefers_non_hosting_largest_block() {
+        let t = tables();
+        // DE's only delegated block is Hetzner-classified -> no residential
+        assert_eq!(t.biggest_residential_prefix("DE", 24), None);
+        // CN's 1.2.3.0/22-ish block is residential -> representative exists
+        let rep = t.biggest_residential_prefix("CN", 24).unwrap();
+        assert_eq!(rep.0, "1.2.3.0".parse::<std::net::Ipv4Addr>().unwrap());
+        assert!(rep.1 <= 24);
     }
 }
