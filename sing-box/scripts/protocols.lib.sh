@@ -333,19 +333,16 @@ convert_ss() { # $1=inbound index — direct shadowsocks → client ss (skip ss 
   debug "ss ← inbound[$i] port=$port tag=$ctag multiplex=$mux_en"
 }
 
-convert_naive() { # $1=inbound index — server naive → client naive (no insecure; self-signed via certificate_path)
-  local i="$1" user pass cert sni ctag
+convert_naive() { # $1=inbound index — server naive → client naive (client uses system trust; no certificate_path)
+  local i="$1" user pass sni ctag
   user="$(inb_field "$i" 'users.0.username')"
   pass="$(inb_field "$i" 'users.0.password')"
   sni="${SNI_OVERRIDE:-$SERVER}"
-  cert="$(inb_field "$i" 'tls.certificate_path')"
   local port; port="$(inb_field "$i" 'listen_port')"
   [[ -z "$port" || "$port" == "0" ]] && { warn "naive inbound[$i] missing listen_port, skip"; return; }
-  local cert_json=""
-  [[ -n "$cert" ]] && cert_json=", \"certificate_path\": \"$cert\""
   ctag="$(ctag_of "$i" naive)"
   OUTS+="${OUTS:+,
-        }{ \"type\": \"naive\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$cert_json$(ech_suffix "$i") } }"
+        }{ \"type\": \"naive\", \"tag\": \"$ctag\", \"server\": \"$SERVER\", \"server_port\": $port, \"username\": \"$user\", \"password\": \"$pass\", \"tls\": { \"enabled\": true, \"server_name\": \"$sni\"$(ech_suffix "$i") } }"
   TAGS+=" $ctag"
   debug "naive ← inbound[$i] port=$port user=$user tag=$ctag"
 }
