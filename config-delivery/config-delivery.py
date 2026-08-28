@@ -442,22 +442,32 @@ def main():
     # ---- print the link ----
     bn = DeliveryHandler.filename if DeliveryHandler.serve_dir is None else ""
     is_dir = DeliveryHandler.serve_dir is not None
+    # Directory with exactly one file: link points DIRECTLY at that file (curl of
+    # the link returns the content, not a ["name"] listing). Multi-file keeps the
+    # dir listing path.
+    single_name = ""
+    if is_dir:
+        files = [f for f in os.listdir(DeliveryHandler.serve_dir)
+                 if os.path.isfile(os.path.join(DeliveryHandler.serve_dir, f))]
+        if len(files) == 1:
+            single_name = files[0]
+    path_seg = f"/{single_name}" if single_name else ("/" if is_dir else "")
     if args.argo:
-        link = f"{pub_url}/{DeliveryHandler.key}" + ("/" if is_dir else "") + f"?k={enc_hex}"
+        link = f"{pub_url}/{DeliveryHandler.key}{path_seg}?k={enc_hex}"
         print(f"one-time download link: {link}")
         print("tunnel cert is a public CA (browser-trusted, zero warnings); no domain or open inbound port needed")
-        print(f"client: wget -O {bn or 'listing.json'} {link}")
+        print(f"client: wget -O {bn or single_name or 'listing.json'} {link}")
     elif tls_mode == "http":
-        link = f"http://{display_host}:{args.port}/{DeliveryHandler.key}" + ("/" if is_dir else "") + f"?k={enc_hex}"
+        link = f"http://{display_host}:{args.port}/{DeliveryHandler.key}{path_seg}?k={enc_hex}"
         print(f"one-time download link: {link}")
         print("warning: plain HTTP — the config contains secrets; anyone on the network path can read it")
         print("dir listing hidden; host is user-supplied (never auto-probed)")
-        print(f"client: wget -O {bn or 'files/'} {link}")
+        print(f"client: wget -O {bn or single_name or 'files/'} {link}")
     else:  # cert
-        link = f"https://{display_host}:{args.port}/{DeliveryHandler.key}" + ("/" if is_dir else "") + f"?k={enc_hex}"
+        link = f"https://{display_host}:{args.port}/{DeliveryHandler.key}{path_seg}?k={enc_hex}"
         print(f"one-time download link: {link}")
         print("dir listing hidden; host is user-supplied (never auto-probed)")
-        print(f"client: wget -O {bn or 'files/'} {link}")
+        print(f"client: wget -O {bn or single_name or 'files/'} {link}")
 
     # ---- unified verification: 3s countdown doubles as argo warm-up ----
     print("checking link in 3...")
