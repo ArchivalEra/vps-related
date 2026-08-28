@@ -165,10 +165,14 @@ quick-tunnel variant.
 
 ```bash
 cd boiledegg
-https_proxy=http://127.0.0.1:2080 HTTP_PROXY=http://127.0.0.1:2080 \
-  bash boiledegg.sh /etc/sing-box/config-server.json \
+bash boiledegg.sh /etc/sing-box/config-server.json \
   --addr your.domain --lines 1,2 --logs /var/log/boiledegg
 ```
+
+> Proxy note: the production VPS has no GFW, so no proxy is needed. Only on a
+> **test box behind the GFW** prepend `https_proxy=http://127.0.0.1:2080
+> HTTP_PROXY=http://127.0.0.1:2080` (cloudflared honors it for the quick-tunnel
+> registration).
 
 - Lists only `vless-ws` / `vless-grpc` listeners, multi-select by number.
 - Starts one detached `cloudflared tunnel --url <http|https>://127.0.0.1:<port>`
@@ -217,7 +221,8 @@ bash config-delivery/config-delivery.sh /srv/cdn --host your.domain --ttl 86400
 - [ ] `test-env/e2e-all.sh` green on the machine that will run the server.
 - [ ] Cert is real (not self-signed) when the client omits `--insecure`.
 - [ ] ECH CONFIGS published as the HTTPS/SVCB record when `--ech` is used.
-- [ ] `boiledegg` tunnels registered via proxy (`https_proxy=…2080` on this box).
+- [ ] `boiledegg` quick tunnels registered (no proxy on the production VPS; only
+      GFW test boxes prepend `https_proxy=…2080`).
 - [ ] Delivery link verified with the printed `?k=` (strip `?k=` to verify path).
 
 ## 8. Where each readme goes deeper

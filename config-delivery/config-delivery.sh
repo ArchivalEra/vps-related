@@ -51,6 +51,7 @@ fi
 PORT=443
 TTL=60             # default = 60s auto-delete; --ttl N overrides; no upper bound
 HOLD=0             # 1 = --hold: foreground countdown mode (TTL still applies, ^C stops)
+WARM=0             # 1 = --warm: hot-reload directory mode, serve until ^C (TTL ignored)
 HOST=""
 FAMILY=""          # "" = auto (IPv4 first), "v4" = force IPv4, "v6" = force IPv6
 CERT=""
@@ -68,6 +69,8 @@ print_help() {
   --hold          stay in the foreground: live single-line countdown on screen; ^C
                   stops the share right away, and when the TTL elapses the share ends
                   by itself and the terminal is released. not exclusive with --ttl
+  --warm          hot-reload directory mode: serve the real dir at root until ^C;
+                  per-request reads pick up file edits without a restart. TTL ignored.
   --host NAME     host in the link — an IP literal (v6 bracketed automatically), or a
                   domain kept as-is (dual-stack: each client resolves it with its own
                   DNS). never auto-probed, user-supplied only. disabled in --argo mode.
@@ -146,7 +149,7 @@ cleanup() {
       printf "\033[34mcan't find dufs started by config-delivery.sh (if you killed it that's fine)\033[0m\n"
     fi
   fi
-  [[ -n "${SRV_DIR:-}" ]] && rm -rf "$SRV_DIR"
+  [[ -n "${SRV_DIR:-}" ]] && { [[ $WARM -eq 1 && -d "$FILE" ]] || rm -rf "$SRV_DIR"; }
   if [[ $ARGO -eq 1 ]]; then
     printf "\033[34margo quick tunnel may still be running — remove manually, or try: sudo systemctl restart cloudflared\033[0m\n"
   fi
@@ -198,6 +201,7 @@ while [[ $i -lt ${#args[@]} ]]; do
     --key)  KEY="${args[$((i+1))]}";  i=$((i+2)) ;;
     --argo) ARGO=1; i=$((i+1)) ;;
     --hold) HOLD=1; i=$((i+1)) ;;
+    --warm) WARM=1; i=$((i+1)) ;;
     *)      FILE="$a"; i=$((i+1)) ;;
   esac
 done
@@ -332,12 +336,18 @@ CD_ENC_KEY="${CD_ENC_KEY,,}"
 
 # Serve from a throwaway temp dir so nothing is persisted on disk past the share —
 # the TTL steward (TTL mode) or the INT/TERM cleanup (--hold mode) removes it.
+# In --warm mode the ORIGINAL dir is served live (per-request reads pick up edits).
 SRV_DIR="$(mktemp -d)"
-if [[ -d "$FILE" ]]; then
-  mkdir -p "$SRV_DIR/$KEYSTR"
-  cp -a "$FILE"/. "$SRV_DIR/$KEYSTR/" 2>/dev/null || cp -a "$FILE"/* "$SRV_DIR/$KEYSTR/" 2>/dev/null
+if [[ $WARM -eq 1 && -d "$FILE" ]]; then
+  # dufs serves the real dir; KEYSTR is just the URL segment, not a subdir name.
+  SRV_DIR="$FILE"
 else
-  cp "$FILE" "$SRV_DIR/$KEYSTR"
+  if [[ -d "$FILE" ]]; then
+    mkdir -p "$SRV_DIR/$KEYSTR"
+    cp -a "$FILE"/. "$SRV_DIR/$KEYSTR/" 2>/dev/null || cp -a "$FILE"/* "$SRV_DIR/$KEYSTR/" 2>/dev/null
+  else
+    cp "$FILE" "$SRV_DIR/$KEYSTR"
+  fi
 fi
 
 # TLS material: real cert from --cert/--key (state "cert") is used as-is; the
@@ -398,25 +408,31 @@ fi
 # Client download hint uses wget -O with the delivered file's real name (GNU wget
 # and busybox wget both take -O), so the client ends up with a useful filename
 # instead of the random key. The link carries ?k= independently.
+# In --warm mode dufs serves the real dir at root, so the path is "/" not "/<key>/".
+if [[ $WARM -eq 1 && -d "$FILE" ]]; then
+  URL_PATH="/"
+else
+  URL_PATH="/$KEYSTR/"
+fi
 if [[ -d "$FILE" ]]; then
   if [[ $ARGO -eq 1 ]]; then
-    echo "one-time download link: $PUB_URL/$KEYSTR/?k=$CD_ENC_KEY"
+    echo "one-time download link: $PUB_URL${URL_PATH}?k=$CD_ENC_KEY"
     echo "tunnel cert is a public CA (browser-trusted, zero warnings); no domain or open inbound port needed"
-    echo "client: wget -O listing.json $PUB_URL/$KEYSTR/?k=$CD_ENC_KEY"
-    LINK_URL="$PUB_URL/$KEYSTR"
+    echo "client: wget -O listing.json $PUB_URL${URL_PATH}?k=$CD_ENC_KEY"
+    LINK_URL="$PUB_URL${URL_PATH}"
   else
     SH="${HOST:-localhost}"
     if [[ "$TLS_MODE" == "http" ]]; then
-      echo "one-time download link: http://$SH:$PORT/$KEYSTR/?k=$CD_ENC_KEY"
+      echo "one-time download link: http://$SH:$PORT${URL_PATH}?k=$CD_ENC_KEY"
       echo "warning: plain HTTP — the config contains secrets; anyone on the network path can read it"
       echo "dir listing hidden; host is user-supplied (never auto-probed)"
-      echo "client: wget -O listing.json http://$SH:$PORT/$KEYSTR/?k=$CD_ENC_KEY"
-      LINK_URL="http://$SH:$PORT/$KEYSTR"
+      echo "client: wget -O listing.json http://$SH:$PORT${URL_PATH}?k=$CD_ENC_KEY"
+      LINK_URL="http://$SH:$PORT${URL_PATH}"
     else
-      echo "one-time download link: https://$SH:$PORT/$KEYSTR/?k=$CD_ENC_KEY"
+      echo "one-time download link: https://$SH:$PORT${URL_PATH}?k=$CD_ENC_KEY"
       echo "dir listing hidden; host is user-supplied (never auto-probed)"
-      echo "client: wget -O listing.json https://$SH:$PORT/$KEYSTR/?k=$CD_ENC_KEY"
-      LINK_URL="https://$SH:$PORT/$KEYSTR"
+      echo "client: wget -O listing.json https://$SH:$PORT${URL_PATH}?k=$CD_ENC_KEY"
+      LINK_URL="https://$SH:$PORT${URL_PATH}"
     fi
   fi
 else
@@ -458,6 +474,8 @@ fi
 #             ticks the remaining TTL; ^C runs the INT/TERM trap cleanup (kill dufs +
 #             rm temp dir) and stops right away. When the countdown reaches zero the
 #             share ends by itself — same cleanup, same exit, terminal released.
+#   --warm -> hot-reload directory mode: serve continuously until ^C; per-request
+#             reads pick up file edits without a restart (TTL ignored).
 #   default -> detached: the TTL steward below sleeps, then kills dufs, removes the
 #              temp dir and (in --argo mode) prints the tunnel cleanup reminder. The
 #              script returns 0 immediately and hands the terminal back.
@@ -469,6 +487,14 @@ if [[ $HOLD -eq 1 ]]; then
     left=$((left - 1))
   done
   printf '\r\033[2Klink expired — cleaning up\n'
+  cleanup 0
+fi
+
+if [[ $WARM -eq 1 ]]; then
+  # dufs serves the real dir at root; URL is /<file> (no key subdir).
+  echo "warm mode: serving $FILE until ^C (per-request reads pick up edits)"
+  printf '\033[31mimportant: to stop sharing, kill %s\033[0m\n' "$DUFS_PID"
+  wait "$DUFS_PID"
   cleanup 0
 fi
 
