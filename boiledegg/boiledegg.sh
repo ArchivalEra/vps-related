@@ -161,8 +161,19 @@ if [[ -n "$LOGDIR" ]]; then
 fi
 
 PIDS=""
+declare -A SEEN_PORT
 for idx in "${SEL[@]}"; do
   IFS=$'\t' read -r tag tt port tl <<<"${ROWS[$idx]}"
+  # Reject selecting the same backend port twice — two tunnels to one origin are
+  # pointless and produce two divergent URLs for one line.
+  if [[ -n "${SEEN_PORT[$port]:-}" ]]; then
+    err "duplicate backend port $port (line $tag) already selected — pick distinct ports"
+    # PIDS is a space-separated list of pids — intentional word-splitting here
+    # shellcheck disable=SC2086
+    kill $PIDS 2>/dev/null
+    die1 "aborting: duplicate port selection"
+  fi
+  SEEN_PORT[$port]=1
   scheme="http"; extra=()
   [[ "$tl" == "tls" ]] && { scheme="https"; extra=(--no-tls-verify); }
   logf="$TMPD/cfd-$tag.log"
@@ -176,19 +187,24 @@ for idx in "${SEL[@]}"; do
     kill -0 "$cfd_pid" 2>/dev/null || break
     sleep 0.4
   done
-  [[ -z "$url" ]] && {
-    err "no trycloudflare URL for $tag within ~30s — log tail:"
-    tail -5 "$logf" >&2; kill "$cfd_pid" 2>/dev/null
-    die1 "hint: registration must reach api.trycloudflare.com — try https_proxy=http://127.0.0.1:2080"
-  }
+  # Confirm the process is still alive after the URL appeared — a tunnel that
+  # printed a URL and then died instantly must not count as success.
+  if [[ -z "$url" ]] || ! kill -0 "$cfd_pid" 2>/dev/null; then
+    alive=no
+    kill -0 "$cfd_pid" 2>/dev/null && alive=yes
+    err "no live trycloudflare URL for $tag within ~30s (url=${url:-none}, pid alive? $alive) — log tail:"
+    tail -8 "$logf" >&2
+    kill "$cfd_pid" 2>/dev/null
+    die1 "hint: registration must reach api.trycloudflare.com; behind GFW use https_proxy=http://127.0.0.1:2080"
+  fi
   TAG_URL["$tag"]="$url"
   PIDS+=" $cfd_pid"
   ok "[$tag] $url (pid $cfd_pid, origin $scheme://127.0.0.1:$port)"
 done
 
-# ---------- reuse gen-client on the original config ----------
-SB_OUTPUT="$TMPD/base.json" bash "$GEN_CLIENT" --from-server "$SERVER_CFG" --addr "$ADDR" >/dev/null 2>&1 \
-  || { err "gen-client failed:"; SB_OUTPUT="$TMPD/base.json" bash "$GEN_CLIENT" --from-server "$SERVER_CFG" --addr "$ADDR" 2>&1 | tail -8 >&2; die1 "cannot build base client config"; }
+# ---------- reuse gen-client on the original config (keep first-run stderr) ----------
+SB_OUTPUT="$TMPD/base.json" bash "$GEN_CLIENT" --from-server "$SERVER_CFG" --addr "$ADDR" >"$TMPD/base.out" 2>"$TMPD/base.err" \
+  || { err "gen-client failed:"; cat "$TMPD/base.err" >&2; die1 "cannot build base client config"; }
 
 # repoint ONLY the selected lines at their tunnel hosts (tag=url pairs)
 ARGS_PASSED=()
@@ -210,7 +226,7 @@ for o in c.get("outbounds", []):
     if tg in tag_url:
         host = tag_url[tg].replace("https://", "")
         o["server"] = host
-        o["tls"]["server_name"] = host
+        o.setdefault("tls", {})["server_name"] = host  # safe even if outbound has no tls
         patched.append(tg)
 json.dump(c, open(out_p, "w"), indent=1)
 # carry ECH CONFIGS comments if the server had them
@@ -229,14 +245,23 @@ resolve_out() {
 }
 OUT="$(resolve_out)"
 mkdir -p "$(dirname "$OUT")" 2>/dev/null || die1 "cannot write dir: $(dirname "$OUT")"
-cp "$TMPD/final.json" "$OUT"
+# atomic publish: mv within the same filesystem, so a reader never sees a partial file
+if [[ -f "$OUT" ]]; then
+  mv -f "$TMPD/final.json" "$OUT"
+else
+  mv "$TMPD/final.json" "$OUT"
+fi
+[[ -s "$OUT" ]] || die1 "output file empty after publish: $OUT"
 
 ok "argo client config: $OUT (overwrites by design — pure derivative)"
 ok "fronted lines repointed: see green list above; everything else stays --addr $ADDR"
 printf '\033[31mimportant: to stop sharing kill%s ; to renew URLs just re-run boiledegg.sh\033[0m\n' "$PIDS"
 if [[ -n "$LOGDIR" ]]; then
+  # copy after the tunnels have had time to flush; logs live in LOGDIR not TMPD
   for idx in "${SEL[@]}"; do IFS=$'\t' read -r tag _ <<<"${ROWS[$idx]}"
-    cp "$TMPD/cfd-$tag.log" "$LOGDIR/" 2>/dev/null
+    # the setsid child still holds the fd; give it a beat then copy the file
+    sleep 0.5
+    cp "$TMPD/cfd-$tag.log" "$LOGDIR/" 2>/dev/null || warn "could not copy log for $tag"
   done
   ok "tunnel logs kept in $LOGDIR"
 fi
