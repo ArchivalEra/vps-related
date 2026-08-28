@@ -26,7 +26,7 @@ config-delivery.sh serve ./config-client.json --port 443 --ttl 3600 --hold --hos
 | `--cert FILE` | PEM certificate. Three-state TLS: readable `--cert` + readable `--key` → real-cert HTTPS; only one given (or either unreadable) → warning + fresh self-signed HTTPS fallback (clients `wget --no-check-certificate`); neither given → plain HTTP with a secrets-in-clear warning. Disabled in `--argo` mode. |
 | `--key FILE` | PEM private key; pairs with `--cert` (three states, see above). Disabled in `--argo` mode. |
 | `--argo` | deliver via a cloudflared quick tunnel: public `https://<random>.trycloudflare.com` URL with a public-CA cert (Google Trust Services — browsers trust it, zero warnings), no domain or open inbound port needed. dufs runs plain HTTP on a random loopback port. Disables `--host`/`--v4`/`--v6`/`--cert`/`--key`. |
-| `FILE` | the file to deliver (positional) |
+| `FILE` | the file or directory to deliver (positional) — single file or multi-file (any types, streamed via dufs/py) |
 
 Simplest form (defaults — plain HTTP on localhost):
 

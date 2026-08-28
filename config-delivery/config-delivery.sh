@@ -34,8 +34,10 @@
 #     browsers show zero warnings) — no domain or open inbound port needed. The
 #     local dufs backend then stays plain HTTP on a random loopback port.
 #
-# Usage: config-delivery.sh [serve] <file> [--port N] [--ttl SEC] [--hold] [--host HOST [--v4|--v6]]
+# Usage: config-delivery.sh [serve] <file|dir> [--port N] [--ttl SEC] [--hold] [--host HOST [--v4|--v6]]
 #                           [--cert FILE] [--key FILE] [--argo]   (details: --help)
+# Also accepts a directory: any file types, streamed; listing GET /<key>/, per-file GET /<key>/<file>.
+# Links carry ?k=<64hex> (openssl rand -hex 32 via CD_ENC_KEY env or fallback), independent of the path key.
 # Env: DUFS_BIN (path to dufs binary; default: dufs on PATH)
 
 set -uo pipefail
@@ -83,7 +85,7 @@ print_help() {
                   zero warnings), no domain or open inbound port needed. dufs backend
                   runs plain HTTP on a random loopback port. disables
                   --host/--v4/--v6/--cert/--key (the tunnel owns public URL + cert).
-  FILE            file to deliver (positional, e.g. serve ./config-client.json)
+  FILE            file or directory to deliver (positional, e.g. serve ./config-client.json or ./out/); link includes ?k=<64hex> (CD_ENC_KEY env or openssl rand -hex 32)
 ##help##
 HELP
 }
@@ -246,8 +248,16 @@ if ! command -v wget >/dev/null 2>&1; then
 fi
 
 # ---------- Input guards ----------
-[[ -n "$FILE" && -f "$FILE" && -r "$FILE" ]] || { echo "error: file not readable: ${FILE:-<none>}"; exit 1; }
-[[ -s "$FILE" ]] || echo "warning: file is empty: $FILE"
+# FILE may be a regular file OR a directory (multi-file mode, any file type).
+if [[ -n "$FILE" && -f "$FILE" ]]; then
+  [[ -r "$FILE" ]] || { echo "error: file not readable: ${FILE:-<none>}"; exit 1; }
+  [[ -s "$FILE" ]] || echo "warning: file is empty: $FILE"
+elif [[ -n "$FILE" && -d "$FILE" ]]; then
+  [[ -r "$FILE" && -x "$FILE" ]] || { echo "error: directory not readable: ${FILE:-<none>}"; exit 1; }
+else
+  echo "error: file not readable: ${FILE:-<none>}"
+  exit 1
+fi
 [[ "$TTL" =~ ^[0-9]+$ && "$TTL" -ge 1 ]] || { echo "error: --ttl must be an integer >= 1 (got: $TTL)"; exit 1; }
 [[ "$TTL" -gt 3600 ]] && echo "warning: TTL ${TTL}s is long — the link stays live until then"
 [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1 && "$PORT" -le 65535 ]] || { echo "error: --port must be an integer 1-65535 (got: ${PORT:-<none>})"; exit 1; }
@@ -309,10 +319,26 @@ while [[ ${#KEYSTR} -lt 8 ]]; do
 done
 KEYSTR="${KEYSTR:0:8}"
 
+# Independent encryption key (the ?k= parameter)
+# KEY_URL (path segment) and ?k= are independent. KEY_URL authenticates; ENC_KEY
+# encrypts payload. Env var is the credential source; falls back to openssl if
+# env is not set. No credential literals in code.
+CD_ENC_KEY="${CD_ENC_KEY:-}"
+if [[ ! "$CD_ENC_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+  CD_ENC_KEY="$(openssl rand -hex 32 2>/dev/null | tr -d '\n' || echo "")"
+  [[ -n "$CD_ENC_KEY" ]] || CD_ENC_KEY="$(openssl rand -base64 24 | tr -dc 'a-f0-9' | head -c64)"
+fi
+CD_ENC_KEY="${CD_ENC_KEY,,}"
+
 # Serve from a throwaway temp dir so nothing is persisted on disk past the share —
 # the TTL steward (TTL mode) or the INT/TERM cleanup (--hold mode) removes it.
 SRV_DIR="$(mktemp -d)"
-cp "$FILE" "$SRV_DIR/$KEYSTR"
+if [[ -d "$FILE" ]]; then
+  mkdir -p "$SRV_DIR/$KEYSTR"
+  cp -a "$FILE"/. "$SRV_DIR/$KEYSTR/" 2>/dev/null || cp -a "$FILE"/* "$SRV_DIR/$KEYSTR/" 2>/dev/null
+else
+  cp "$FILE" "$SRV_DIR/$KEYSTR"
+fi
 
 # TLS material: real cert from --cert/--key (state "cert") is used as-is; the
 # self-signed fallback (state "self-signed") mints a fresh ECDSA cert here; state
@@ -371,30 +397,53 @@ fi
 # (not a loopback stand-in), so the check is as real as the delivery.
 # Client download hint uses wget -O with the delivered file's real name (GNU wget
 # and busybox wget both take -O), so the client ends up with a useful filename
-# instead of the random key.
-BN="$(basename "$FILE")"
-if [[ $ARGO -eq 1 ]]; then
-  echo "one-time download link: $PUB_URL/$KEYSTR"
-  echo "tunnel cert is a public CA (browser-trusted, zero warnings); no domain or open inbound port needed"
-  echo "client: wget -O $BN $PUB_URL/$KEYSTR"
-  LINK_URL="$PUB_URL/$KEYSTR"
-else
-  SH="${HOST:-localhost}"
-  if [[ "$TLS_MODE" == "http" ]]; then
-    echo "one-time download link: http://$SH:$PORT/$KEYSTR"
-    echo "warning: plain HTTP — the config contains secrets; anyone on the network path can read it"
-    echo "dir listing hidden; host is user-supplied (never auto-probed)"
-    echo "client: wget -O $BN http://$SH:$PORT/$KEYSTR"
-    LINK_URL="http://$SH:$PORT/$KEYSTR"
+# instead of the random key. The link carries ?k= independently.
+if [[ -d "$FILE" ]]; then
+  if [[ $ARGO -eq 1 ]]; then
+    echo "one-time download link: $PUB_URL/$KEYSTR/?k=$CD_ENC_KEY"
+    echo "tunnel cert is a public CA (browser-trusted, zero warnings); no domain or open inbound port needed"
+    echo "client: wget -O listing.json $PUB_URL/$KEYSTR/?k=$CD_ENC_KEY"
+    LINK_URL="$PUB_URL/$KEYSTR"
   else
-    echo "one-time download link: https://$SH:$PORT/$KEYSTR"
-    echo "dir listing hidden; host is user-supplied (never auto-probed)"
-    if [[ "$TLS_MODE" == "cert" ]]; then
-      echo "client: wget -O $BN https://$SH:$PORT/$KEYSTR"
+    SH="${HOST:-localhost}"
+    if [[ "$TLS_MODE" == "http" ]]; then
+      echo "one-time download link: http://$SH:$PORT/$KEYSTR/?k=$CD_ENC_KEY"
+      echo "warning: plain HTTP — the config contains secrets; anyone on the network path can read it"
+      echo "dir listing hidden; host is user-supplied (never auto-probed)"
+      echo "client: wget -O listing.json http://$SH:$PORT/$KEYSTR/?k=$CD_ENC_KEY"
+      LINK_URL="http://$SH:$PORT/$KEYSTR"
     else
-      echo "client: wget --no-check-certificate -O $BN https://$SH:$PORT/$KEYSTR"
+      echo "one-time download link: https://$SH:$PORT/$KEYSTR/?k=$CD_ENC_KEY"
+      echo "dir listing hidden; host is user-supplied (never auto-probed)"
+      echo "client: wget -O listing.json https://$SH:$PORT/$KEYSTR/?k=$CD_ENC_KEY"
+      LINK_URL="https://$SH:$PORT/$KEYSTR"
     fi
-    LINK_URL="https://$SH:$PORT/$KEYSTR"
+  fi
+else
+  BN="$(basename "$FILE")"
+  if [[ $ARGO -eq 1 ]]; then
+    echo "one-time download link: $PUB_URL/$KEYSTR?k=$CD_ENC_KEY"
+    echo "tunnel cert is a public CA (browser-trusted, zero warnings); no domain or open inbound port needed"
+    echo "client: wget -O $BN $PUB_URL/$KEYSTR?k=$CD_ENC_KEY"
+    LINK_URL="$PUB_URL/$KEYSTR"
+  else
+    SH="${HOST:-localhost}"
+    if [[ "$TLS_MODE" == "http" ]]; then
+      echo "one-time download link: http://$SH:$PORT/$KEYSTR?k=$CD_ENC_KEY"
+      echo "warning: plain HTTP — the config contains secrets; anyone on the network path can read it"
+      echo "dir listing hidden; host is user-supplied (never auto-probed)"
+      echo "client: wget -O $BN http://$SH:$PORT/$KEYSTR?k=$CD_ENC_KEY"
+      LINK_URL="http://$SH:$PORT/$KEYSTR"
+    else
+      echo "one-time download link: https://$SH:$PORT/$KEYSTR?k=$CD_ENC_KEY"
+      echo "dir listing hidden; host is user-supplied (never auto-probed)"
+      if [[ "$TLS_MODE" == "cert" ]]; then
+        echo "client: wget -O $BN https://$SH:$PORT/$KEYSTR?k=$CD_ENC_KEY"
+      else
+        echo "client: wget --no-check-certificate -O $BN https://$SH:$PORT/$KEYSTR?k=$CD_ENC_KEY"
+      fi
+      LINK_URL="https://$SH:$PORT/$KEYSTR"
+    fi
   fi
 fi
 # Unified link verification: 3s countdown, then up to 3 wget probes for HTTP success.
