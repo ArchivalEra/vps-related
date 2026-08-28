@@ -9,7 +9,7 @@ aarch64 (Cortex-A53) boxes with 1 GB RAM.
 
 | Path | What lives there |
 |---|---|
-| [`src/dnsdist/`](src/dnsdist/) | **magdns** source (Rust): private DoT:853 / DoQ:8853 relay with magazine cache |
+| [`puredns/server/`](puredns/server/) | **magdns** source (Rust): private DoT:853 / DoQ:8853 relay with magazine cache |
 | [`builds/magdns`](builds/magdns) + [`.readme.md`](builds/magdns.readme.md) | the compiled aarch64 binary + its full usage manual |
 | [`builds/maker/doh.js`](builds/maker/doh.js) + [`.readme.md`](builds/maker/doh.js.readme.md) | EdgeOne edge function fronting Google DoH + its deployment manual |
 | [`builds/README.md`](builds/README.md) | provenance of every binary in `builds/` |
@@ -111,6 +111,6 @@ Manual: [`duck-ddns/README.md`](duck-ddns/README.md).
   explicitly allowed paths get tracked. New directories must be added to
   the whitelist deliberately — this is what keeps credentials and local
   test benches out of the repo.
-- **Binaries live in `builds/`, sources under `src/`, deployment assets
+- **Binaries live in `builds/`, sources under `puredns/`, deployment assets
   under `deploy/`.** Provenance for every binary is documented in
   `builds/README.md`.

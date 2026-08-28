@@ -18,13 +18,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src
+          workspaces: puredns
       - name: format
         run: cargo fmt --all -- --check
-        working-directory: src
+        working-directory: puredns
       - name: clippy (correctness lints deny; style/dead-code warn)
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings -A dead_code -A clippy::type_complexity -A clippy::large_enum_variant
-        working-directory: src
+        working-directory: puredns
       - name: tests (${{ matrix.crate }})
         run: cargo test -p ${{ matrix.crate }} --all-features
-        working-directory: src
+        working-directory: puredns
