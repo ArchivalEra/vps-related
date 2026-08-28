@@ -85,7 +85,9 @@ class DeliveryHandler(BaseHTTPRequestHandler):
     filename = ""
 
     def do_GET(self):
-        inner = self.path.lstrip("/")
+        # Strip query string (?k=...) — the handler cares about the path only (?k= is informational)
+        path_only = self.path.split("?", 1)[0]
+        inner = path_only.lstrip("/")
         # Enforce key prefix — everything under /<key> is gated
         if not inner.startswith(DeliveryHandler.key):
             self.send_error(404)
@@ -209,12 +211,16 @@ def verify_link(url):
     if not _probe_allowed(url):
         err(f"refusing to probe non-public or link-local target: {url}")
         return False
-    for _ in range(3):  # 3 attempts, ~2s apart
+    # Loopback self-check must bypass the system proxy (mirror bash `wget -Y off`);
+    # argo trycloudflare endpoints must go through the proxy (GFW + CF edge routing).
+    is_trycloudflare = ".trycloudflare.com" in url
+    opener = None if is_trycloudflare else urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    for _ in range(3):  # 3 attempts, ~2s apart (doubles as argo edge warm-up)
         try:
             req = urllib.request.Request(url, method="GET")
             # No unverified context — system CA + hostname checking only.
             # There is no self-signed path in this Python version.
-            urllib.request.urlopen(req, timeout=2).read(1)
+            (opener.open if opener else urllib.request.urlopen)(req, timeout=2).read(1)
             return True
         except Exception:
             pass
@@ -459,9 +465,9 @@ def main():
     time.sleep(1)
     print("checking link in 1...")
     time.sleep(1)
-    if not verify_link(
-        link.replace("[", "").replace("]", "") if link.startswith("http") else link,
-    ):
+    # Verify the actual serving path (strip the informational ?k= before probing)
+    probe_url = link.split("?", 1)[0].replace("[", "").replace("]", "") if link.startswith("http") else link.split("?", 1)[0]
+    if not verify_link(probe_url):
         err(f"link did not return HTTP 200 after 3 attempts — not printing the link")
         shutdown(srv, tmpdir, argo=args.argo)
         sys.exit(1)
