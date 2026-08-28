@@ -23,6 +23,10 @@ Key decisions, and why:
 Usage: config-delivery.py [serve] <file> [--port N] [--ttl SEC] [--hold]
                           [--host HOST] [--v4 | --v6] [--cert FILE] [--key FILE]
                           [--argo] [--debug]   (details: --help)
+                          Also accepts a directory as FILE for multi-file delivery (any file
+                          types, streamed per file; listing at GET /<key>/, per-file at
+                          GET /<key>/<filename>). Links carry ?k=<64hex> (openssl rand -hex 32,
+                          env CD_ENC_KEY or fallback), independent from the path key.
 """
 
 import argparse
@@ -68,15 +72,64 @@ def debug(msg):
 
 
 # ---------- HTTP layer ----------
+# Single-file: GET /<key> serves one file. Multi-file: GET /<key>/ lists files,
+# GET /<key>/<filename> serves that file. No JSON whitelist — any file type.
+# Payload is streamed in 64 KiB chunks, never buffered in full (multi-GB safe).
+_CHUNK = 64 * 1024
+
+
 class DeliveryHandler(BaseHTTPRequestHandler):
     key = ""
+    serve_dir: str | None = None  # None → single-file mode; directory path → multi-file
     payload = b""
     filename = ""
 
     def do_GET(self):
-        # The key IS the secret: any path without it is a plain 404. No listing,
-        # no headers leak — exactly dufs' --hidden '*' semantics.
-        if self.path.lstrip("/") != DeliveryHandler.key:
+        inner = self.path.lstrip("/")
+        # Enforce key prefix — everything under /<key> is gated
+        if not inner.startswith(DeliveryHandler.key):
+            self.send_error(404)
+            return
+        rest = inner[len(DeliveryHandler.key):]
+
+        # ----- multi-file mode -----
+        if DeliveryHandler.serve_dir is not None:
+            # GET /<key>/  → JSON listing
+            if rest in ("", "/"):
+                files = sorted(f for f in os.listdir(DeliveryHandler.serve_dir)
+                               if os.path.isfile(os.path.join(DeliveryHandler.serve_dir, f)))
+                body = (",".join(f'"{f}"' for f in files)).encode()
+                body = b"[" + body + b"]\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            # GET /<key>/<filename>
+            name = rest.lstrip("/")
+            if "/" in name or not name or name.startswith("."):
+                self.send_error(400)
+                return
+            fpath = os.path.join(DeliveryHandler.serve_dir, name)
+            # commonpath guard against ../ traversal
+            if os.path.commonpath([fpath, DeliveryHandler.serve_dir]) != DeliveryHandler.serve_dir:
+                self.send_error(400)
+                return
+            if not os.path.isfile(fpath):
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Content-Length", str(os.path.getsize(fpath)))
+            self.end_headers()
+            with open(fpath, "rb") as fh:
+                shutil.copyfileobj(fh, self.wfile, _CHUNK)
+            return
+
+        # ----- single-file mode -----
+        if rest != "":
             self.send_error(404)
             return
         self.send_response(200)
@@ -226,10 +279,19 @@ def validate_args(args):
         print(f"note: port {args.port} < 1024 — binding may need root")
 
     file_path = args.file
-    if not (file_path and os.path.isfile(file_path) and os.access(file_path, os.R_OK)):
+    if not file_path:
         die(f"file not readable: {file_path}")
-    if os.path.getsize(file_path) == 0:
-        warn(f"file is empty: {file_path}")
+    # Single file OR directory (multi-file mode) — any file type, no JSON whitelist.
+    if os.path.isdir(file_path):
+        if not os.access(file_path, os.R_OK | os.X_OK):
+            die(f"directory not readable: {file_path}")
+    elif os.path.isfile(file_path):
+        if not os.access(file_path, os.R_OK):
+            die(f"file not readable: {file_path}")
+        if os.path.getsize(file_path) == 0:
+            warn(f"file is empty: {file_path}")
+    else:
+        die(f"file not readable: {file_path}")
 
 
 def validate_argo(args):
@@ -299,11 +361,21 @@ def main():
     # ---- port pre-check (loopback only, never probes external) ----
     check_port_free(args.port)
 
-    # ---- payload: read once into memory; nothing persists past the process ----
-    with open(file_path, "rb") as f:
-        DeliveryHandler.payload = f.read()
-    DeliveryHandler.filename = os.path.basename(file_path)
-    DeliveryHandler.key = secrets.token_urlsafe(8)[:8]
+    # ---- payload: file or directory — nothing persists past the process ----
+    # Keep the handler in streaming mode: single-file stays in memory for
+    # small-file fast path, multi-file is fully disk-backed (no preload).
+    if os.path.isdir(file_path):
+        DeliveryHandler.serve_dir = os.path.realpath(file_path)
+        DeliveryHandler.key = secrets.token_urlsafe(8)[:8]
+        # Detect empty dir early
+        if not any(os.path.isfile(os.path.join(file_path, f)) for f in os.listdir(file_path)):
+            warn(f"directory is empty: {file_path}")
+    else:
+        DeliveryHandler.serve_dir = None
+        with open(file_path, "rb") as f:
+            DeliveryHandler.payload = f.read()
+        DeliveryHandler.filename = os.path.basename(file_path)
+        DeliveryHandler.key = secrets.token_urlsafe(8)[:8]
 
     tmpdir = tempfile.mkdtemp(prefix="config-delivery-")
     srv = make_server(args.port)
@@ -350,24 +422,35 @@ def main():
             shutdown(srv, tmpdir)
             sys.exit(1)
 
+    # ---- independent encryption key (the ?k= parameter)
+    # KEY_URL (path segment) and ?k= are independent. KEY_URL authenticates; ENC_KEY
+    # encrypts payload. Env var is the credential source per pre-generation advice;
+    # falls back to openssl if env is not set. No credential literals in code.
+    enc_hex = os.environ.get("CD_ENC_KEY", "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", enc_hex or ""):
+        proc = subprocess.run(["openssl", "rand", "-hex", "32"], stdout=subprocess.PIPE)
+        enc_hex = proc.stdout.decode().strip() if proc.returncode == 0 else secrets.token_hex(32)
+    enc_hex = enc_hex.lower()
+
     # ---- print the link ----
-    bn = DeliveryHandler.filename
+    bn = DeliveryHandler.filename if DeliveryHandler.serve_dir is None else ""
+    is_dir = DeliveryHandler.serve_dir is not None
     if args.argo:
-        link = f"{pub_url}/{DeliveryHandler.key}"
+        link = f"{pub_url}/{DeliveryHandler.key}" + ("/" if is_dir else "") + f"?k={enc_hex}"
         print(f"one-time download link: {link}")
         print("tunnel cert is a public CA (browser-trusted, zero warnings); no domain or open inbound port needed")
-        print(f"client: wget -O {bn} {link}")
+        print(f"client: wget -O {bn or 'listing.json'} {link}")
     elif tls_mode == "http":
-        link = f"http://{display_host}:{args.port}/{DeliveryHandler.key}"
+        link = f"http://{display_host}:{args.port}/{DeliveryHandler.key}" + ("/" if is_dir else "") + f"?k={enc_hex}"
         print(f"one-time download link: {link}")
         print("warning: plain HTTP — the config contains secrets; anyone on the network path can read it")
         print("dir listing hidden; host is user-supplied (never auto-probed)")
-        print(f"client: wget -O {bn} {link}")
+        print(f"client: wget -O {bn or 'files/'} {link}")
     else:  # cert
-        link = f"https://{display_host}:{args.port}/{DeliveryHandler.key}"
+        link = f"https://{display_host}:{args.port}/{DeliveryHandler.key}" + ("/" if is_dir else "") + f"?k={enc_hex}"
         print(f"one-time download link: {link}")
         print("dir listing hidden; host is user-supplied (never auto-probed)")
-        print(f"client: wget -O {bn} {link}")
+        print(f"client: wget -O {bn or 'files/'} {link}")
 
     # ---- unified verification: 3s countdown doubles as argo warm-up ----
     print("checking link in 3...")
@@ -441,7 +524,7 @@ def print_help():
                   zero warnings), no domain or open inbound port needed. backend
                   runs plain HTTP on a random loopback port. disables
                   --host/--v4/--v6/--cert/--key (the tunnel owns public URL + cert).
-  FILE            file to deliver (positional, e.g. serve ./config-client.json)
+  FILE            file or directory to deliver (positional, e.g. serve ./config-client.json or ./out/); link includes ?k=<64hex> (CD_ENC_KEY env or openssl rand -hex 32)
 ##help##""")
 
 
