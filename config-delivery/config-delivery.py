@@ -259,6 +259,7 @@ def build_arg_parser():
     ap.add_argument("--port", type=int, default=443)
     ap.add_argument("--ttl", type=int, default=60)
     ap.add_argument("--hold", action="store_true")
+    ap.add_argument("--warm", action="store_true")
     ap.add_argument("--host", default="")
     ap.add_argument("--v4", action="store_true")
     ap.add_argument("--v6", action="store_true")
@@ -472,7 +473,7 @@ def main():
         shutdown(srv, tmpdir, argo=args.argo)
         sys.exit(1)
 
-    # ---- hold vs detached ----
+    # ---- hold vs detached vs warm ----
     if args.hold:
         left = args.ttl
         while left > 0:
@@ -482,6 +483,17 @@ def main():
         print("\r\033[2Klink expired — cleaning up")
         shutdown(srv, tmpdir, argo=args.argo)
         sys.exit(0)
+
+    if args.warm:
+        # Hot-reload mode: serve the directory continuously; the listing and file
+        # reads happen per-request, so edits to the dir are picked up without a
+        # restart. Ctrl+C stops. TTL is ignored (this is the "keep it up" mode).
+        print(f"warm mode: serving {DeliveryHandler.serve_dir or DeliveryHandler.filename} until ^C")
+        print(f"\033[31mimportant: to stop sharing, kill {os.getpid()}\033[0m")
+        signal.signal(signal.SIGINT, lambda *_: (shutdown(srv, tmpdir, argo=args.argo), sys.exit(130)))
+        signal.signal(signal.SIGTERM, lambda *_: shutdown(srv, tmpdir, argo=args.argo))
+        while True:
+            time.sleep(3600)
 
     # Detached mode: hand back the terminal; the server daemon-thread keeps serving
     # until TTL elapses, then exits. The PID printed IS the handle (kill <pid>).
@@ -513,6 +525,8 @@ def print_help():
   --hold          stay in the foreground: live single-line countdown on screen; ^C
                   stops the share right away, and when the TTL elapses the share ends
                   by itself and the terminal is released. not exclusive with --ttl
+  --warm          hot-reload mode (directory only): serve continuously until ^C;
+                  per-request reads pick up file edits without a restart. TTL ignored.
   --host NAME     host in the link — an IP literal (v6 bracketed automatically), or a
                   domain kept as-is (dual-stack: each client resolves it with its own
                   DNS). never auto-probed, user-supplied only. disabled in --argo mode.
