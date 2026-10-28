@@ -12,8 +12,6 @@ set -uo pipefail
 
 # Substrings matched against each staged path. Keep in sync with pre-push.
 PROTECTED=(
-  'magdns-final.conf'
-  'src/dnsdist/stage/'
 )
 
 STAGED="$(git diff --cached --name-only)"

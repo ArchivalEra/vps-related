@@ -1,19 +1,15 @@
 # vps-related
 
 Everything for running private infrastructure on VPSes and a low-power home
-box: a hand-rolled DNS relay, proxy server/client config tooling, one-time
-file delivery, dynamic DNS — all organized per subproject, all tuned for
-aarch64 (Cortex-A53) boxes with 1 GB RAM.
+box: proxy server/client config tooling, one-time file delivery, dynamic DNS —
+all organized per subproject, all tuned for aarch64 (Cortex-A53) boxes with
+1 GB RAM.
 
 ## Map
 
 | Path | What lives there |
 |---|---|
-| [`puredns/server/`](puredns/server/) | **magdns** source (Rust): private DoT:853 / DoQ:8853 relay with magazine cache |
-| [`builds/magdns`](builds/magdns) + [`.readme.md`](builds/magdns.readme.md) | the compiled aarch64 binary + its full usage manual |
-| [`builds/maker/doh.js`](builds/maker/doh.js) + [`.readme.md`](builds/maker/doh.js.readme.md) | EdgeOne edge function fronting Google DoH + its deployment manual |
 | [`builds/README.md`](builds/README.md) | provenance of every binary in `builds/` |
-| [`deploy/`](deploy/) | systemd units + annotated config examples for the box |
 | [`sing-box/`](sing-box/) | sing-box deployment suite (server/client config generators, protocol docs, runbook, test env) |
 | [`config-delivery/`](config-delivery/) | one-time HTTPS file sharing (thin wrapper over `dufs`) |
 | [`duck-ddns/`](duck-ddns/) | DuckDNS A/AAAA updater for home-broadband direct entry |
@@ -24,52 +20,6 @@ Convention: any `xxx.sh` or deployed artifact carries its own
 their own comments instead of readmes. These manuals are written to be used,
 not maintained — when behavior changes, change the code comment first and
 the manual second.
-
-## magdns — the main event
-
-A DNS relay for a box that must never reboot: friends point their stub
-resolvers at `:853` (DoT) or `:8853` (DoQ); answers come from an in-RAM
-magazine cache; misses traverse upstream chains. Pure Rust on tokio/rustls/
-quinn — no GC pauses, nothing on disk, no cron.
-
-```
- client ──DoT:853 / DoQ:8853──▶ magdns
-                                  │ ① per-IP → ② per-qname → ③ global QPS token buckets
-                                  │ ④ concurrency gate (OOM guard)
-                                  ├─ hit ──▶ magazine cache (geo-clustered keys, FIFO tail evict)
-                                  ├─ CN qname ──▶ domestic pool: udp://223.5.5.5 / 223.6.6.6
-                                  │              round-robin fan-out · single-flight merged
-                                  │              health-gated · TC=1→TCP retry · ECS passed through
-                                  └─ miss ──▶ foreign chain, strict priority:
-                                              Maker relay farm (h2 fanout, serial failover)
-                                              └─fail─▶ dns.google / quad9 / adguard-unfiltered
-```
-
-Design highlights:
-
-- **Magazine cache** — fixed byte budget with FIFO tail eviction and a
-  per-entry lifetime cap. Cache keys are suffixed with a geo-cluster derived
-  from the client IP (IPv4 /20, IPv6 /44), so two nearby clients share an
-  entry while distant clients get their own geo-correct answer.
-- **ECS-aware routing** — sources that ignore EDNS Client Subnet (Quad9,
-  114DNS) are declared `noecs`; queries carrying ECS route around them.
-- **Maker relay farm** — self-hosted EdgeOne functions in front of Google
-  DoH (see `builds/maker/doh.js.readme.md`). Listed one account per line;
-  traffic runs **serially**: drain account A's monthly request allowance,
- then B's, then C's, falling back to public springs only when every
-  relay is dead. Recovered relays walk back to the head of the line via
-  background probes.
-- **Layered rate limiting** — three token buckets (per-IP, per-qname,
-  global QPS) plus a concurrency gate keep a 5000-QPS flood from OOMing a
-  1 GB box. Rate-limit rejections answer REFUSED (dampens retry storms);
-  overload drops silently. All values hot-reload on SIGHUP.
-- **Single-flight everywhere** — identical concurrent queries collapse into
-  one upstream round trip, on both chains, with a drop-guard so cancelled
-  handlers never stall later joiners.
-
-Usage: [`builds/magdns.readme.md`](builds/magdns.readme.md) (install,
-full config table, signals, stats JSON, build pipeline).
-Config example: [`deploy/dnsdist/magdns.conf.example`](deploy/dnsdist/magdns.conf.example).
 
 ## sing-box suite
 
@@ -111,6 +61,5 @@ Manual: [`duck-ddns/README.md`](duck-ddns/README.md).
   explicitly allowed paths get tracked. New directories must be added to
   the whitelist deliberately — this is what keeps credentials and local
   test benches out of the repo.
-- **Binaries live in `builds/`, sources under `puredns/`, deployment assets
-  under `deploy/`.** Provenance for every binary is documented in
-  `builds/README.md`.
+- **Binaries live in `builds/`.** Provenance for every binary is documented
+  in `builds/README.md`.
