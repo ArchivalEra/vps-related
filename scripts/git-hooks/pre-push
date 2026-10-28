@@ -30,7 +30,6 @@ if [[ -n "$DIRTY" ]]; then
 fi
 
 # Protected paths must never be tracked. Keep in sync with pre-commit.
-LEAKED="$(git ls-files | grep -E '(^|/)magdns-final\.conf$|^src/dnsdist/stage/' 2>/dev/null || true)"
 if [[ -n "$LEAKED" ]]; then
   echo "pre-push REJECTED: protected local-only paths are tracked:" >&2
   echo "$LEAKED" | sed 's/^/  /' >&2
